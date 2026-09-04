@@ -1,10 +1,12 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from app.ingestion.pdf_extractor import PdfExtractor
 from app.models.users import User
 from app.models.stocks import Stock
-from app.models.artifacts import PdfDocument, DocumentPage
+from app.models.artifacts import PdfDocument, DocumentPage, ValueLineParseRun
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.services.ingestion_service import IngestionService
@@ -281,6 +283,103 @@ def test_reparse_existing_document_multi_page_updates_all_pages(db_session):
     assert doc.stock_id is None
 
 
+def test_partial_reparse_rolls_back_and_preserves_every_prior_current_slot(db_session):
+    user = User(email="reparse-partial-rollback@example.com")
+    stock_one = Stock(ticker="RPA", exchange="NYSE", company_name="Reparse Alpha")
+    stock_two = Stock(ticker="RPB", exchange="NYSE", company_name="Reparse Beta")
+    db_session.add_all([user, stock_one, stock_two])
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="partial.pdf",
+        source="upload",
+        file_storage_key="/tmp/partial.pdf",
+        parse_status="parsed",
+        stock_id=None,
+        identity_needs_review=False,
+        report_date=date(2026, 1, 2),
+    )
+    db_session.add(doc)
+    db_session.flush()
+    prior_facts = [
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="mkt.price",
+            value_numeric=value,
+            value_json={"raw": str(value)},
+            unit="USD",
+            currency="USD",
+            period_type="AS_OF",
+            period_end_date=date(2026, 1, 2),
+            source_type="parsed",
+            source_document_id=doc.id,
+            is_current=True,
+        )
+        for stock, value in ((stock_one, 9), (stock_two, 19))
+    ]
+    db_session.add_all(prior_facts)
+    db_session.add(
+        MetricExtraction(
+            user_id=user.id,
+            document_id=doc.id,
+            page_number=2,
+            field_key="recent_price",
+            raw_value_text="19",
+            original_text_snippet="RECENT PRICE 19",
+            parsed_value_json={"raw": "19"},
+            parser_version="v1",
+        )
+    )
+    db_session.commit()
+    prior_ids = [fact.id for fact in prior_facts]
+    baseline_run_count = (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+    )
+
+    pages = [
+        (
+            1,
+            "REPARSE ALPHA\nNYSE-RPA\nRECENT PRICE 10\n"
+            "VALUE LINE\nAnalystX January 2, 2026\n",
+            [],
+        ),
+        (
+            2,
+            # A formerly parsed company page now has no parseable text.  It
+            # must not be interpreted as deleting the prior page-2 snapshot.
+            "scan",
+            [],
+        ),
+    ]
+    with patch(
+        "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
+        return_value=pages,
+    ), pytest.raises(ValueError, match="incomplete company-page revision"):
+        IngestionService(db_session).reparse_existing_document(
+            user_id=user.id,
+            document_id=doc.id,
+            reextract_pdf=True,
+        )
+
+    db_session.expire_all()
+    rows = (
+        db_session.query(MetricFact)
+        .filter(MetricFact.source_document_id == doc.id)
+        .order_by(MetricFact.id)
+        .all()
+    )
+    assert [row.id for row in rows] == prior_ids
+    assert all(row.is_current for row in rows)
+    assert (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+        == baseline_run_count
+    )
+    preserved_doc = db_session.get(PdfDocument, doc.id)
+    assert preserved_doc.parse_status == "parsed"
+    assert preserved_doc.report_date == date(2026, 1, 2)
+
+
 def test_reparse_existing_document_ignores_industry_pages_in_status(db_session):
     user = User(email="reparse_industry@example.com")
     db_session.add(user)
@@ -403,8 +502,17 @@ def test_reparse_existing_document_keeps_newer_document_current_for_same_metric_
                     "metric_key": "is.net_income",
                     "value_numeric": 100.0,
                     "value_text": None,
-                    "value_json": {"fact_nature": "actual"},
+                    "value_json": {
+                        "fact_nature": "actual",
+                        "mapping_id": "is.net_income.fy",
+                        "source_mapping_version": service.mapping_spec.source_mapping_version,
+                        "definition_basis": "adjusted",
+                        "fiscal_year": 2024,
+                        "period_duration_kind": "fiscal_year",
+                        "dimensions_identity": "empty",
+                    },
                     "unit": "USD",
+                    "currency": "USD",
                     "period_type": "FY",
                     "period_end_date": date(2024, 12, 31),
                 }
@@ -504,8 +612,17 @@ def test_reparse_existing_document_promotes_newer_document_for_same_metric_perio
                     "metric_key": "is.net_income",
                     "value_numeric": 120.0,
                     "value_text": None,
-                    "value_json": {"fact_nature": "actual"},
+                    "value_json": {
+                        "fact_nature": "actual",
+                        "mapping_id": "is.net_income.fy",
+                        "source_mapping_version": service.mapping_spec.source_mapping_version,
+                        "definition_basis": "adjusted",
+                        "fiscal_year": 2024,
+                        "period_duration_kind": "fiscal_year",
+                        "dimensions_identity": "empty",
+                    },
                     "unit": "USD",
+                    "currency": "USD",
                     "period_type": "FY",
                     "period_end_date": date(2024, 12, 31),
                 }
@@ -625,8 +742,270 @@ def test_reparse_existing_document_replaces_prior_document_snapshot_when_identit
     assert facts
     assert doc.stock_id is not None
     assert doc.stock_id != old_stock.id
-    assert {fact.stock_id for fact in facts} == {doc.stock_id}
-    assert all(fact.is_current for fact in facts)
-    assert all(fact.stock_id != old_stock.id for fact in facts)
+    assert {fact.stock_id for fact in facts if fact.is_current} == {doc.stock_id}
+    assert any(fact.stock_id == old_stock.id and not fact.is_current for fact in facts)
     assert extractions
-    assert all(extraction.raw_value_text != "9" for extraction in extractions)
+    assert any(extraction.raw_value_text == "9" for extraction in extractions)
+    assert any(extraction.raw_value_text != "9" for extraction in extractions)
+
+
+def test_reparse_appends_run_revision_and_preserves_manual_lineage(db_session):
+    user = User(email="reparse_mapping_history@example.com")
+    stock = Stock(ticker="RMAP", exchange="NYSE", company_name="Reparse Mapping")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    text = (
+        "REPARSE MAPPING\nNYSE-RMAP\nRECENT PRICE 10\n"
+        "VALUE LINE\nAnalystX January 2, 2026\n"
+    )
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="rmap.pdf",
+        source="upload",
+        file_storage_key="/tmp/rmap.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        identity_needs_review=False,
+        raw_text=text,
+        report_date=date(2026, 1, 2),
+    )
+    db_session.add(doc)
+    db_session.flush()
+    db_session.add(
+        DocumentPage(
+            document_id=doc.id,
+            page_number=1,
+            page_text=text,
+            text_extraction_method="native_text",
+        )
+    )
+    old_extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=doc.id,
+        page_number=1,
+        field_key="recent_price",
+        raw_value_text="9",
+        original_text_snippet="RECENT PRICE 9",
+        parsed_value_json={"raw": "9"},
+        parser_version="v1",
+    )
+    db_session.add(old_extraction)
+    db_session.flush()
+    old_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_numeric=9,
+        value_json={
+            "mapping_id": "mkt.price.as_of",
+            "source_mapping_version": "value-line-legacy-test:old",
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+            "fact_nature": "snapshot",
+        },
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 2),
+        source_type="parsed",
+        source_document_id=doc.id,
+        is_current=True,
+    )
+    db_session.add(old_fact)
+    db_session.flush()
+    old_parse_run_id = old_fact.value_line_parse_run_id
+    correction = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_numeric=9.5,
+        value_json={
+            "fact_nature": "manual",
+            "corrects_fact_id": old_fact.id,
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+        },
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 2),
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add(correction)
+    db_session.commit()
+
+    service = IngestionService(db_session)
+    generated = {
+        "metric_key": "mkt.price",
+        "value_numeric": 10.0,
+        "value_text": None,
+        "value_json": {
+            "mapping_id": "mkt.price.as_of",
+            "source_mapping_version": service.mapping_spec.source_mapping_version,
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+            "fact_nature": "snapshot",
+        },
+        "unit": "USD",
+        "currency": "USD",
+        "period_type": "AS_OF",
+        "period_end_date": date(2026, 1, 2),
+    }
+    with patch.object(
+        service.mapping_spec,
+        "generate_facts",
+        return_value=([generated], set(), set()),
+    ):
+        service.reparse_existing_document(
+            user_id=user.id,
+            document_id=doc.id,
+            reextract_pdf=False,
+        )
+
+    db_session.expire_all()
+    revisions = (
+        db_session.query(MetricFact)
+        .filter_by(
+            source_document_id=doc.id,
+            source_type="parsed",
+            metric_key="mkt.price",
+        )
+        .order_by(MetricFact.id)
+        .all()
+    )
+    assert len(revisions) == 2
+    assert revisions[0].id == old_fact.id
+    assert revisions[0].is_current is False
+    assert (
+        revisions[0].value_json["source_mapping_version"]
+        == service.mapping_spec.source_mapping_version
+    )
+    assert revisions[1].is_current is True
+    assert (
+        revisions[1].value_json["source_mapping_version"]
+        == service.mapping_spec.source_mapping_version
+    )
+    assert revisions[1].value_line_parse_run_id is not None
+    assert revisions[1].value_line_parse_run_id != old_parse_run_id
+    assert db_session.get(MetricFact, correction.id).value_json["corrects_fact_id"] == old_fact.id
+    assert db_session.get(MetricExtraction, old_extraction.id) is not None
+    new_extractions = (
+        db_session.query(MetricExtraction)
+        .filter(
+            MetricExtraction.document_id == doc.id,
+            MetricExtraction.id != old_extraction.id,
+        )
+        .all()
+    )
+    assert new_extractions
+    assert {
+        extraction.value_line_parse_run_id for extraction in new_extractions
+    } == {revisions[1].value_line_parse_run_id}
+    parse_run = db_session.get(
+        ValueLineParseRun, revisions[1].value_line_parse_run_id
+    )
+    assert parse_run.status == "succeeded"
+    assert parse_run.completed_at is not None
+    assert parse_run.source_mapping_version == service.mapping_spec.source_mapping_version
+
+
+def test_failed_reparse_atomically_preserves_prior_current_revision(db_session):
+    user = User(email="reparse-atomic-failure@example.com")
+    stock = Stock(ticker="RFAIL", exchange="NYSE", company_name="Reparse Failure")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    text = (
+        "REPARSE FAILURE\nNYSE-RFAIL\nRECENT PRICE 10\n"
+        "VALUE LINE\nAnalystX January 2, 2026\n"
+    )
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="rfail.pdf",
+        source="upload",
+        file_storage_key="/tmp/rfail.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        identity_needs_review=False,
+        raw_text=text,
+        report_date=date(2026, 1, 2),
+    )
+    db_session.add(doc)
+    db_session.flush()
+    db_session.add(
+        DocumentPage(
+            document_id=doc.id,
+            page_number=1,
+            page_text=text,
+            text_extraction_method="native_text",
+        )
+    )
+    prior = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_numeric=9,
+        value_json={
+            "mapping_id": "mkt.price.as_of",
+            "source_mapping_version": "value-line-legacy-test:prior",
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+        },
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 2),
+        source_type="parsed",
+        source_document_id=doc.id,
+        is_current=True,
+    )
+    db_session.add(prior)
+    db_session.commit()
+    baseline_run_count = (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+    )
+
+    generated = {
+        "metric_key": "mkt.price",
+        "value_numeric": 10.0,
+        "value_text": None,
+        "value_json": {
+            "mapping_id": "mkt.price.as_of",
+            "source_mapping_version": "value-line-resolved-v2:new",
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+        },
+        "unit": "USD",
+        "currency": "USD",
+        "period_type": "AS_OF",
+        "period_end_date": date(2026, 1, 2),
+    }
+    service = IngestionService(db_session)
+    with patch.object(
+        service.mapping_spec,
+        "generate_facts",
+        return_value=([generated], set(), set()),
+    ), patch.object(
+        service,
+        "_run_calculated_metrics",
+        side_effect=RuntimeError("post-write calculation failure"),
+    ), pytest.raises(RuntimeError, match="post-write calculation failure"):
+        service.reparse_existing_document(
+            user_id=user.id,
+            document_id=doc.id,
+            reextract_pdf=False,
+        )
+
+    db_session.expire_all()
+    revisions = db_session.query(MetricFact).filter_by(
+        source_document_id=doc.id,
+        source_type="parsed",
+        metric_key="mkt.price",
+    ).all()
+    assert [fact.id for fact in revisions] == [prior.id]
+    assert revisions[0].is_current is True
+    assert (
+        db_session.query(ValueLineParseRun).filter_by(document_id=doc.id).count()
+        == baseline_run_count
+    )
+    assert db_session.get(PdfDocument, doc.id).parse_status == "parsed"

@@ -5,11 +5,16 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import update, select
+from sqlalchemy import update, select, text
 from sqlalchemy.dialects.postgresql import insert
 from fastapi import UploadFile
 
-from app.models.artifacts import PdfDocument, DocumentPage
+from app.models.artifacts import (
+    PdfDocument,
+    DocumentPage,
+    ValueLineFactExtractionInput,
+    ValueLineParseRun,
+)
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
@@ -20,14 +25,23 @@ from app.ingestion.parsers.v1_value_line.parser import ValueLineV1Parser
 from app.ingestion.parsers.v1_value_line.page_json import build_value_line_page_json
 from app.ingestion.parsers.v1_value_line.semantics import has_value_line_markers
 from app.ingestion.normalization.scaler import Scaler
-from app.services.mapping_spec import MappingSpec
-from app.services.owners_earnings import build_owners_earnings_facts
+from app.services.mapping_spec import load_resolved_value_line_mapping_spec
+from app.services.owners_earnings import (
+    OE_INPUT_KEYS,
+    build_normalized_owners_earnings_fact,
+    build_owners_earnings_facts,
+)
 from app.services.canonical_financials import reviewed_method_gate
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 
 
 LOGGER = logging.getLogger(__name__)
+VALUE_LINE_REPARSE_LOCK_SQL = text(
+    "SELECT pg_advisory_xact_lock("
+    "hashtextextended('valuepilot:value-line-reparse-document:' || "
+    "CAST(:document_id AS text), 0))"
+)
 
 # Image-only (scanned) pages yield an empty or near-empty native text layer,
 # while genuine Value Line company pages carry thousands of characters. The
@@ -95,9 +109,7 @@ class IngestionService:
         self.db = db
         self.storage = FileStorageService()
         self.identity_service = IdentityService(db)
-        self.mapping_spec = MappingSpec.load(
-            Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mapping_spec.yml"
-        )
+        self.mapping_spec = load_resolved_value_line_mapping_spec()
 
     def process_upload(self, user_id: int, file: UploadFile) -> tuple[PdfDocument, list[dict]]:
         """
@@ -158,6 +170,11 @@ class IngestionService:
             self.db.commit()
             self.db.refresh(doc)
 
+            parse_run = self._start_value_line_parse_run(
+                user_id=user_id,
+                document_id=doc.id,
+            )
+
             is_multi_company_container = len(pages_data) > 1
             if is_multi_company_container:
                 doc.stock_id = None
@@ -167,6 +184,7 @@ class IngestionService:
             requires_ocr_pages = 0
 
             for page_num, text, words in pages_data:
+                page_savepoint = None
                 try:
                     if len((text or "").strip()) < MIN_PARSEABLE_PAGE_TEXT_CHARS:
                         requires_ocr_pages += 1
@@ -199,10 +217,17 @@ class IngestionService:
                         continue
 
                     company_pages += 1
+                    # A page is the smallest publishable Value Line unit.  If
+                    # any downstream extraction, fact, or calculation step
+                    # fails, none of that page's writes may survive merely
+                    # because another page later succeeds.
+                    page_savepoint = self.db.begin_nested()
 
                     try:
                         stock, needs_review, note = self.identity_service.resolve_stock(identity_info)
                     except ValueError:
+                        page_savepoint.rollback()
+                        page_savepoint = None
                         page_reports.append(
                             {
                                 "page_number": page_num,
@@ -242,6 +267,7 @@ class IngestionService:
                         results=extractions,
                     )
 
+                    extraction_ids_by_key: dict[str, list[int]] = {}
                     for ext in extractions:
                         metric_record = MetricExtraction(
                             user_id=user_id,
@@ -255,9 +281,13 @@ class IngestionService:
                             bbox_json=ext.bbox_json,
                             parser_template_id=None,
                             parser_version="v1",
+                            value_line_parse_run_id=parse_run.id,
                         )
                         self.db.add(metric_record)
                         self.db.flush()
+                        extraction_ids_by_key.setdefault(ext.field_key, []).append(
+                            metric_record.id
+                        )
 
                     facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
                     owner_earnings_gate = reviewed_method_gate(
@@ -266,13 +296,6 @@ class IngestionService:
                         method_key="owner_earnings",
                         effective_as_of=report_date,
                     )
-                    if owner_earnings_gate.status == "approved":
-                        facts.extend(
-                            build_owners_earnings_facts(
-                                facts,
-                                report_date=report_date,
-                            )
-                        )
                     for path in sorted(unmapped):
                         LOGGER.warning(
                             "Unmapped page_json path: %s (document_id=%s page=%s)",
@@ -281,6 +304,10 @@ class IngestionService:
                             page_num,
                         )
                     for fact in facts:
+                        source_extraction_ids = self._mapping_source_extraction_ids(
+                            fact,
+                            extraction_ids_by_key=extraction_ids_by_key,
+                        )
                         self._insert_metric_fact_from_mapping(
                             user_id=user_id,
                             stock_id=stock.id,
@@ -289,12 +316,25 @@ class IngestionService:
                             value_text=fact.get("value_text"),
                             value_json=fact.get("value_json"),
                             unit=fact.get("unit"),
+                            currency=fact.get("currency"),
                             period_type=fact.get("period_type"),
                             period_end_date=fact.get("period_end_date"),
                             source_document_id=doc.id,
+                            value_line_parse_run_id=parse_run.id,
+                            source_extraction_ids=source_extraction_ids,
+                        )
+
+                    if owner_earnings_gate.status == "approved":
+                        self._persist_owner_earnings_facts(
+                            user_id=user_id,
+                            stock_id=stock.id,
+                            report_date=report_date,
+                            value_line_parse_run_id=parse_run.id,
                         )
 
                     self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
+                    page_savepoint.commit()
+                    page_savepoint = None
 
                     parsed_company_pages += 1
                     page_reports.append(
@@ -308,6 +348,8 @@ class IngestionService:
                         }
                     )
                 except Exception as e:
+                    if page_savepoint is not None and page_savepoint.is_active:
+                        page_savepoint.rollback()
                     page_reports.append(
                         {
                             "page_number": page_num,
@@ -333,12 +375,21 @@ class IngestionService:
 
             if parsed_company_pages == 1:
                 self._archive_single_company_value_line_pdf(doc)
+
+            self._finish_value_line_parse_run(
+                parse_run,
+                status="succeeded" if parsed_company_pages else "failed",
+            )
             
             self.db.commit()
             self.db.refresh(doc)
             
         except Exception as e:
             # Handle failure
+            self.db.rollback()
+            doc = self.db.get(PdfDocument, doc.id)
+            if doc is None:
+                raise
             doc.parse_status = "failed"
             doc.notes = f"Extraction failed: {str(e)}"
             self.db.commit()
@@ -392,14 +443,62 @@ class IngestionService:
             "backfilled_document_count": backfilled_document_count,
         }
 
-    def reparse_existing_document(self, *, user_id: int, document_id: int, reextract_pdf: bool = False) -> PdfDocument:
+    def reparse_existing_document(
+        self,
+        *,
+        user_id: int,
+        document_id: int,
+        reextract_pdf: bool = False,
+    ) -> PdfDocument:
         """
-        Re-runs parsing on an existing document by rebuilding its parsed snapshot.
-        Removes prior parsed metric_extractions + metric_facts for the document and then inserts a fresh parse result.
+        Append one immutable parse revision and publish it atomically.
+
+        A failed reparse rolls its run, extraction, fact, document-cache, and
+        currentness changes back together, leaving the prior current facts
+        untouched.
         """
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
             raise ValueError("Document not found for user")
+
+        self.db.execute(
+            VALUE_LINE_REPARSE_LOCK_SQL,
+            {"document_id": document_id},
+        )
+        self.db.refresh(doc)
+
+        try:
+            with self.db.begin_nested():
+                doc = self._reparse_existing_document_revision(
+                    user_id=user_id,
+                    document_id=document_id,
+                    reextract_pdf=reextract_pdf,
+                )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            self.db.expire_all()
+            raise
+        self.db.refresh(doc)
+        return doc
+
+    def _reparse_existing_document_revision(
+        self,
+        *,
+        user_id: int,
+        document_id: int,
+        reextract_pdf: bool,
+    ) -> PdfDocument:
+        doc = self.db.get(PdfDocument, document_id)
+        if not doc or doc.user_id != user_id:
+            raise ValueError("Document not found for user")
+        prior_company_page_numbers = set(
+            self.db.scalars(
+                select(MetricExtraction.page_number).where(
+                    MetricExtraction.document_id == doc.id
+                )
+            ).all()
+        )
 
         page_words: dict[int, list[dict]] = {}
         if reextract_pdf:
@@ -445,13 +544,18 @@ class IngestionService:
                 doc.raw_text = "\n".join([page_text or "" for _, page_text, _ in pages_data])
 
         if not pages_data:
-            self._clear_document_parsed_snapshot(doc)
-            doc.parse_status = "failed"
-            self.db.commit()
-            self.db.refresh(doc)
-            return doc
+            raise ValueError("reparse produced no source pages")
 
-        self._clear_document_parsed_snapshot(doc)
+        parse_run = self._start_value_line_parse_run(
+            user_id=user_id,
+            document_id=doc.id,
+        )
+        prior_document_stock_id = doc.stock_id
+        self._reset_document_parse_projection(doc)
+        # Reconciliation may authorize the freshly rebuilt facts while the
+        # owning transaction computes deterministic metrics.  The terminal
+        # status is assigned below before commit.
+        doc.parse_status = "parsing"
 
         is_multi_company_container = len(pages_data) > 1
         if is_multi_company_container:
@@ -460,6 +564,8 @@ class IngestionService:
 
         company_pages = 0
         parsed_company_pages = 0
+        parsed_stock_ids: set[int] = set()
+        parsed_page_numbers: set[int] = set()
 
         for page_num, text, words in pages_data:
             if len((text or "").strip()) < MIN_PARSEABLE_PAGE_TEXT_CHARS:
@@ -501,6 +607,7 @@ class IngestionService:
                 page_number=page_num,
                 results=extractions,
             )
+            extraction_ids_by_key: dict[str, list[int]] = {}
             for ext in extractions:
                 metric_record = MetricExtraction(
                     user_id=user_id,
@@ -514,9 +621,13 @@ class IngestionService:
                     bbox_json=ext.bbox_json,
                     parser_template_id=None,
                     parser_version="v1",
+                    value_line_parse_run_id=parse_run.id,
                 )
                 self.db.add(metric_record)
                 self.db.flush()
+                extraction_ids_by_key.setdefault(ext.field_key, []).append(
+                    metric_record.id
+                )
 
             facts, _, unmapped = self.mapping_spec.generate_facts(page_json)
             owner_earnings_gate = reviewed_method_gate(
@@ -525,13 +636,6 @@ class IngestionService:
                 method_key="owner_earnings",
                 effective_as_of=report_date,
             )
-            if owner_earnings_gate.status == "approved":
-                facts.extend(
-                    build_owners_earnings_facts(
-                        facts,
-                        report_date=report_date,
-                    )
-                )
             for path in sorted(unmapped):
                 LOGGER.warning(
                     "Unmapped page_json path: %s (document_id=%s page=%s)",
@@ -540,6 +644,10 @@ class IngestionService:
                     page_num,
                 )
             for fact in facts:
+                source_extraction_ids = self._mapping_source_extraction_ids(
+                    fact,
+                    extraction_ids_by_key=extraction_ids_by_key,
+                )
                 self._insert_metric_fact_from_mapping(
                     user_id=user_id,
                     stock_id=stock.id,
@@ -548,34 +656,69 @@ class IngestionService:
                     value_text=fact.get("value_text"),
                     value_json=fact.get("value_json"),
                     unit=fact.get("unit"),
+                    currency=fact.get("currency"),
                     period_type=fact.get("period_type"),
                     period_end_date=fact.get("period_end_date"),
                     source_document_id=doc.id,
+                    value_line_parse_run_id=parse_run.id,
+                    source_extraction_ids=source_extraction_ids,
                 )
 
-            self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
+            if owner_earnings_gate.status == "approved":
+                self._persist_owner_earnings_facts(
+                    user_id=user_id,
+                    stock_id=stock.id,
+                    report_date=report_date,
+                    value_line_parse_run_id=parse_run.id,
+                )
 
+            parsed_stock_ids.add(stock.id)
+            parsed_page_numbers.add(page_num)
             parsed_company_pages += 1
 
         if parsed_company_pages == 0:
-            doc.parse_status = "failed"
-        elif parsed_company_pages < company_pages:
-            doc.parse_status = "parsed_partial"
-        else:
-            doc.parse_status = "parsed"
+            raise ValueError("reparse produced no successful company pages")
+        if (
+            parsed_company_pages < company_pages
+            or not prior_company_page_numbers.issubset(parsed_page_numbers)
+        ):
+            # A reparse publishes one atomic replacement revision.  A partial
+            # page set cannot be interpreted as deletion of fields/pages that
+            # were present in the prior successful revision.
+            raise ValueError("reparse produced an incomplete company-page revision")
+        doc.parse_status = "parsed"
 
-        self.db.commit()
-        self.db.refresh(doc)
+        for stock_id in sorted(parsed_stock_ids):
+            self._run_calculated_metrics(user_id=user_id, stock_id=stock_id)
+
+        if (
+            prior_document_stock_id is not None
+            and doc.stock_id is not None
+            and prior_document_stock_id != doc.stock_id
+        ):
+            # Identity changes are published only after every company page has
+            # parsed successfully.  Old-stock rows cannot share an exact slot
+            # with the replacement stock and therefore need this explicit,
+            # document-scoped demotion.
+            self.db.execute(
+                update(MetricFact)
+                .where(
+                    MetricFact.source_document_id == doc.id,
+                    MetricFact.source_type == "parsed",
+                    MetricFact.stock_id == prior_document_stock_id,
+                    MetricFact.is_current.is_(True),
+                )
+                .values(is_current=False)
+            )
+            self.db.flush()
+
+        self._finish_value_line_parse_run(parse_run, status="succeeded")
         return doc
 
-    def _clear_document_parsed_snapshot(self, doc: PdfDocument) -> None:
-        self.db.query(MetricFact).filter(
-            MetricFact.source_document_id == doc.id,
-            MetricFact.source_type == "parsed",
-        ).delete(synchronize_session=False)
-        self.db.query(MetricExtraction).filter(
-            MetricExtraction.document_id == doc.id,
-        ).delete(synchronize_session=False)
+    def _reset_document_parse_projection(self, doc: PdfDocument) -> None:
+        # Reparse never rewrites or deletes extraction/fact audit history.
+        # Existing facts remain current until an exact replacement slot is
+        # appended.  Missing output is not evidence that a prior fact vanished.
         doc.stock_id = None
         doc.report_date = None
         doc.identity_needs_review = False
@@ -586,6 +729,132 @@ class IngestionService:
     def _run_calculated_metrics(self, *, user_id: int, stock_id: int) -> None:
         ValueLineRatioCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
         PiotroskiFScoreCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
+
+    def _persist_owner_earnings_facts(
+        self,
+        *,
+        user_id: int,
+        stock_id: int,
+        report_date: date,
+        value_line_parse_run_id: int | None = None,
+    ) -> list[MetricFact]:
+        """Persist base-derived OEPS first, then its normalized snapshot.
+
+        Production ingestion supplies the immutable parse-run ID, preventing a
+        calculation from silently combining facts from different Value Line
+        report revisions.  The optional form exists for canonical backfills and
+        tests; duplicate slots still fail closed in the pure builder.
+        """
+
+        source_query = select(MetricFact).where(
+            MetricFact.user_id == user_id,
+            MetricFact.stock_id == stock_id,
+            MetricFact.source_type == "parsed",
+            MetricFact.is_current.is_(True),
+            MetricFact.period_type == "FY",
+            MetricFact.metric_key.in_(OE_INPUT_KEYS),
+        )
+        if value_line_parse_run_id is not None:
+            source_query = source_query.where(
+                MetricFact.value_line_parse_run_id == value_line_parse_run_id
+            )
+        source_facts = self.db.scalars(
+            source_query.order_by(
+                MetricFact.period_end_date.asc(),
+                MetricFact.metric_key.asc(),
+                MetricFact.id.asc(),
+            )
+        ).all()
+        annual = [
+            self._insert_calculated_fact(
+                user_id=user_id,
+                stock_id=stock_id,
+                payload=payload,
+            )
+            for payload in build_owners_earnings_facts(source_facts)
+        ]
+        normalized = build_normalized_owners_earnings_fact(
+            annual,
+            report_date=report_date,
+        )
+        if normalized is not None:
+            annual.append(
+                self._insert_calculated_fact(
+                    user_id=user_id,
+                    stock_id=stock_id,
+                    payload=normalized,
+                )
+            )
+        return annual
+
+    def _insert_calculated_fact(
+        self,
+        *,
+        user_id: int,
+        stock_id: int,
+        payload: dict,
+    ) -> MetricFact:
+        self.db.execute(
+            update(MetricFact)
+            .where(
+                MetricFact.user_id == user_id,
+                MetricFact.stock_id == stock_id,
+                MetricFact.metric_key == payload["metric_key"],
+                MetricFact.period_type == payload.get("period_type"),
+                MetricFact.period_end_date == payload.get("period_end_date"),
+                MetricFact.source_type == "calculated",
+                MetricFact.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        fact = MetricFact(
+            user_id=user_id,
+            stock_id=stock_id,
+            metric_key=payload["metric_key"],
+            value_numeric=payload.get("value_numeric"),
+            value_text=payload.get("value_text"),
+            value_json=payload.get("value_json"),
+            unit=payload.get("unit"),
+            currency=payload.get("currency"),
+            period_type=payload.get("period_type"),
+            period_end_date=payload.get("period_end_date"),
+            source_type="calculated",
+            source_ref_id=None,
+            source_document_id=None,
+            is_current=True,
+        )
+        self.db.add(fact)
+        self.db.flush()
+        return fact
+
+    def _start_value_line_parse_run(
+        self,
+        *,
+        user_id: int,
+        document_id: int,
+    ) -> ValueLineParseRun:
+        run = ValueLineParseRun(
+            user_id=user_id,
+            document_id=document_id,
+            parser_version="value-line-v1",
+            source_mapping_version=self.mapping_spec.source_mapping_version,
+            status="running",
+        )
+        self.db.add(run)
+        self.db.flush()
+        return run
+
+    def _finish_value_line_parse_run(
+        self,
+        run: ValueLineParseRun,
+        *,
+        status: str,
+    ) -> None:
+        if status not in {"succeeded", "failed"}:
+            raise ValueError("invalid Value Line parse-run terminal status")
+        run.status = status
+        self.db.add(run)
+        self.db.flush()
 
     @staticmethod
     def _report_date_from_extractions(extractions: list) -> Optional[date]:
@@ -911,6 +1180,7 @@ class IngestionService:
         period_end_date_is_derived: bool,
         source_ref_id: Optional[int],
         source_document_id: Optional[int],
+        value_line_parse_run_id: Optional[int] = None,
         value_type_override: Optional[str] = None,
         force_numeric: bool = False,
     ) -> None:
@@ -920,8 +1190,22 @@ class IngestionService:
             norm_val, norm_unit = Scaler.normalize(raw_value_text, value_type)
 
         value_json = self._build_value_json(parsed_value_json, raw_value_text, norm_val, norm_unit)
+        if value_line_parse_run_id is not None:
+            value_json = dict(value_json or {})
+            value_json.setdefault(
+                "source_mapping_version", self.mapping_spec.source_mapping_version
+            )
+            value_json.setdefault("definition_basis", "adjusted")
+            value_json.setdefault("dimensions_identity", "empty")
         value_text = raw_value_text if metric_key in self.NON_NUMERIC_KEYS else None
 
+        self._demote_document_parsed_slot(
+            stock_id=stock_id,
+            metric_key=metric_key,
+            period_type=period_type,
+            period_end_date=period_end_date,
+            source_document_id=source_document_id,
+        )
         insert_stmt = insert(MetricFact).values(
             user_id=user_id,
             stock_id=stock_id,
@@ -935,26 +1219,8 @@ class IngestionService:
             source_type="parsed",
             source_ref_id=source_ref_id,
             source_document_id=source_document_id,
+            value_line_parse_run_id=value_line_parse_run_id,
             is_current=True,
-        )
-        insert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=[
-                "stock_id",
-                "metric_key",
-                "period_type",
-                "period_end_date",
-                "source_document_id",
-            ],
-            set_={
-                "value_json": value_json,
-                "value_numeric": norm_val,
-                "value_text": value_text,
-                "unit": norm_unit,
-                "period_type": period_type,
-                "period_end_date": period_end_date,
-                "source_ref_id": source_ref_id,
-                "is_current": True,
-            },
         )
         self.db.execute(insert_stmt)
         self.db.flush()
@@ -975,10 +1241,27 @@ class IngestionService:
         value_text: Optional[str],
         value_json: Optional[dict],
         unit: Optional[str],
+        currency: Optional[str],
         period_type: Optional[str],
         period_end_date: Optional[date],
         source_document_id: Optional[int],
-    ) -> None:
+        value_line_parse_run_id: Optional[int] = None,
+        source_extraction_ids: tuple[int, ...] = (),
+    ) -> int:
+        if value_line_parse_run_id is not None:
+            value_json = dict(value_json or {})
+            value_json.setdefault(
+                "source_mapping_version", self.mapping_spec.source_mapping_version
+            )
+            value_json.setdefault("definition_basis", "adjusted")
+            value_json.setdefault("dimensions_identity", "empty")
+        self._demote_document_parsed_slot(
+            stock_id=stock_id,
+            metric_key=metric_key,
+            period_type=period_type,
+            period_end_date=period_end_date,
+            source_document_id=source_document_id,
+        )
         insert_stmt = insert(MetricFact).values(
             user_id=user_id,
             stock_id=stock_id,
@@ -987,32 +1270,36 @@ class IngestionService:
             value_numeric=value_numeric,
             value_text=value_text,
             unit=unit,
+            currency=currency,
             period_type=period_type,
             period_end_date=period_end_date,
             source_type="parsed",
             source_ref_id=None,
             source_document_id=source_document_id,
+            value_line_parse_run_id=value_line_parse_run_id,
             is_current=True,
         )
-        insert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=[
-                "stock_id",
-                "metric_key",
-                "period_type",
-                "period_end_date",
-                "source_document_id",
-            ],
-            set_={
-                "value_json": value_json,
-                "value_numeric": value_numeric,
-                "value_text": value_text,
-                "unit": unit,
-                "period_type": period_type,
-                "period_end_date": period_end_date,
-                "is_current": True,
-            },
-        )
-        self.db.execute(insert_stmt)
+        fact_id = self.db.execute(
+            insert_stmt.returning(MetricFact.id)
+        ).scalar_one()
+        if value_line_parse_run_id is not None and source_extraction_ids:
+            role = "primary" if len(source_extraction_ids) == 1 else "supporting"
+            self.db.add_all(
+                [
+                    ValueLineFactExtractionInput(
+                        fact_id=fact_id,
+                        extraction_id=extraction_id,
+                        value_line_parse_run_id=value_line_parse_run_id,
+                        input_role=role,
+                        input_ordinal=ordinal,
+                        created_txid=0,
+                    )
+                    for ordinal, extraction_id in enumerate(
+                        source_extraction_ids,
+                        start=1,
+                    )
+                ]
+            )
         self.db.flush()
         self._reconcile_parsed_fact_current_slot(
             stock_id=stock_id,
@@ -1020,6 +1307,53 @@ class IngestionService:
             period_type=period_type,
             period_end_date=period_end_date,
         )
+        return fact_id
+
+    @staticmethod
+    def _mapping_source_extraction_ids(
+        fact: dict,
+        *,
+        extraction_ids_by_key: dict[str, list[int]],
+    ) -> tuple[int, ...]:
+        declared = fact.get("source_extraction_keys")
+        if not isinstance(declared, (tuple, list)) or not declared:
+            return ()
+        if any(
+            not isinstance(key, str) or key not in extraction_ids_by_key
+            for key in declared
+        ):
+            return ()
+        return tuple(
+            extraction_id
+            for key in declared
+            for extraction_id in extraction_ids_by_key[key]
+        )
+
+    def _demote_document_parsed_slot(
+        self,
+        *,
+        stock_id: int,
+        metric_key: str,
+        period_type: Optional[str],
+        period_end_date: Optional[date],
+        source_document_id: Optional[int],
+    ) -> None:
+        if source_document_id is None:
+            return
+        self.db.execute(
+            update(MetricFact)
+            .where(
+                MetricFact.stock_id == stock_id,
+                MetricFact.metric_key == metric_key,
+                MetricFact.period_type == period_type,
+                MetricFact.period_end_date == period_end_date,
+                MetricFact.source_document_id == source_document_id,
+                MetricFact.source_type == "parsed",
+                MetricFact.is_current.is_(True),
+            )
+            .values(is_current=False)
+        )
+        self.db.flush()
 
     def _reconcile_parsed_fact_current_slot(
         self,

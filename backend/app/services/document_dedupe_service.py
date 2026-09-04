@@ -186,23 +186,6 @@ class DocumentDedupeService:
             )
             self.db.flush()
 
-            for (
-                slot_user_id,
-                slot_stock_id,
-                metric_key,
-                period_type,
-                period_end_date,
-                as_of_date,
-            ) in affected_slots:
-                self._reconcile_parsed_fact_current_slot(
-                    user_id=slot_user_id,
-                    stock_id=slot_stock_id,
-                    metric_key=metric_key,
-                    period_type=period_type,
-                    period_end_date=period_end_date,
-                    as_of_date=as_of_date,
-                )
-
             self._refresh_calculated_facts(affected_user_stock_pairs)
 
             self.db.commit()
@@ -278,23 +261,6 @@ class DocumentDedupeService:
             )
             self.db.execute(delete(PdfDocument).where(PdfDocument.id == document_id))
             self.db.flush()
-
-            for (
-                slot_user_id,
-                slot_stock_id,
-                metric_key,
-                period_type,
-                period_end_date,
-                as_of_date,
-            ) in affected_slots:
-                self._reconcile_parsed_fact_current_slot(
-                    user_id=slot_user_id,
-                    stock_id=slot_stock_id,
-                    metric_key=metric_key,
-                    period_type=period_type,
-                    period_end_date=period_end_date,
-                    as_of_date=as_of_date,
-                )
 
             affected_pairs = sorted(affected_user_stock_pairs)
             self._refresh_calculated_facts(affected_pairs)
@@ -374,82 +340,6 @@ class DocumentDedupeService:
                 user_id=affected_user_id,
                 stock_id=affected_stock_id,
             )
-
-    def _reconcile_parsed_fact_current_slot(
-        self,
-        *,
-        user_id: int,
-        stock_id: int,
-        metric_key: str,
-        period_type: Optional[str],
-        period_end_date: Optional[date],
-        as_of_date: Optional[date],
-    ) -> None:
-        facts = self.db.scalars(
-            select(MetricFact).where(
-                MetricFact.user_id == user_id,
-                MetricFact.stock_id == stock_id,
-                MetricFact.metric_key == metric_key,
-                MetricFact.source_type == "parsed",
-                MetricFact.period_type == period_type,
-                MetricFact.period_end_date == period_end_date,
-                MetricFact.as_of_date == as_of_date,
-            )
-        ).all()
-        if not facts:
-            return
-
-        manual_current_exists = self.db.scalar(
-            select(MetricFact.id)
-            .where(
-                MetricFact.user_id == user_id,
-                MetricFact.stock_id == stock_id,
-                MetricFact.metric_key == metric_key,
-                MetricFact.source_type == "manual",
-                MetricFact.period_type == period_type,
-                MetricFact.period_end_date == period_end_date,
-                MetricFact.as_of_date == as_of_date,
-                MetricFact.is_current.is_(True),
-            )
-            .limit(1)
-        )
-        if manual_current_exists is not None:
-            for fact in facts:
-                fact.is_current = False
-                self.db.add(fact)
-            self.db.flush()
-            return
-
-        doc_ids = sorted(
-            {
-                fact.source_document_id
-                for fact in facts
-                if fact.source_document_id is not None
-            }
-        )
-        report_dates_by_doc: dict[int, Optional[date]] = {}
-        if doc_ids:
-            report_dates_by_doc = dict(
-                self.db.execute(
-                    select(PdfDocument.id, PdfDocument.report_date).where(
-                        PdfDocument.id.in_(doc_ids)
-                    )
-                ).all()
-            )
-
-        winner = max(
-            facts,
-            key=lambda fact: (
-                report_dates_by_doc.get(fact.source_document_id or -1) or date.min,
-                fact.source_document_id or -1,
-                fact.id or -1,
-            ),
-        )
-        for fact in facts:
-            fact.is_current = fact.id == winner.id
-            self.db.add(fact)
-        self.db.flush()
-
 
 def _canonical_document(documents: list[PdfDocument]) -> PdfDocument:
     return max(

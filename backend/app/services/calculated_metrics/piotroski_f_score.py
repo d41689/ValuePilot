@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Iterable, Optional
 
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.facts import MetricFact
 from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
 from app.services.numeric_persistence import persist_numeric_38_12
+from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 CALCULATION_VERSION = "piotroski_value_line_v1"
@@ -26,6 +27,31 @@ COMPONENT_KEYS = [
     "score.piotroski.asset_turnover_improving",
 ]
 TOTAL_KEY = "score.piotroski.total"
+PIOTROSKI_INPUT_KEYS = frozenset(
+    {
+        "bs.current_assets",
+        "bs.current_liabilities",
+        "cap.long_term_debt",
+        "efficiency.asset_turnover",
+        "efficiency.capital_turnover",
+        "equity.shares_outstanding",
+        "ins.premium_turnover",
+        "ins.underwriting_margin",
+        "is.gross_margin",
+        "is.net_income",
+        "is.net_premiums_earned",
+        "is.operating_cash_flow",
+        "is.operating_margin",
+        "is.pc_premiums_earned",
+        "leverage.long_term_debt_to_assets",
+        "leverage.long_term_debt_to_capital",
+        "liquidity.current_ratio",
+        "per_share.cash_flow",
+        "per_share.eps",
+        "returns.roa",
+        "returns.total_capital",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -118,13 +144,21 @@ class PiotroskiFScoreCalculator:
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
+                MetricFact.metric_key.in_(PIOTROSKI_INPUT_KEYS),
                 or_(
                     and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
                     and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),
                 ),
             )
         ).all()
-        source_facts = guard_source_selection(source_facts, consumer="piotroski")
+        source_facts = guard_reconciled_source_selection(
+            source_facts,
+            consumer="piotroski",
+            knowledge_cutoff=datetime.now(timezone.utc),
+            session=self.db,
+            user_id=user_id,
+            selected_source_type="parsed",
+        )
         source_facts = guard_sec_run_availability(
             self.db, stock_id=stock_id, facts=source_facts
         )
@@ -504,6 +538,24 @@ def _total_fact(
     missing = [key for key in COMPONENT_KEYS if key not in available_keys]
     complete = not missing
     variant = "insurance_adjusted" if company_type == "insurance" else _total_variant(results)
+    lineage_inputs = sorted(
+        {
+            (
+                fact.id,
+                fact.metric_key,
+                fact.period_end_date,
+                fact.source_type,
+            ): fact
+            for result in results
+            for fact in result.inputs
+        }.values(),
+        key=lambda fact: (
+            fact.id if fact.id is not None else -1,
+            fact.metric_key,
+            fact.period_end_date,
+            fact.source_type or "",
+        ),
+    )
     value_json = {
         "status": "calculated" if complete else "partial",
         "variant": variant,
@@ -513,7 +565,8 @@ def _total_fact(
             {fact.source_type for result in results for fact in result.inputs if fact.source_type}
         ),
         "fiscal_year": period_end.year,
-        "inputs": [
+        "inputs": [_lineage_item(fact) for fact in lineage_inputs],
+        "components": [
             {"metric_key": result.metric_key, "value_numeric": float(result.value), "method": result.method}
             for result in results
         ],

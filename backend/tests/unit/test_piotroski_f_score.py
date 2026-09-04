@@ -1,4 +1,5 @@
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -9,6 +10,7 @@ from app.services.calculated_metrics.piotroski_f_score import (
     PiotroskiFScoreCalculator,
     build_piotroski_f_score_facts,
 )
+from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 def _fact(metric_key, value, period_end, *, fact_nature="actual", fact_id=1, source_type="parsed", period_type="FY"):
@@ -16,7 +18,10 @@ def _fact(metric_key, value, period_end, *, fact_nature="actual", fact_id=1, sou
         "id": fact_id,
         "metric_key": metric_key,
         "value_numeric": value,
-        "value_json": {"fact_nature": fact_nature},
+        "value_json": {
+            "fact_nature": fact_nature,
+            "fiscal_year": period_end.year,
+        },
         "period_type": period_type,
         "period_end_date": period_end,
         "source_type": source_type,
@@ -53,6 +58,11 @@ def test_build_piotroski_f_score_facts_calculates_complete_standard_total():
     assert by_key["score.piotroski.total"]["unit"] == "score_total"
     assert by_key["score.piotroski.total"]["value_json"]["status"] == "calculated"
     assert by_key["score.piotroski.total"]["value_json"]["variant"] == "standard"
+    assert {
+        item["fact_id"]
+        for item in by_key["score.piotroski.total"]["value_json"]["inputs"]
+    } == set(range(1, 15))
+    assert len(by_key["score.piotroski.total"]["value_json"]["components"]) == 9
     assert by_key["score.piotroski.roa_positive"]["value_json"]["method"] == "standard_roa"
     assert by_key["score.piotroski.roa_improving"]["value_json"]["method"] == "standard_roa"
 
@@ -344,3 +354,19 @@ def test_piotroski_calculator_inserts_current_calculated_facts(db_session, user_
     assert current_total.value_numeric == 9.0
     assert current_total.source_type == "calculated"
     assert current_total.value_json["calculation_version"] == "piotroski_value_line_v1"
+
+
+def test_piotroski_calculator_explicitly_selects_parsed_source():
+    db = MagicMock()
+    db.scalars.return_value.all.return_value = []
+
+    with patch(
+        "app.services.calculated_metrics.piotroski_f_score."
+        "guard_reconciled_source_selection",
+        wraps=guard_reconciled_source_selection,
+    ) as guard:
+        assert PiotroskiFScoreCalculator(db).calculate_for_stock(
+            user_id=17, stock_id=23
+        ) == []
+
+    assert guard.call_args.kwargs["selected_source_type"] == "parsed"

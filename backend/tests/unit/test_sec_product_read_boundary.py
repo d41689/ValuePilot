@@ -47,12 +47,23 @@ def test_shared_visibility_and_source_guard_are_wired_to_real_consumers():
     formula = (BACKEND / "app/services/formula_engine.py").read_text()
     ratios = (BACKEND / "app/services/calculated_metrics/value_line_ratios.py").read_text()
     piotroski = (BACKEND / "app/services/calculated_metrics/piotroski_f_score.py").read_text()
+    dcf = (BACKEND / "app/services/dcf_inputs.py").read_text()
+    lens = (BACKEND / "app/services/oracles_lens/dashboard.py").read_text()
+    workspace = (BACKEND / "app/services/research_workspace.py").read_text()
+    stock_pools = (BACKEND / "app/api/v1/endpoints/stock_pools.py").read_text()
     assert "visible_metric_fact_predicate" in stocks
-    assert "guard_source_selection" in stocks
-    assert "guard_source_selection" in screener
-    assert "guard_source_selection" in formula
-    assert "guard_source_selection" in ratios
-    assert "guard_source_selection" in piotroski
+    for source in (
+        stocks,
+        stock_pools,
+        screener,
+        formula,
+        ratios,
+        piotroski,
+        dcf,
+        lens,
+    ):
+        assert "guard_reconciled_source_selection" in source
+    assert "build_source_reconciliation_report_from_facts" in workspace
     assert "guard_sec_run_availability" in screener
     assert "guard_sec_run_availability" in formula
     assert "guard_sec_run_availability" in ratios

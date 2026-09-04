@@ -21,8 +21,6 @@ from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
     guard_sec_run_availability,
-    guard_source_selection,
-    partition_sec_run_availability,
     resolve_sec_publication_evidence,
     reviewed_method_gate,
     visible_metric_fact_predicate,
@@ -53,6 +51,12 @@ from app.services.market_data_service import (
     MarketDataService,
     read_current_eod_price,
     serialize_canonical_eod_price,
+)
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    build_source_reconciliation_report,
+    group_metric_facts_by_reconciliation_slot,
+    guard_reconciled_source_selection,
 )
 
 router = APIRouter()
@@ -356,6 +360,7 @@ def _build_piotroski_f_score_card(
     stock_id: int,
     *,
     current_user_id: int,
+    evaluated_at: datetime,
 ) -> dict[str, Any]:
     metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
     facts = session.scalars(
@@ -370,6 +375,54 @@ def _build_piotroski_f_score_card(
         )
         .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
     ).all()
+
+    if not facts:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": "piotroski_f_score_unavailable",
+                "blocking_reasons": [],
+            },
+        }
+
+    try:
+        facts = list(
+            guard_reconciled_source_selection(
+                facts,
+                consumer="stock_piotroski_card",
+                knowledge_cutoff=evaluated_at,
+                session=session,
+                user_id=current_user_id,
+            )
+        )
+    except CanonicalReconciliationError as error:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": error.code,
+                "blocking_reasons": sorted(
+                    {
+                        str(item.get("reason_code"))
+                        for item in error.blocking_items
+                        if item.get("reason_code")
+                    }
+                ),
+            },
+        }
+    except CanonicalSourceConflictError as error:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": error.code,
+                "blocking_reasons": ["explicit_source_selection_required"],
+            },
+        }
 
     by_key_year: dict[str, dict[int, MetricFact]] = {metric_key: {} for metric_key in metric_keys}
     years: list[int] = []
@@ -448,7 +501,15 @@ def _build_piotroski_f_score_card(
         }
     )
 
-    return {"years": display_years, "rows": rows}
+    return {
+        "years": display_years,
+        "rows": rows,
+        "state": {
+            "status": "available",
+            "reason_code": None,
+            "blocking_reasons": [],
+        },
+    }
 
 
 DCF_ASSUMPTION_FIELDS = frozenset({"source", "label", "model"})
@@ -940,12 +1001,18 @@ def read_stock_by_ticker(
         dcf_input_facts = universe.dcf_facts
         dcf_method_authority = universe.method_authority
         method_gate_decisions = universe.method_decisions
-    except CanonicalSourceConflictError as error:
+    except (CanonicalSourceConflictError, CanonicalReconciliationError) as error:
         dcf_input_facts = []
         canonical_input_status = {
             "status": "source_conflict",
             "reason_code": error.code,
-            "source_types": list(error.source_types),
+            "source_types": list(getattr(error, "source_types", ())),
+            "blocking_reasons": sorted(
+                {
+                    str(item.get("reason_code"))
+                    for item in getattr(error, "blocking_items", ())
+                }
+            ),
         }
     except CanonicalUnavailableError as error:
         canonical_input_status = error.state
@@ -999,24 +1066,41 @@ def read_stock_by_ticker(
         knowledge_at=dcf_evaluated_at,
     )
     try:
-        summary_facts = guard_source_selection(
+        summary_facts = guard_reconciled_source_selection(
             [*facts, *oeps_facts, *growth_facts],
             consumer="stock_summary",
+            knowledge_cutoff=dcf_evaluated_at,
+            session=session,
+            user_id=current_user.id,
         )
-        guard_sec_run_availability(
+        summary_facts = guard_sec_run_availability(
             session,
             stock_id=stock.id,
             facts=summary_facts,
         )
-    except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
+    except (
+        CanonicalSourceConflictError,
+        CanonicalUnavailableError,
+        CanonicalReconciliationError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": error.code,
                 "message": str(error),
                 "source_types": list(getattr(error, "source_types", ())),
+                "blocking_reasons": sorted(
+                    {
+                        str(item.get("reason_code"))
+                        for item in getattr(error, "blocking_items", ())
+                    }
+                ),
             },
         ) from error
+    guarded_summary_ids = {id(fact) for fact in summary_facts}
+    facts = [fact for fact in facts if id(fact) in guarded_summary_ids]
+    oeps_facts = [fact for fact in oeps_facts if id(fact) in guarded_summary_ids]
+    growth_facts = [fact for fact in growth_facts if id(fact) in guarded_summary_ids]
     facts_by_key: dict[str, MetricFact] = {}
     for fact in facts:
         current = facts_by_key.get(fact.metric_key)
@@ -1260,6 +1344,7 @@ def read_stock_by_ticker(
             session,
             stock.id,
             current_user_id=current_user.id,
+            evaluated_at=dcf_evaluated_at,
         ),
         "actual_conflict_count": len(actual_conflicts),
         "actual_conflicts": actual_conflicts,
@@ -1287,6 +1372,51 @@ def read_stock(
         "created_at": stock.created_at
     }
 
+
+@router.get("/{stock_id}/source-reconciliation", response_model=dict)
+def read_source_reconciliation(
+    stock_id: int,
+    session: SessionDep,
+    current_user: CurrentUser,
+    metric_key: list[str] | None = Query(default=None),
+    knowledge_cutoff: datetime | None = Query(default=None),
+) -> Any:
+    """Return the bounded comparison view without electing a source winner."""
+
+    if session.get(Stock, stock_id) is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    if metric_key is not None and len(metric_key) > 50:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "reconciliation_filter_limit_exceeded"},
+        )
+    cutoff = knowledge_cutoff or datetime.now(timezone.utc)
+    if cutoff.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "timezone_aware_knowledge_cutoff_required"},
+        )
+    request_clock = datetime.now(timezone.utc)
+    if cutoff > request_clock:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "future_knowledge_cutoff"},
+        )
+    try:
+        return build_source_reconciliation_report(
+            session,
+            user_id=current_user.id,
+            stock_id=stock_id,
+            knowledge_cutoff=cutoff,
+            metric_keys=metric_key,
+            historical_request=knowledge_cutoff is not None,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_reconciliation_request", "message": str(error)},
+        ) from error
+
 @router.get("/{stock_id}/facts", response_model=list[dict])
 def read_stock_facts(
     stock_id: int,
@@ -1310,15 +1440,79 @@ def read_stock_facts(
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
-    facts, _ = partition_sec_run_availability(
-        session, stock_id=stock_id, facts=facts
-    )
     facts, unsupported, _ = apply_reviewed_method_gates(
         session,
         stock_id=stock_id,
         facts=facts,
         effective_as_of=date.today(),
     )
+    evaluation_cutoff = datetime.now(timezone.utc)
+    facts_by_metric: dict[str, list[MetricFact]] = {}
+    for fact in facts:
+        facts_by_metric.setdefault(fact.metric_key, []).append(fact)
+
+    reconciled_facts: list[MetricFact] = []
+    reconciliation_states: list[dict[str, Any]] = []
+    slot_groups = [
+        slot
+        for metric_key in sorted(facts_by_metric)
+        for slot in group_metric_facts_by_reconciliation_slot(
+            session,
+            facts=facts_by_metric[metric_key],
+            user_id=current_user.id,
+            knowledge_cutoff=evaluation_cutoff,
+        )
+    ]
+    for slot_facts in slot_groups:
+        try:
+            reconciled_facts.extend(
+                guard_reconciled_source_selection(
+                    slot_facts,
+                    consumer="stock_facts",
+                    knowledge_cutoff=evaluation_cutoff,
+                    session=session,
+                    user_id=current_user.id,
+                )
+            )
+        except CanonicalReconciliationError as error:
+            reconciliation_states.append(
+                {
+                    "id": None,
+                    "status": "unavailable",
+                    "reason_code": error.code,
+                    "metric_key": slot_facts[0].metric_key,
+                    "value_numeric": None,
+                    "unit": None,
+                    "period": slot_facts[0].period_type,
+                    "period_end_date": slot_facts[0].period_end_date,
+                    "source_type": None,
+                    "source_types": list(error.source_types),
+                    "blocking_reasons": sorted(
+                        {
+                            str(item.get("reason_code"))
+                            for item in error.blocking_items
+                        }
+                    ),
+                    "evidence_route": None,
+                }
+            )
+        except CanonicalSourceConflictError as error:
+            reconciliation_states.append(
+                {
+                    "id": None,
+                    "status": "unavailable",
+                    "reason_code": error.code,
+                    "metric_key": slot_facts[0].metric_key,
+                    "value_numeric": None,
+                    "unit": None,
+                    "period": slot_facts[0].period_type,
+                    "period_end_date": slot_facts[0].period_end_date,
+                    "source_type": None,
+                    "source_types": list(error.source_types),
+                    "blocking_reasons": [],
+                    "evidence_route": None,
+                }
+            )
 
     published = [
         {
@@ -1336,9 +1530,14 @@ def read_stock_facts(
                 else None
             ),
         }
-        for f in facts
+        for f in reconciled_facts
     ]
-    return published + unsupported + current_sec_unresolved_states(session, stock_id=stock_id)
+    return (
+        published
+        + unsupported
+        + reconciliation_states
+        + current_sec_unresolved_states(session, stock_id=stock_id)
+    )
 
 
 @router.get("/{stock_id}/sec-publications/{publication_id}/evidence", response_model=dict)

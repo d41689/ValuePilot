@@ -251,10 +251,18 @@ Text Extraction Strategy (V1):
 - target_year_range (nullable; e.g. "2028-2030" for rolling projections)
 
 Correction Semantics (V1):
-- `parsed_value_json` stores the latest parsed value produced by the parser.
+- `parsed_value_json` stores the exact value produced in that immutable parser
+  revision; later reparses append a new revision rather than updating it.
 - When a user corrects a value:
   - The corrected value is written into `metric_facts` (source_type = manual).
   - The original extraction in `metric_extractions` is preserved for auditability.
+- The legacy extraction-level correction route may delegate only after the
+  extraction, parse run, source document/stock, and one canonical parsed fact
+  resolve exactly. Zero or multiple candidate facts return a typed conflict and
+  require fact/period selection; `field_key`, row order, and newest-row choice
+  are never substitutes for canonical identity.
+- `corrected_by_user` and `corrected_at` are retained legacy columns and are
+  read-only; a correction never mutates them or any other extraction field.
 - V1 does NOT overwrite historical parser output.
 
 UI & Query Semantics (V1):
@@ -1460,6 +1468,163 @@ does not approve a generic bank, insurer, REIT, high-SBC/acquisitive,
 cyclical/commodity, or valuation formula, and ordinary price volatility or beta
 cannot satisfy this gate.
 
+### H.10 Exact source reconciliation (FT-06)
+
+FT-06 is governed by `financial-source-reconciliation-v1` in the mapping spec.
+It compares eligible canonical `metric_facts` from SEC, Value Line, manual, and
+calculated roles. The result is a deterministic comparison/audit projection;
+it is not a second fact store, does not change any per-period `is_current` slot,
+and must not select a winning source.
+
+The authenticated stock reconciliation read accepts a bounded optional metric
+filter and a timezone-aware knowledge cutoff no later than the request time. It
+returns the policy ID, resolved mapping-policy digest, cutoff, exact ordered
+eligible fact IDs, typed exclusions, comparison items, and a deterministic
+report digest.
+Each comparison item includes only bounded canonical identity, source role,
+fact IDs, outcome/reason, blocking state, and Decimal variance/tolerance when
+variance is semantically eligible. It does not expose raw XBRL, proprietary
+snippets, internal storage keys/paths, file URLs, or another user's facts.
+
+Before variance, the service aligns the canonical definition and mapping
+identity, fiscal period/duration, dimensions, normalized base unit/scale,
+currency, fact nature, source identity and authorization, effective time, and
+knowledge cutoff. A mismatch that makes values non-comparable is
+`mapping_conflict` and has no numeric variance. A legacy owned parsed row whose
+document/mapping identity was not retained may remain visible as single-source
+data, but its identity is incomplete and it cannot establish a cross-source
+match. Actual-versus-estimate,
+as-filed-versus-adjusted, direct-versus-derived, and an explicit manual
+correction are separate typed definition relationships; their values are never
+treated as interchangeable merely because their metric key matches.
+
+For Value Line, source-mapping identity is the canonical digest of the fully
+resolved mapping policy: `metric_facts_mapping_spec.yml` after applying the
+semantic inputs in `value_line_field_taxonomy.yml`, with both source documents
+included in the canonical serialization. Every generated parsed fact persists
+that immutable digest in `source_mapping_version`, and the reconciliation
+report includes the same resolved-policy digest. A taxonomy or mapping change
+MUST therefore change identity even when a human forgets to increment the
+display version; neither file may silently reinterpret already-persisted
+facts.
+
+PostgreSQL owns the approved Value Line mapping identity. A reviewed migration
+seeds the immutable approved-policy registry; application DML cannot register,
+change, or remove a policy. Every later parse run references an approved policy
+row, and every new parsed fact and extraction must reference that same creating
+run. Database triggers copy the run's mapping identity into fact JSON only as
+an audit aid; reconciliation trusts the run-to-registry relation, never the
+caller-controlled JSON copy. A mapping or taxonomy semantic change therefore
+requires an explicit reviewed migration that registers the newly resolved
+digest before ingestion may use it. A deployed mapping digest that does not
+exactly match an approved registry row makes the whole reconciliation report
+typed policy-unavailable. The service does not fall back to a superseded row or
+to mutable mapping files.
+
+Every newly generated Value Line fact and extraction is bound to one durable
+parse-run identity containing the parser and resolved source-mapping versions.
+When the resolved mapping declares exact `source_extraction_keys`, that
+many-to-many provenance is recorded in the append-only
+`value_line_fact_extraction_inputs` manifest. Each link names its creating run,
+role (`primary` or `supporting`), and stable ordinal; PostgreSQL requires the
+fact, extraction, document, owner, run, and creating transaction to agree.
+Links cannot be added after the run transaction or changed after insertion.
+`metric_facts.source_ref_id` is not parsed-fact lineage authority.
+One extraction may support multiple period facts and one fact may depend on
+multiple extractions; a manual correction may cite an extraction only when the
+manifest identifies exactly one primary canonical input. Otherwise the
+correction and review surface return a typed review-required state rather than
+guessing from a field name or row order.
+
+The run, its extraction rows, and its parsed facts are created and finalized in
+one transaction. A successful reparse appends a new immutable extraction/fact
+revision and demotes only current parsed rows in the same stock, canonical key,
+period, and parsed-source slot. It never deletes or rewrites prior extraction
+history. Missing output is not deletion authority: if any company page cannot
+complete, the entire reparse revision rolls back, including document metadata,
+new rows, calculated outputs, and every currentness change. The prior current
+revision remains intact. Reparses of the same document are serialized.
+
+A document-review correction appends a `manual` fact and demotes only the prior
+current `manual` fact in the same user, stock, canonical key, and exact period
+slot. It never demotes parsed, SEC, or calculated facts. Repeated corrections
+remain immutable history while a partial unique current-slot constraint closes
+the concurrent-write window for the manual role.
+
+The migration database-stamps pre-existing parsed rows with an immutable legacy
+marker; callers cannot forge that marker on later inserts. A run-bound fact or
+extraction cannot change its run, provenance, identity, or value after insert;
+a fact may only be demoted from current with its update timestamp. Legacy or
+otherwise runless parsed rows remain readable for single-source continuity but
+are comparison-identity-incomplete. A schema downgrade MUST refuse before any
+DDL or data change when parse-run history cannot be represented by the old
+schema; it never deletes retained revisions to make downgrade succeed.
+
+The approved outcomes are `match`, `expected_definition_difference`,
+`restatement`, `mapping_conflict`, and `unresolved`. Tolerance uses Decimal
+arithmetic only to identify a bounded match and prioritize review. It never
+rewrites either fact, hides a material difference, or authorizes source
+selection. Ambiguous current duplicates, missing derived/manual lineage,
+material same-definition differences, or an otherwise unclassifiable
+comparison are `unresolved`. Single-source coverage is a visible non-blocking
+`unresolved` comparison state rather than evidence that a cross-source check
+passed.
+
+Eligibility is point-in-time and permission aware. A fact, source document,
+canonical publication, mapping/policy version, derived input, and applicable
+authorization must be known/effective and visible by the cutoff. Post-cutoff,
+retired, unauthorized, cross-stock, cross-user, or unverifiable evidence is
+excluded with a typed reason. Today's mutable non-SEC `is_current` projection
+must not be relabeled as historical when its cutoff state cannot be proven. A
+requested historical cutoff therefore returns the visible comparison as
+`partial` with `historical_current_projection_unverifiable`, rather than a
+false claim of complete PIT reconstruction.
+
+An unresolved SEC amendment state is likewise evaluated at the requested
+cutoff: mapping/run authority, publication availability, audit knowledge,
+filing/parse knowledge, and any later successful resolution must all have been
+available by that cutoff. A later amendment failure or recovery MUST NOT alter
+an earlier replay.
+
+Consumer checks expand deterministic/manual lineage recursively and inspect
+every current, tenant-visible, authorized candidate in each canonical input
+slot reached by that lineage. The closure is bounded and cycle-safe. A later
+current competitor can therefore invalidate a previously calculated output;
+recording only the originally selected input IDs is not proof that the slot is
+still unambiguous, and a current calculated fact whose recorded input has been
+superseded is unavailable until recalculated. Slot identity is materialized
+from the canonical mapping and source-authority contracts, never reconstructed
+from raw `value_json` fields or date heuristics. Evidence not known/effective
+by the requested cutoff is not a competitor for that replay.
+
+Formula, ratio, Piotroski, screener, research, workspace, and other fundamental
+consumers continue to read values only from `metric_facts`. A consumer may
+request one source role when its own contract permits that role, but the
+selection is explicit and cannot bypass a blocking `mapping_conflict` or
+`unresolved` comparison for the same canonical slot. Without explicit source
+selection, mixed source roles remain a typed `source_conflict`; even a `match`
+does not invent a global source winner. Query order, dictionary overwrite,
+highest row ID, newest row, or tolerance is never source authority.
+
+Value Line ratio and Piotroski generation explicitly select the `parsed` role
+only after the shared guard evaluates each complete input slot. SEC presence or
+an expected SEC-versus-Value-Line definition difference therefore does not
+silently replace the Value Line input, while an unresolved conflict still
+blocks calculation. Original manual inputs and manual corrections are not
+silently substituted into these automated Value Line calculations; adopting a
+reviewed correction requires a separate explicit consumer policy.
+
+The research workspace emits numeric fundamentals and Piotroski history only
+from guard-returned eligible facts. A blocked slot is replaced by a typed
+`unavailable / unresolved_source_reconciliation` state without its numeric
+value; unaffected slots remain visible. If the global fact bound is exceeded,
+the workspace returns `partial / reconciliation_bound_exceeded` and no numeric
+prefix, because a truncated prefix cannot prove any omitted slot safe.
+
+Market-price authority, user intrinsic-value publication, valuation methods,
+industry/economic applicability, new acquisition rights, and evidence
+retirement/account erasure remain outside FT-06.
+
 ---
 
 ## Appendix A: Metric Keys & Mapping Contracts (V1)
@@ -1474,7 +1639,11 @@ The authoritative mapping and metric semantics live in:
 docs/metric_facts_mapping_spec.yml
 ```
 
-This mapping spec MUST be treated as versioned contract code. If PRD text and the mapping spec diverge on metric semantics, the mapping spec wins (see §A).
+This mapping spec MUST be treated as versioned contract code. Its declared
+`value_line_field_taxonomy.yml` semantic inputs are resolved into that contract
+and have no independent precedence or identity. If PRD text and the fully
+resolved mapping policy diverge on metric semantics, the resolved mapping
+policy wins (see §A).
 
 ### A.2 Metric Key Naming (Canonical)
 
@@ -1497,7 +1666,9 @@ This mapping spec MUST be treated as versioned contract code. If PRD text and th
 - Ingestion builds a stable page JSON payload and maps it to `metric_facts.metric_key` via `docs/metric_facts_mapping_spec.yml`.
 
 Legacy note:
-- Earlier drafts referenced a `value_line_v1_field_map.json` approach. This is deprecated for v0.1; do not introduce new metric semantics outside the mapping spec.
+- Earlier drafts referenced a `value_line_v1_field_map.json` approach. This is
+  deprecated for v0.1; do not introduce new metric semantics outside the
+  mapping spec or its explicitly declared, digest-bound semantic inputs.
 ---
 
 ## Appendix B: Normalization Layer Specification (V1)

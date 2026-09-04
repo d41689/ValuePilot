@@ -7,14 +7,13 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func
 import yaml
-from app.models.artifacts import DocumentPage
+from app.models.artifacts import DocumentPage, ValueLineFactExtractionInput
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.api.deps import SessionDep, CurrentUser
-from app.ingestion.normalization.scaler import Scaler
 from app.ingestion.parsers.v1_value_line.evidence import parse_rating_event_notes
 from app.ingestion.parsers.v1_value_line.page_json import (
     _build_annual_financials as _build_value_line_annual_financials,
@@ -31,8 +30,10 @@ from app.services.active_report_resolver import resolve_active_reports
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
 from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
-from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
-from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
+from app.services.manual_metric_correction import (
+    ManualMetricCorrectionError,
+    create_manual_metric_correction,
+)
 from app.models.artifacts import PdfDocument
 
 router = APIRouter()
@@ -657,64 +658,24 @@ def correct_document_review_fact(
     unit_hint = payload.get("unit")
     note = payload.get("note")
 
-    value_numeric, normalized_unit, value_text = _normalize_review_correction(
-        raw_text=raw_text,
-        unit_hint=str(unit_hint).strip() if unit_hint else None,
-        fact=fact,
-    )
-    if value_numeric is None and value_text is None:
+    try:
+        manual_fact = create_manual_metric_correction(
+            session,
+            user_id=current_user.id,
+            source_fact=fact,
+            raw_value=raw_text,
+            unit_hint=str(unit_hint).strip() if unit_hint else None,
+            note=str(note) if note else None,
+        )
+    except ManualMetricCorrectionError as exc:
         raise HTTPException(
-            status_code=400,
+            status_code=(409 if exc.code == "correction_lineage_unavailable" else 400),
             detail={
-                "value": "Correction value could not be normalized",
+                "code": exc.code,
+                "value": exc.message,
                 "metric_key": fact.metric_key,
             },
-        )
-
-    session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == current_user.id,
-            MetricFact.stock_id == fact.stock_id,
-            MetricFact.metric_key == fact.metric_key,
-            MetricFact.period_type == fact.period_type,
-            MetricFact.period_end_date == fact.period_end_date,
-            MetricFact.as_of_date == fact.as_of_date,
-            MetricFact.is_current.is_(True),
-        )
-        .values(is_current=False)
-    )
-
-    value_json = {
-        "raw": raw_text,
-        "correction": True,
-        "corrected_from_fact_id": fact.id,
-    }
-    if note:
-        value_json["note"] = str(note)
-
-    manual_fact = MetricFact(
-        user_id=current_user.id,
-        stock_id=fact.stock_id,
-        metric_key=fact.metric_key,
-        value_json=value_json,
-        value_numeric=value_numeric,
-        value_text=value_text,
-        unit=normalized_unit or fact.unit,
-        currency=fact.currency,
-        period=fact.period,
-        period_type=fact.period_type,
-        period_end_date=fact.period_end_date,
-        as_of_date=fact.as_of_date,
-        source_document_id=doc.id,
-        source_type="manual",
-        source_ref_id=fact.source_ref_id,
-        is_current=True,
-    )
-    session.add(manual_fact)
-    session.flush()
-    ValueLineRatioCalculator(session).calculate_for_stock(user_id=current_user.id, stock_id=fact.stock_id)
-    PiotroskiFScoreCalculator(session).calculate_for_stock(user_id=current_user.id, stock_id=fact.stock_id)
+        ) from exc
     session.commit()
     session.refresh(manual_fact)
 
@@ -848,7 +809,34 @@ def _document_review_lineage_by_fact_id(
     doc: PdfDocument,
     facts: list[MetricFact],
 ) -> dict[int, MetricExtraction]:
-    source_ref_ids = sorted({fact.source_ref_id for fact in facts if fact.source_ref_id is not None})
+    fact_ids = sorted({fact.id for fact in facts})
+    manifest_lineage: dict[int, MetricExtraction] = {}
+    if fact_ids:
+        manifest_rows = session.execute(
+            select(ValueLineFactExtractionInput.fact_id, MetricExtraction)
+            .join(
+                MetricExtraction,
+                MetricExtraction.id == ValueLineFactExtractionInput.extraction_id,
+            )
+            .where(
+                ValueLineFactExtractionInput.fact_id.in_(fact_ids),
+                ValueLineFactExtractionInput.input_role == "primary",
+                MetricExtraction.user_id == doc.user_id,
+                MetricExtraction.document_id == doc.id,
+            )
+        ).all()
+        manifest_lineage = {
+            int(fact_id): extraction for fact_id, extraction in manifest_rows
+        }
+
+    source_ref_ids = sorted(
+        {
+            fact.source_ref_id
+            for fact in facts
+            if fact.source_ref_id is not None
+            and (fact.source_type != "parsed" or fact.value_line_legacy_revision)
+        }
+    )
     by_extraction_id = {}
     if source_ref_ids:
         extractions = session.scalars(
@@ -871,6 +859,11 @@ def _document_review_lineage_by_fact_id(
 
     lineage: dict[int, MetricExtraction] = {}
     for fact in facts:
+        if fact.id in manifest_lineage:
+            lineage[fact.id] = manifest_lineage[fact.id]
+            continue
+        if fact.source_type == "parsed" and not fact.value_line_legacy_revision:
+            continue
         if fact.source_ref_id in by_extraction_id:
             lineage[fact.id] = by_extraction_id[fact.source_ref_id]
             continue
@@ -1305,44 +1298,6 @@ def _document_review_fact_belongs_to_document(
         and extraction.user_id == doc.user_id
         and extraction.document_id == doc.id
     )
-
-
-def _normalize_review_correction(
-    *,
-    raw_text: str,
-    unit_hint: Optional[str],
-    fact: MetricFact,
-) -> tuple[Optional[float], Optional[str], Optional[str]]:
-    value_type = _document_review_value_type(fact)
-    if value_type == "text":
-        return None, fact.unit, raw_text
-
-    normalization_input = raw_text
-    if unit_hint and unit_hint.lower() not in raw_text.lower():
-        normalization_input = f"{raw_text} {unit_hint}"
-    value_numeric, normalized_unit = Scaler.normalize(normalization_input, value_type)
-    return value_numeric, normalized_unit, None
-
-
-def _document_review_value_type(fact: MetricFact) -> str:
-    metric_key = (fact.metric_key or "").lower()
-    unit = (fact.unit or "").lower()
-    if fact.value_numeric is None and unit not in {"usd", "ratio", "number", "shares"}:
-        return "text"
-    if unit == "usd" or any(
-        token in metric_key
-        for token in ["price", "market_cap", "debt", "sales", "revenue", "cash", "earnings", "income", "dividend"]
-    ):
-        return "currency"
-    if unit == "ratio":
-        if "%" in str(fact.value_json or "") or any(
-            token in metric_key for token in ["yield", "pct", "percent", "margin", "cagr", "rate"]
-        ):
-            return "percent"
-        return "ratio"
-    if any(token in metric_key for token in ["yield", "pct", "percent", "margin", "cagr"]):
-        return "percent"
-    return "number"
 
 
 def _document_stock_ids(session: SessionDep, doc: PdfDocument) -> set[int]:

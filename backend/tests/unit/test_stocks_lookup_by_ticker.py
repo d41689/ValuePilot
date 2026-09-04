@@ -1,7 +1,5 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import update
-
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock, StockPrice
@@ -55,22 +53,39 @@ def _piotroski_fact(
     year: int,
     value: float | None,
     value_json: dict | None = None,
+    lineage_fact_id: int | None = None,
 ) -> MetricFact:
+    metadata = value_json or {
+        "status": "calculated",
+        "variant": "valueline_proxy",
+        "fact_nature": (
+            "estimate"
+            if metric_key == "score.piotroski.roa_positive" and year == 2026
+            else "actual"
+        ),
+        "fiscal_year": year,
+    }
+    if lineage_fact_id is not None:
+        inputs = metadata.setdefault(
+            "inputs",
+            [
+                {
+                    "metric_key": f"{metric_key}.input",
+                    "value_numeric": value,
+                    "period_end_date": f"{year}-12-31",
+                    "fact_nature": "actual",
+                }
+            ],
+        )
+        for item in inputs:
+            if isinstance(item, dict):
+                item.setdefault("fact_id", lineage_fact_id)
     return MetricFact(
         user_id=user_id,
         stock_id=stock_id,
         metric_key=metric_key,
         value_numeric=value,
-        value_json=value_json or {
-            "status": "calculated",
-            "variant": "valueline_proxy",
-                            "fact_nature": (
-                                "estimate"
-                                if metric_key == "score.piotroski.roa_positive" and year == 2026
-                                else "actual"
-                            ),
-            "fiscal_year": year,
-        },
+        value_json=metadata,
         unit="score_component" if metric_key != "score.piotroski.total" else "score_total",
         period_type="FY",
         period_end_date=date(year, 12, 31),
@@ -86,7 +101,33 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     stock = Stock(ticker="FSC_TEST", exchange="NYSE", company_name="F SCORE INC", is_active=True)
     other_stock = Stock(ticker="OTHER_FS", exchange="NYSE", company_name="OTHER SCORE", is_active=True)
     db_session.add_all([user, stock, other_stock])
-    db_session.commit()
+    db_session.flush()
+    lineage_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="piotroski.test_input",
+        value_numeric=1,
+        value_json={"manual_role": "original_input"},
+        unit="ratio",
+        period_type="AS_OF",
+        period_end_date=date(2026, 12, 31),
+        source_type="manual",
+        is_current=True,
+    )
+    other_lineage_fact = MetricFact(
+        user_id=user.id,
+        stock_id=other_stock.id,
+        metric_key="piotroski.test_input",
+        value_numeric=1,
+        value_json={"manual_role": "original_input"},
+        unit="ratio",
+        period_type="AS_OF",
+        period_end_date=date(2026, 12, 31),
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add_all([lineage_fact, other_lineage_fact])
+    db_session.flush()
 
     years = [2022, 2023, 2024, 2025, 2026]
     component_values = {
@@ -110,6 +151,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                     metric_key=metric_key,
                     year=year,
                     value=float(value),
+                    lineage_fact_id=lineage_fact.id,
                     value_json={
                         "status": "calculated",
                         "variant": "valueline_proxy",
@@ -143,6 +185,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
                 metric_key="score.piotroski.total",
                 year=year,
                 value=float(value),
+                lineage_fact_id=lineage_fact.id,
             )
         )
     facts.append(
@@ -152,6 +195,7 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
             metric_key="score.piotroski.total",
             year=2026,
             value=2.0,
+            lineage_fact_id=other_lineage_fact.id,
         )
     )
     db_session.add_all(facts)
@@ -220,6 +264,47 @@ def test_lookup_stock_by_ticker_returns_dynamic_piotroski_card_from_current_stoc
     assert rows_by_key["score.piotroski.total"]["formula_details"]["used_values"] == []
 
 
+def test_lookup_stock_by_ticker_hides_piotroski_card_when_exact_lineage_is_missing(
+    client, db_session, auth_headers
+):
+    user = User(email="ticker-f-score-missing-lineage@example.com")
+    stock = Stock(
+        ticker="FSC_NO_LINEAGE",
+        exchange="NYSE",
+        company_name="F SCORE NO LINEAGE INC",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    db_session.add(
+        _piotroski_fact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="score.piotroski.total",
+            year=2025,
+            value=9.0,
+        )
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/FSC_NO_LINEAGE",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    card = response.json()["piotroski_f_score_card"]
+    assert card == {
+        "years": [],
+        "rows": [],
+        "state": {
+            "status": "unavailable",
+            "reason_code": "unresolved_source_reconciliation",
+            "blocking_reasons": ["derived_lineage_unavailable"],
+        },
+    }
+
+
 def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers):
     user = User(email="ticker_lookup@example.com")
     stock = Stock(ticker="COCO_TEST", exchange="NDQ", company_name="VITA COCO", is_active=True)
@@ -238,8 +323,7 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
     db_session.add(doc)
     db_session.commit()
 
-    db_session.add_all(
-        [
+    facts = [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -744,7 +828,15 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
                 is_current=True,
             ),
         ]
-    )
+    for fact in facts:
+        fact.source_document_id = doc.id
+        if fact.metric_key in {
+            "per_share.eps",
+            "is.depreciation",
+            "per_share.capital_spending",
+        }:
+            fact.currency = "USD"
+    db_session.add_all(facts)
     db_session.add(
         StockPrice(
             stock_id=stock.id,
@@ -760,30 +852,6 @@ def test_lookup_stock_by_ticker_returns_summary(client, db_session, auth_headers
         )
     )
     db_session.flush()
-    db_session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == user.id,
-            MetricFact.stock_id == stock.id,
-            MetricFact.source_type == "parsed",
-        )
-        .values(source_document_id=doc.id)
-    )
-    db_session.execute(
-        update(MetricFact)
-        .where(
-            MetricFact.user_id == user.id,
-            MetricFact.stock_id == stock.id,
-            MetricFact.metric_key.in_(
-                [
-                    "per_share.eps",
-                    "is.depreciation",
-                    "per_share.capital_spending",
-                ]
-            ),
-        )
-        .values(currency="USD")
-    )
     db_session.commit()
 
     response = client.get(
@@ -1635,7 +1703,18 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     user = User(email="ticker_lookup_revenues@example.com")
     stock = Stock(ticker="REV_TEST", exchange="NDQ", company_name="REVENUES INC", is_active=True)
     db_session.add_all([user, stock])
-    db_session.commit()
+    db_session.flush()
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="revenues.pdf",
+        source="value_line",
+        file_storage_key="/tmp/revenues.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(doc)
+    db_session.flush()
 
     db_session.add_all(
         [
@@ -1650,6 +1729,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 period_end_date=date(2026, 1, 9),
                 source_type="parsed",
                 source_ref_id=None,
+                source_document_id=doc.id,
                 is_current=True,
             ),
             MetricFact(
@@ -1663,6 +1743,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 period_end_date=date(2026, 1, 9),
                 source_type="parsed",
                 source_ref_id=None,
+                source_document_id=doc.id,
                 is_current=True,
             ),
             MetricFact(
@@ -1676,6 +1757,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
                 period_end_date=date(2026, 1, 9),
                 source_type="parsed",
                 source_ref_id=None,
+                source_document_id=doc.id,
                 is_current=True,
             ),
         ]
@@ -1696,10 +1778,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 11.0,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
+                "source_document_id": doc.id,
+                "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                "is_active_report": True,
             },
         },
         {
@@ -1708,10 +1790,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 7.5,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
+                "source_document_id": doc.id,
+                "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                "is_active_report": True,
             },
         },
         {
@@ -1720,10 +1802,10 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "value": 5.0,
             "provenance": {
                 "source_type": "parsed",
-                "source_document_id": None,
-                "source_report_date": None,
+                "source_document_id": doc.id,
+                "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
-                "is_active_report": False,
+                "is_active_report": True,
             },
         },
     ]
@@ -1840,7 +1922,62 @@ def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_summary_agg
             "available sources: manual, parsed"
         ),
         "source_types": ["manual", "parsed"],
+        "blocking_reasons": [],
     }
+
+
+def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_cutoff(
+    client, db_session, auth_headers, monkeypatch
+):
+    user = User(email="ticker-post-cutoff@example.com")
+    stock = Stock(
+        ticker="POST_CUTOFF",
+        exchange="NYSE",
+        company_name="POST CUTOFF INC",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="val.pe",
+            value_numeric=99,
+            value_json={
+                "mapping_id": "value-line.val.pe",
+                "source_mapping_version": "value-line-spec-v2",
+                "definition_basis": "adjusted",
+                "dimensions_identity": "empty",
+            },
+            unit="ratio",
+            period_type="AS_OF",
+            period_end_date=date(2099, 9, 4),
+            source_type="parsed",
+            is_current=True,
+            created_at=datetime(2099, 9, 4, 13, tzinfo=timezone.utc),
+            updated_at=datetime(2099, 9, 4, 13, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "dcf_evaluation_clock",
+        lambda: DcfEvaluationClock(
+            datetime(2099, 9, 4, 12, tzinfo=timezone.utc),
+            date(2099, 9, 4),
+        ),
+    )
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/POST_CUTOFF",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["pe"] is None
+    assert payload["pe_provenance"] is None
 
 
 def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_growth_aggregation(

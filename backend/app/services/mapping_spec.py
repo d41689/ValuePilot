@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from calendar import monthrange
+import hashlib
+import json
 from pathlib import Path
 import logging
 import re
@@ -10,11 +12,16 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
+from app.core.currencies import normalize_iso4217_currency
+
 
 LOGGER = logging.getLogger(__name__)
 
 METRIC_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
 TOKEN_RE = re.compile(r"^(?P<key>.+?)(?P<list>\[\])?$")
+VALUE_LINE_MAPPING_SPEC_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mapping_spec.yml"
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,17 @@ class MappingSpec:
         self.spec = spec
         self.taxonomy = taxonomy or {}
         self.mappings = spec.get("mappings", [])
+        canonical_policy = json.dumps(
+            {"resolved_mapping_spec": self.spec, "taxonomy": self.taxonomy},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        self.mapping_policy_sha256 = hashlib.sha256(canonical_policy).hexdigest()
+        self.source_mapping_version = (
+            f"value-line-resolved-v{self.spec.get('version', 'unknown')}:"
+            f"{self.mapping_policy_sha256}"
+        )
 
     @classmethod
     def load(cls, path: Path, taxonomy_path: Optional[Path] = None) -> "MappingSpec":
@@ -68,6 +86,21 @@ class MappingSpec:
                 if period_end_date is None and period_type in {"FY", "Q", "EVENT", "AS_OF"}:
                     # Skip facts that require a concrete date but none is available.
                     continue
+                value_json = dict(value_json or {})
+                value_json.setdefault("mapping_id", str(mapping.get("id") or ""))
+                value_json.setdefault(
+                    "source_mapping_version",
+                    self.source_mapping_version,
+                )
+                value_json.setdefault("definition_basis", "adjusted")
+                value_json.setdefault("dimensions_identity", "empty")
+                fiscal_year = _parse_year(
+                    match.context.get("calendar_year") or match.context.get("key")
+                )
+                if period_type in {"FY", "PROJ_FY"} and fiscal_year is not None:
+                    value_json.setdefault("fiscal_year", fiscal_year)
+                    value_json.setdefault("period_duration_kind", "fiscal_year")
+                currency = _source_currency(mapping, page_json, unit)
                 facts.append(
                     {
                         "metric_key": metric_key,
@@ -75,12 +108,45 @@ class MappingSpec:
                         "value_text": value_text,
                         "value_json": value_json,
                         "unit": unit,
+                        "currency": currency,
                         "period_type": period_type,
                         "period_end_date": period_end_date,
+                        "source_extraction_keys": tuple(
+                            mapping.get("source_extraction_keys") or ()
+                        ),
                     }
                 )
         unmapped = _unmapped_paths(page_json, used_paths)
         return facts, used_paths, unmapped
+
+
+def load_resolved_value_line_mapping_spec() -> MappingSpec:
+    """Load the deployed, fully resolved policy without process-lifetime cache.
+
+    The mapping and taxonomy files form a deployable authority unit.  Reloading
+    them for each ingestion/report boundary ensures a warm worker cannot keep
+    accepting an obsolete digest after either file changes.
+    """
+
+    return MappingSpec.load(VALUE_LINE_MAPPING_SPEC_PATH)
+
+
+def _source_currency(
+    mapping: dict[str, Any],
+    root: dict[str, Any],
+    normalized_unit: str | None,
+) -> str | None:
+    if normalized_unit not in {"USD", "USD_per_share", "currency", "currency_per_share"}:
+        return None
+    reported = normalize_iso4217_currency(
+        _resolve_path(root, "annual_financials.meta.currency")
+    )
+    if reported is not None:
+        return reported
+    declared_unit = str(mapping.get("unit") or "")
+    if declared_unit in {"USD", "USD_millions", "USD_per_share"}:
+        return "USD"
+    return None
 
 
 def _iter_matches(root: dict[str, Any], json_path: str) -> Iterable[MappingMatch]:

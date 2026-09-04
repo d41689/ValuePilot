@@ -18,6 +18,148 @@
 
 version: 2
 
+# FT-06 compares canonical facts; it does not replace them or rank their
+# sources. This policy is separate from the source-specific publication
+# mappings. Variance is eligible only after every identity field aligns.
+# The immutable Value Line source-mapping identity is a canonical digest of
+# this resolved file plus value_line_field_taxonomy.yml semantic inputs.
+source_reconciliation:
+  versions:
+    - id: financial-source-reconciliation-v1
+      status: approved
+      known_at: "2026-09-04T00:00:00Z"
+      effective_from: "2026-09-04T00:00:00Z"
+      source_precedence: none
+      fact_store: metric_facts
+      result_role: comparison_audit_projection
+      decimal_arithmetic: required
+      canonical_definition_version: canonical-financial-definitions-v1
+      source_mapping_identity_required: true
+      source_roles:
+        sec: [primary_as_filed_actual, primary_as_filed_derived_actual]
+        parsed: [value_line_adjusted_actual, value_line_estimate]
+        manual: [user_manual_correction]
+        calculated: [deterministic_derived]
+      fact_natures: [actual, estimate, derived_actual, manual]
+      comparison_identity:
+        align_before_variance:
+          - canonical_definition
+          - mapping_version
+          - fiscal_period_and_duration
+          - dimensions
+          - normalized_unit_and_scale
+          - monetary_currency
+          - fact_nature
+          - source_identity_and_authorization
+          - effective_time
+          - knowledge_cutoff
+        period_bucket:
+          fiscal: metric_key_fiscal_year_and_quarter_ordinal
+          as_of: metric_key_and_exact_period_end_date
+        fiscal_duration_identity:
+          fiscal_year:
+            value_line_authority: source_column_mapped_as_fy_with_fiscal_year
+            sec_authority: approved_sec_publication_mapped_as_fy
+            exact_start_and_day_count: optional_audit_detail
+            sufficient_for_alignment: true
+          inferred_start_or_fixed_365_day_duration: prohibited
+          non_fy_missing_exact_duration_outcome: mapping_conflict
+        empty_dimensions_identity: empty
+        missing_identity_outcome: mapping_conflict
+      unit_equivalence:
+        currency: [currency, USD]
+        currency_per_share: [currency_per_share, USD_per_share]
+        shares: [shares]
+        ratio: [ratio, percent]
+        exact_scale_required: normalized_base_unit
+        fx_conversion: prohibited
+      definition_relationships:
+        sec_vs_value_line:
+          left_basis: as_filed
+          right_basis: adjusted
+          unequal_value_outcome: expected_definition_difference
+          reason_code: as_filed_vs_adjusted
+        direct_vs_derived:
+          derived_lineage: exact_fact_ids_required
+          outcome: expected_definition_difference
+          reason_code: direct_vs_derived
+        manual_correction:
+          correction_lineage: exact_fact_id_required
+          outcome: expected_definition_difference
+          reason_code: explicit_manual_correction
+        actual_vs_estimate:
+          variance: prohibited
+          outcome: expected_definition_difference
+          reason_code: actual_vs_estimate
+      tolerance:
+        absolute: '0.000001'
+        relative: '0.000001'
+        purpose: review_prioritization_only
+        source_selection: prohibited
+      outcomes:
+        - match
+        - expected_definition_difference
+        - restatement
+        - mapping_conflict
+        - unresolved
+      consumer_gate:
+        unresolved_conflict: fail_closed
+        mapping_conflict: fail_closed
+        caller_selected_source_bypass: prohibited
+        dictionary_or_query_order_precedence: prohibited
+        matched_source_auto_winner: prohibited
+        raw_fact_json_slot_grouping: prohibited
+        canonical_slot_grouping: resolved_candidate_identity_required
+        derived_lineage_competitor_closure:
+          scope: every_reached_canonical_input_slot
+          membership: current_visible_authorized_by_cutoff
+          recorded_input_currentness: required_for_current_derived_fact
+          recursion: bounded_cycle_safe
+          missing_or_overflow_outcome: unresolved
+        research_workspace:
+          blocked_slot_value_output: prohibited
+          unaffected_slot_output: permitted
+          global_bound_prefix_output: prohibited
+        value_line_calculations:
+          explicit_source_type: parsed
+          evaluate_complete_slot_before_selection: required
+          manual_correction_auto_substitution: prohibited
+      value_line_parse_authority:
+        approved_mapping_registry: migration_seeded_immutable
+        application_policy_registration: prohibited
+        semantic_policy_change: explicit_reviewed_migration_required
+        new_fact_run_identity: required
+        all_new_parsed_rows_require_run: true
+        run_mapping_identity: approved_registry_foreign_key
+        fact_and_extraction_mapping_identity: database_stamped_from_run
+        fact_json_mapping_identity: audit_copy_not_authority
+        run_extraction_fact_commit: atomic
+        source_mapping_identity: exact_resolved_digest
+        extraction_revisions: append_only
+        legacy_marker: database_stamped_immutable
+        run_bound_provenance_and_value: immutable
+        fact_currentness_transition: demotion_only
+        successful_reparse: demote_exact_parsed_slots_then_append
+        missing_output_semantics: not_a_deletion
+        partial_reparse: rollback_complete_revision
+        failed_reparse: rollback_and_preserve_prior_current_revision
+        legacy_missing_run_identity: comparison_identity_incomplete
+        run_history_downgrade: refuse_before_change
+      manual_correction_currentness:
+        slot: user_stock_metric_period_manual_source
+        parsed_or_sec_or_calculated_demotion: prohibited
+        append_history: required
+      point_in_time:
+        fact_known_and_effective_by_cutoff: required
+        source_authorized_at_cutoff: required
+        post_cutoff_evidence: excluded_with_typed_reason
+        unverifiable_historical_current_projection: unavailable
+        non_sec_historical_projection_status: partial
+      privacy:
+        tenant_visibility: required
+        raw_artifact_paths: prohibited
+        proprietary_snippets: prohibited
+
 # SEC publication is a separate, versioned contract from the Value Line JSON
 # mappings below.  A raw XBRL observation is lineage, not product truth, until
 # an approved rule in this section produces a canonical metric_facts
@@ -531,6 +673,9 @@ date_paths:
 # - metric_key_from:
 #     - relative path used to fill metric_key_template (e.g. metric_key)
 # - transforms: list of transforms to apply
+# - source_extraction_keys: exact parser extraction field keys that produced
+#     the mapped fact; omitted means extraction lineage is unavailable rather
+#     than inferred
 # - notes: free-form text
 # ============================================================
 
@@ -748,6 +893,7 @@ mappings:
   # -------------------------
   - id: bs.total_assets.fy
     json_path: annual_financials.balance_sheet_and_returns_usd_millions.total_assets.*
+    source_extraction_keys: [tables_time_series]
     metric_key: bs.total_assets
     period_type: FY
     unit: USD_millions
@@ -909,6 +1055,7 @@ mappings:
   # -------------------------
   - id: mkt.price.as_of
     json_path: header.recent_price
+    source_extraction_keys: [recent_price]
     metric_key: mkt.price
     period_type: AS_OF
     unit: USD
@@ -919,6 +1066,7 @@ mappings:
 
   - id: val.pe.as_of
     json_path: header.pe_ratio
+    source_extraction_keys: [pe_ratio]
     metric_key: val.pe
     period_type: AS_OF
     unit: ratio
@@ -929,6 +1077,7 @@ mappings:
 
   - id: val.pe_trailing.as_of
     json_path: header.pe_ratio_trailing
+    source_extraction_keys: [pe_ratio_trailing]
     metric_key: val.pe_trailing
     period_type: AS_OF
     unit: ratio
@@ -939,6 +1088,7 @@ mappings:
 
   - id: val.pe_median.as_of
     json_path: header.pe_ratio_median
+    source_extraction_keys: [pe_ratio_median]
     metric_key: val.pe_median
     period_type: AS_OF
     unit: ratio
@@ -949,6 +1099,7 @@ mappings:
 
   - id: val.relative_pe.as_of
     json_path: header.relative_pe_ratio
+    source_extraction_keys: [relative_pe_ratio]
     metric_key: val.relative_pe
     period_type: AS_OF
     unit: ratio
@@ -959,6 +1110,7 @@ mappings:
 
   - id: val.dividend_yield.as_of
     json_path: header.dividend_yield_pct
+    source_extraction_keys: [dividend_yield]
     metric_key: val.dividend_yield
     period_type: AS_OF
     unit: percent
@@ -1216,6 +1368,7 @@ mappings:
 
   - id: mkt.market_cap.as_of
     json_path: capital_structure.market_cap.normalized
+    source_extraction_keys: [market_cap]
     metric_key: mkt.market_cap
     period_type: AS_OF
     unit: USD

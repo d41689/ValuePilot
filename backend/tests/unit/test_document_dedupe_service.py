@@ -104,7 +104,7 @@ def test_cleanup_duplicates_dry_run_keeps_newest_parsed_document_without_mutatio
     assert db_session.get(PdfDocument, keep_doc.id) is not None
 
 
-def test_cleanup_duplicates_apply_deletes_document_dependents_and_reconciles_current(
+def test_cleanup_duplicates_apply_deletes_dependents_without_resurrecting_history(
     db_session,
     monkeypatch,
 ):
@@ -211,7 +211,9 @@ def test_cleanup_duplicates_apply_deletes_document_dependents_and_reconciles_cur
 
     refreshed_keep_fact = db_session.get(MetricFact, keep_fact_id)
     assert refreshed_keep_fact is not None
-    assert refreshed_keep_fact.is_current is True
+    # Removing a competing document cannot promote an old fact revision. A
+    # future parse/publication must append the next authoritative current row.
+    assert refreshed_keep_fact.is_current is False
     assert calculator_calls == [
         ("ratios", user.id, stock.id),
         ("fscore", user.id, stock.id),

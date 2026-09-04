@@ -84,7 +84,7 @@ def test_sec_amendment_availability_is_bounded_to_selected_cycle(monkeypatch):
     }
     monkeypatch.setattr(
         "app.services.canonical_financials.active_sec_run_unresolved_states",
-        lambda _session, *, stock_id: [state],
+        lambda _session, *, stock_id, knowledge_cutoff=None: [state],
     )
     old_sec = _fact("is.net_income", 1, "sec")
     old_sec.period_end_date = date(2022, 12, 31)
@@ -113,7 +113,7 @@ def test_sec_amendment_availability_is_bounded_to_selected_cycle(monkeypatch):
 
     monkeypatch.setattr(
         "app.services.canonical_financials.active_sec_run_unresolved_states",
-        lambda _session, *, stock_id: [],
+        lambda _session, *, stock_id, knowledge_cutoff=None: [],
     )
     assert guard_sec_run_availability(object(), stock_id=7, facts=[failed_sec]) == [failed_sec]
 
@@ -129,7 +129,7 @@ def test_sec_amendment_cycle_uses_base_form_not_period_end_date(monkeypatch):
     }
     monkeypatch.setattr(
         "app.services.canonical_financials.active_sec_run_unresolved_states",
-        lambda _session, *, stock_id: [state],
+        lambda _session, *, stock_id, knowledge_cutoff=None: [state],
     )
     ten_k = _fact("is.net_income", 1, "sec")
     ten_k.period_end_date = report_date

@@ -309,9 +309,17 @@ def current_visible_facts(
 
 
 def active_sec_run_unresolved_states(
-    session: Session, *, stock_id: int
+    session: Session,
+    *,
+    stock_id: int,
+    knowledge_cutoff: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Return unresolved amendment states bounded by filing-cycle authority."""
+
+    if knowledge_cutoff is not None and knowledge_cutoff.tzinfo is None:
+        raise ValueError("knowledge_cutoff must be timezone-aware")
+    if knowledge_cutoff is not None:
+        knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
 
     rows = session.execute(
         text(
@@ -319,11 +327,21 @@ def active_sec_run_unresolved_states(
             SELECT DISTINCT ON (failed_filing.id)
                    r.id, r.mapping_version_id,
                    r.requested_cutoff, availability.available_at,
-                   audit.reason_code, audit.known_at,
+                   audit.reason_code,
+                   GREATEST(
+                     mapping.known_at, mapping.effective_from, mapping.created_at,
+                     r.requested_cutoff, r.created_at, availability.available_at,
+                     audit.known_at, audit.created_at,
+                     failed_source.source_available_at, failed_source.created_at,
+                     failed_parse.completed_at, failed_parse.known_at,
+                     failed_parse.created_at, failed_filing.accepted_at,
+                     failed_filing.known_at, failed_filing.created_at
+                   ) AS known_at,
                    failed_filing.report_date, failed_filing.form_type,
                    failed_filing.accession_no
             FROM sec_metric_publication_audits audit
             JOIN sec_metric_publication_runs r ON r.id=audit.publication_run_id
+            JOIN sec_metric_mapping_versions mapping ON mapping.id=r.mapping_version_id
             JOIN sec_metric_publication_availabilities availability
               ON availability.publication_run_id=r.id
             JOIN sec_metric_publication_run_sources failed_source
@@ -335,11 +353,37 @@ def active_sec_run_unresolved_states(
             WHERE r.stock_id=:stock_id AND r.status='succeeded'
               AND audit.reason_code='unresolved_amendment_parse_failure'
               AND failed_parse.status='failed' AND failed_filing.is_amendment
+              AND mapping.status='approved'
+              AND (
+                (:knowledge_cutoff IS NULL AND mapping.retired_at IS NULL)
+                OR (
+                  :knowledge_cutoff IS NOT NULL
+                  AND mapping.known_at<=:knowledge_cutoff
+                  AND mapping.effective_from<=:knowledge_cutoff
+                  AND mapping.created_at<=:knowledge_cutoff
+                  AND (mapping.retired_at IS NULL OR mapping.retired_at>:knowledge_cutoff)
+                  AND r.requested_cutoff<=:knowledge_cutoff
+                  AND r.created_at<=:knowledge_cutoff
+                  AND availability.available_at<=:knowledge_cutoff
+                  AND audit.known_at<=:knowledge_cutoff
+                  AND audit.created_at<=:knowledge_cutoff
+                  AND failed_source.source_available_at<=:knowledge_cutoff
+                  AND failed_source.created_at<=:knowledge_cutoff
+                  AND failed_parse.completed_at<=:knowledge_cutoff
+                  AND failed_parse.known_at<=:knowledge_cutoff
+                  AND failed_parse.created_at<=:knowledge_cutoff
+                  AND failed_filing.accepted_at<=:knowledge_cutoff
+                  AND failed_filing.known_at<=:knowledge_cutoff
+                  AND failed_filing.created_at<=:knowledge_cutoff
+                )
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM sec_metric_publication_run_sources later_source
                 JOIN sec_metric_publication_runs later_run
                   ON later_run.id=later_source.publication_run_id
+                JOIN sec_metric_mapping_versions later_mapping
+                  ON later_mapping.id=later_run.mapping_version_id
                 JOIN sec_metric_publication_availabilities later_available
                   ON later_available.publication_run_id=later_run.id
                 JOIN sec_financial_parse_runs later_parse
@@ -349,11 +393,30 @@ def active_sec_run_unresolved_states(
                   AND later_run.status='succeeded'
                   AND later_run.requested_cutoff>=r.requested_cutoff
                   AND later_available.available_at>=availability.available_at
+                  AND later_mapping.status='approved'
+                  AND (
+                    (:knowledge_cutoff IS NULL AND later_mapping.retired_at IS NULL)
+                    OR (
+                      :knowledge_cutoff IS NOT NULL
+                      AND later_mapping.known_at<=:knowledge_cutoff
+                      AND later_mapping.effective_from<=:knowledge_cutoff
+                      AND later_mapping.created_at<=:knowledge_cutoff
+                      AND (later_mapping.retired_at IS NULL OR later_mapping.retired_at>:knowledge_cutoff)
+                      AND later_run.requested_cutoff<=:knowledge_cutoff
+                      AND later_run.created_at<=:knowledge_cutoff
+                      AND later_available.available_at<=:knowledge_cutoff
+                      AND later_source.source_available_at<=:knowledge_cutoff
+                      AND later_source.created_at<=:knowledge_cutoff
+                      AND later_parse.completed_at<=:knowledge_cutoff
+                      AND later_parse.known_at<=:knowledge_cutoff
+                      AND later_parse.created_at<=:knowledge_cutoff
+                    )
+                  )
               )
             ORDER BY failed_filing.id, availability.available_at DESC, audit.id DESC
             """
         ),
-        {"stock_id": stock_id},
+        {"stock_id": stock_id, "knowledge_cutoff": knowledge_cutoff},
     ).mappings().all()
     return [
         {
@@ -471,7 +534,11 @@ def sec_fact_filing_cycles(
 
 
 def partition_sec_run_availability(
-    session: Session, *, stock_id: int, facts: Iterable[Any]
+    session: Session,
+    *,
+    stock_id: int,
+    facts: Iterable[Any],
+    knowledge_cutoff: datetime | None = None,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     """Exclude only SEC facts in filing cycles with unresolved amendments."""
 
@@ -479,7 +546,11 @@ def partition_sec_run_availability(
     sec_facts = [fact for fact in materialized if _fact_source_type(fact) == "sec"]
     if not sec_facts:
         return materialized, []
-    active_states = active_sec_run_unresolved_states(session, stock_id=stock_id)
+    active_states = active_sec_run_unresolved_states(
+        session,
+        stock_id=stock_id,
+        knowledge_cutoff=knowledge_cutoff,
+    )
     if not active_states:
         return materialized, []
     state_by_cycle = {

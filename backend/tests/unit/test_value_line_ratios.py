@@ -1,11 +1,16 @@
 from datetime import date
 from decimal import Decimal
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.models.facts import MetricFact
 from app.services.canonical_financials import CanonicalSourceConflictError
-from app.services.calculated_metrics.value_line_ratios import build_value_line_ratio_facts
+from app.services.calculated_metrics.value_line_ratios import (
+    ValueLineRatioCalculator,
+    build_value_line_ratio_facts,
+)
+from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 def _fact(metric_key, value, period_end, *, fact_nature="actual", period_type="FY", fact_id=1):
@@ -104,3 +109,19 @@ def test_ratio_does_not_reclassify_a_document_manual_correction_as_parsed():
 
     with pytest.raises(CanonicalSourceConflictError):
         build_value_line_ratio_facts([parsed, correction])
+
+
+def test_value_line_ratio_calculator_explicitly_selects_parsed_source():
+    db = MagicMock()
+    db.scalars.return_value.all.return_value = []
+
+    with patch(
+        "app.services.calculated_metrics.value_line_ratios."
+        "guard_reconciled_source_selection",
+        wraps=guard_reconciled_source_selection,
+    ) as guard:
+        assert ValueLineRatioCalculator(db).calculate_for_stock(
+            user_id=17, stock_id=23
+        ) == []
+
+    assert guard.call_args.kwargs["selected_source_type"] == "parsed"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from statistics import median
 from typing import Any
 
@@ -27,9 +27,12 @@ from app.services.canonical_financials import (
     MethodGateDecision,
     apply_reviewed_method_gates,
     guard_sec_run_availability,
-    guard_source_selection,
     reviewed_method_gate,
     visible_metric_fact_predicate,
+)
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    guard_reconciled_source_selection,
 )
 from app.edgar.parsers.value_units import TRANSITION_ACCEPTED_DATE
 from app.services.oracles_lens.constants import SCORE_VERSION
@@ -1231,12 +1234,40 @@ def _m3_facts_by_stock(
             if not rows:
                 continue
             try:
-                selected = guard_source_selection(rows, consumer="oracles_lens_quality")
+                selected = guard_reconciled_source_selection(
+                    rows,
+                    consumer="oracles_lens_quality",
+                    knowledge_cutoff=datetime.now(timezone.utc),
+                    session=session,
+                    user_id=user_id,
+                )
                 selected = guard_sec_run_availability(
                     session,
                     stock_id=stock_id,
                     facts=selected,
                 )
+            except CanonicalReconciliationError as error:
+                status = statuses[stock_id]
+                if status.get("status") == "available":
+                    status = {
+                        "status": "partial",
+                        "reason_code": error.code,
+                        "unavailable_metrics": [],
+                    }
+                    statuses[stock_id] = status
+                status.setdefault("unavailable_metrics", []).append(
+                    {
+                        "metric_key": metric_key,
+                        "blocking_reasons": sorted(
+                            {
+                                str(item.get("reason_code"))
+                                for item in error.blocking_items
+                                if item.get("reason_code")
+                            }
+                        ),
+                    }
+                )
+                continue
             except CanonicalSourceConflictError as error:
                 statuses[stock_id] = {
                     "status": "source_conflict",

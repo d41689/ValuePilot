@@ -7,25 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import SessionLocal
 from app.models.facts import MetricFact
-from app.services.owners_earnings import (
-    OEPS_KEY,
-    OEPS_NORM_KEY,
-    OE_INPUT_KEYS,
-    infer_owners_earnings_fact_nature,
-)
-
-
-def _owners_earnings_input_facts(session: Session, fact: MetricFact) -> list[MetricFact]:
-    filters = [
-        MetricFact.source_type == "parsed",
-        MetricFact.stock_id == fact.stock_id,
-        MetricFact.period_type == "FY",
-        MetricFact.period_end_date == fact.period_end_date,
-        MetricFact.metric_key.in_(sorted(OE_INPUT_KEYS)),
-    ]
-    if fact.source_document_id is not None:
-        filters.append(MetricFact.source_document_id == fact.source_document_id)
-    return session.scalars(select(MetricFact).where(*filters)).all()
+from app.services.owners_earnings import OEPS_KEY, OEPS_NORM_KEY
 
 
 def backfill_in_session(
@@ -48,29 +30,15 @@ def backfill_in_session(
             )
         ).all()
 
-        updated = 0
-        for fact in rows:
-            payload = dict(fact.value_json or {})
-            if fact.metric_key == OEPS_NORM_KEY:
-                target_fact_nature = "snapshot"
-            else:
-                target_fact_nature = infer_owners_earnings_fact_nature(
-                    _owners_earnings_input_facts(session, fact)
-                )
-            if payload.get("fact_nature") == target_fact_nature:
-                continue
-            payload["fact_nature"] = target_fact_nature
-            fact.value_json = payload
-            session.add(fact)
-            updated += 1
-
+        if rows:
+            raise RuntimeError(
+                "owners-earnings fact-nature backfill is retired after the "
+                "immutable Value Line lineage cutover; reparse each source "
+                "document to append corrected facts"
+            )
         if dry_run:
-            session.flush()
             tx.rollback()
-        else:
-            session.commit()
-
-        return {"matched": len(rows), "updated": updated}
+        return {"matched": 0, "updated": 0}
     except Exception:
         if tx is not None and tx.is_active:
             tx.rollback()

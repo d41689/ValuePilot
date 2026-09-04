@@ -104,7 +104,14 @@ def test_authenticated_reads_share_sec_but_keep_private_facts_private(
     viewer_ids = {row["id"] for row in viewer_response.json() if row["id"] is not None}
     owner_ids = {row["id"] for row in owner_response.json() if row["id"] is not None}
     assert sec_fact.id in viewer_ids and private.id not in viewer_ids
-    assert {sec_fact.id, private.id} <= owner_ids
+    assert sec_fact.id not in owner_ids and private.id not in owner_ids
+    owner_unavailable = next(
+        row
+        for row in owner_response.json()
+        if row["status"] == "unavailable" and row["metric_key"] == sec_fact.metric_key
+    )
+    assert owner_unavailable["reason_code"] == "unresolved_source_reconciliation"
+    assert owner_unavailable["blocking_reasons"] == ["period_identity_unavailable"]
 
     mixed_parsed = MetricFact(
         user_id=owner.id,
@@ -160,6 +167,7 @@ def test_authenticated_reads_share_sec_but_keep_private_facts_private(
     )
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["code"] == "source_conflict"
+    assert conflict.json()["detail"]["blocking_reasons"] == []
 
 
 def test_typed_unresolved_sec_state_is_observable_without_retained_content(

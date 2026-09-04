@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Callable
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session, aliased
 from decimal import Decimal
 from sqlalchemy import select, and_, or_
@@ -6,11 +7,10 @@ from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
-    CanonicalSourceConflictError,
     guard_sec_run_availability,
-    guard_source_selection,
     visible_metric_fact_predicate,
 )
+from app.services.source_reconciliation import guard_reconciled_source_selection
 
 class ScreenerService:
     def __init__(self, db: Session):
@@ -103,10 +103,13 @@ class ScreenerService:
         for stock_id in stock_ids:
             stock_metrics: dict[str, Any] = {}
             fact_map = facts_by_stock.get(stock_id, {})
-            selected = guard_source_selection(
+            selected = guard_reconciled_source_selection(
                 [fact for rows in fact_map.values() for fact in rows],
                 consumer="screener_metrics",
+                knowledge_cutoff=datetime.now(timezone.utc),
                 selected_source_type=selected_source_type,
+                session=self.db,
+                user_id=current_user_id,
             )
             selected = guard_sec_run_availability(
                 self.db,
@@ -281,10 +284,13 @@ class ScreenerService:
         for fact in facts:
             by_stock.setdefault(fact.stock_id, []).append(fact)
         for stock_id, stock_facts in by_stock.items():
-            stock_facts = guard_source_selection(
+            stock_facts = guard_reconciled_source_selection(
                 stock_facts,
                 consumer="screener",
+                knowledge_cutoff=datetime.now(timezone.utc),
                 selected_source_type=selected_source_type,
+                session=self.db,
+                user_id=current_user_id,
             )
             guard_sec_run_availability(
                 self.db,
