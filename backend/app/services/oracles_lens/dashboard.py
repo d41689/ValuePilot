@@ -1246,6 +1246,28 @@ def _m3_facts_by_stock(
                     stock_id=stock_id,
                     facts=selected,
                 )
+            except CanonicalReconciliationError as error:
+                status = statuses[stock_id]
+                if status.get("status") == "available":
+                    status = {
+                        "status": "partial",
+                        "reason_code": error.code,
+                        "unavailable_metrics": [],
+                    }
+                    statuses[stock_id] = status
+                status.setdefault("unavailable_metrics", []).append(
+                    {
+                        "metric_key": metric_key,
+                        "blocking_reasons": sorted(
+                            {
+                                str(item.get("reason_code"))
+                                for item in error.blocking_items
+                                if item.get("reason_code")
+                            }
+                        ),
+                    }
+                )
+                continue
             except CanonicalSourceConflictError as error:
                 statuses[stock_id] = {
                     "status": "source_conflict",
@@ -1256,14 +1278,6 @@ def _m3_facts_by_stock(
                 break
             except CanonicalUnavailableError as error:
                 statuses[stock_id] = error.state
-                result[stock_id] = {}
-                break
-            except CanonicalReconciliationError as error:
-                statuses[stock_id] = {
-                    "status": "source_conflict",
-                    "reason_code": error.code,
-                    "source_types": [],
-                }
                 result[stock_id] = {}
                 break
             if metric_key.startswith("owners_earnings_per_share"):

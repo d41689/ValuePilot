@@ -212,6 +212,7 @@ class FormulaEngine:
                     "source_types": sorted({f.source_type for f in facts}),
                     "user_authored_formula": True,
                     "fact_nature": "derived_actual",
+                    "calculation_version": "formula-engine-v1",
                     "inputs": [
                         {
                             "fact_id": source.id,

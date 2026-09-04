@@ -15,6 +15,11 @@ from app.services.market_data_service import (
     read_current_eod_prices,
     serialize_canonical_eod_price,
 )
+from app.services.canonical_financials import CanonicalSourceConflictError
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    guard_reconciled_source_selection,
+)
 from app.services.valuation import read_valuation_contexts, relative_discount
 
 
@@ -47,12 +52,13 @@ def _is_displayable_historical_piotroski_total(fact: MetricFact) -> bool:
 
 def _piotroski_scores_for_stocks(
     session: SessionDep, user_id: int, stock_ids: list[int]
-) -> dict[int, list[dict[str, Any]]]:
+) -> tuple[dict[int, list[dict[str, Any]]], dict[int, dict[str, Any]]]:
     if not stock_ids:
-        return {}
+        return {}, {}
 
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     scores_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in unique_stock_ids}
+    states_by_stock_id: dict[int, dict[str, Any]] = {}
 
     facts = session.scalars(
         select(MetricFact)
@@ -68,14 +74,78 @@ def _piotroski_scores_for_stocks(
         .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
     ).all()
 
+    facts_by_stock_id: dict[int, list[MetricFact]] = {
+        stock_id: [] for stock_id in unique_stock_ids
+    }
     for fact in facts:
-        if not _is_displayable_historical_piotroski_total(fact):
-            continue
-        stock_scores = scores_by_stock_id.get(fact.stock_id)
-        if stock_scores is not None and len(stock_scores) < 3:
-            stock_scores.append(_serialize_piotroski_total(fact))
+        facts_by_stock_id[fact.stock_id].append(fact)
 
-    return scores_by_stock_id
+    evaluated_at = datetime.now(timezone.utc)
+    for stock_id, stock_facts in facts_by_stock_id.items():
+        guarded, state = _guard_piotroski_display_facts(
+            session,
+            user_id=user_id,
+            stock_id=stock_id,
+            facts=stock_facts,
+            evaluated_at=evaluated_at,
+        )
+        states_by_stock_id[stock_id] = state
+        for fact in guarded:
+            if not _is_displayable_historical_piotroski_total(fact):
+                continue
+            stock_scores = scores_by_stock_id[stock_id]
+            if len(stock_scores) < 3:
+                stock_scores.append(_serialize_piotroski_total(fact))
+
+    return scores_by_stock_id, states_by_stock_id
+
+
+def _guard_piotroski_display_facts(
+    session: SessionDep,
+    *,
+    user_id: int,
+    stock_id: int,
+    facts: list[MetricFact],
+    evaluated_at: datetime,
+) -> tuple[list[MetricFact], dict[str, Any]]:
+    if not facts:
+        return [], {
+            "status": "unavailable",
+            "reason_code": "piotroski_f_score_unavailable",
+            "blocking_reasons": [],
+        }
+    try:
+        guarded = guard_reconciled_source_selection(
+            facts,
+            consumer="stock_pool_piotroski_display",
+            knowledge_cutoff=evaluated_at,
+            session=session,
+            user_id=user_id,
+        )
+    except CanonicalReconciliationError as error:
+        reasons = sorted(
+            {
+                str(item.get("reason_code"))
+                for item in error.blocking_items
+                if item.get("reason_code")
+            }
+        )
+        return [], {
+            "status": "unavailable",
+            "reason_code": error.code,
+            "blocking_reasons": reasons,
+        }
+    except CanonicalSourceConflictError as error:
+        return [], {
+            "status": "unavailable",
+            "reason_code": error.code,
+            "blocking_reasons": ["explicit_source_selection_required"],
+        }
+    return list(guarded), {
+        "status": "available",
+        "reason_code": None,
+        "blocking_reasons": [],
+    }
 
 
 def _piotroski_compare_fact_nature(fact: MetricFact) -> str:
@@ -167,10 +237,19 @@ def _piotroski_compare_payload(
             facts_by_stock_id.setdefault(fact.stock_id, []).append(fact)
 
     selected_by_stock_id: dict[int, dict[int, MetricFact]] = {}
+    states_by_stock_id: dict[int, dict[str, Any]] = {}
     years: set[int] = set()
     for stock_id, facts in facts_by_stock_id.items():
+        guarded, state = _guard_piotroski_display_facts(
+            session,
+            user_id=user_id,
+            stock_id=stock_id,
+            facts=facts,
+            evaluated_at=datetime.now(timezone.utc),
+        )
+        states_by_stock_id[stock_id] = state
         selected = {}
-        for fact in _select_piotroski_compare_facts(facts):
+        for fact in _select_piotroski_compare_facts(guarded):
             year = _piotroski_compare_year(fact)
             if year is None or year in selected:
                 continue
@@ -199,6 +278,7 @@ def _piotroski_compare_payload(
                 "market_country": stock.market_country,
                 "listing_exchange": stock.listing_exchange,
                 "company_name": stock.company_name,
+                "piotroski_f_score_state": states_by_stock_id[stock.id],
                 "scores": [
                     _serialize_piotroski_compare_cell(year, by_year.get(year))
                     for year in ordered_years
@@ -219,7 +299,7 @@ def _watchlist_rows_for_memberships(
         return []
 
     stock_ids = list(dict.fromkeys(int(member.stock_id) for member in members))
-    piotroski_scores_by_stock_id = _piotroski_scores_for_stocks(
+    piotroski_scores_by_stock_id, piotroski_states_by_stock_id = _piotroski_scores_for_stocks(
         session, user_id, stock_ids
     )
     stocks_by_id = {
@@ -365,6 +445,7 @@ def _watchlist_rows_for_memberships(
                 "delta_today": delta_today,
                 "delta_today_state": delta_today_state,
                 "piotroski_f_scores": piotroski_scores_by_stock_id.get(stock.id, []),
+                "piotroski_f_score_state": piotroski_states_by_stock_id[stock.id],
             }
         )
 

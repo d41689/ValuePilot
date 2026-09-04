@@ -45,6 +45,21 @@ types.
   `expected_definition_difference`, `restatement`, `mapping_conflict`, and
   `unresolved`. Tolerance may prioritize review and may classify a bounded
   numeric match, but it never chooses or rewrites a fact.
+- `match` means definitions and every comparison-identity field aligned and
+  the Decimal variance was within review tolerance; it is not source
+  precedence. `expected_definition_difference` names a reviewed relationship
+  such as SEC as-filed versus Value Line adjusted, actual versus estimate,
+  manual correction, or direct versus derived. `restatement` identifies a
+  same-source supersession. `mapping_conflict` means comparison identity could
+  not be aligned. `unresolved` covers material value disagreement, duplicate
+  current facts, unavailable lineage, or missing numeric evidence.
+- The concrete guarded consumers are formula execution, screener evaluation,
+  Value Line ratio and Piotroski calculation, DCF input assembly, stock summary
+  and facts reads, Oracle's Lens quality overlay, stock-pool Piotroski cards and
+  comparison, and research workspace reconciliation. A missing optional source
+  never blocks a legal single source; only a conflict/unavailable state in a
+  relevant slot fails closed. User-authored valuation and original manual
+  inputs remain outside system-financial comparison slots.
 
 ## Acceptance criteria
 
@@ -146,3 +161,18 @@ decision and a tested migration rather than storing JSON opportunistically.
   remains migration-free: reports are computed from `metric_facts` plus
   source-authority lineage. Explicit historical cutoffs over mutable non-SEC
   current state return `partial / historical_current_projection_unverifiable`.
+- 2026-09-04: Terra adversarial review R1 found five valid gaps: definition and
+  source-mapping identity could be bypassed, fiscal endpoint drift escaped the
+  slot, singleton manual/derived lineage was unchecked (including stock-pool
+  display), unresolved SEC amendments were absent from the report, and retired
+  non-SEC authority was not typed. Sol remediation now persists Value Line
+  mapping identity, uses authoritative fiscal identity without inferring a
+  quarter ordinal, validates bounded recursive lineage with cycle/cross-stock/
+  visibility/cutoff guards, reuses canonical SEC amendment partitioning, emits
+  typed retired/revoked exclusions, and returns typed unavailable stock-pool
+  states. Original manual inputs/valuations pass through consumer guards
+  without entering a system-source comparison slot.
+- 2026-09-04: Remediation-focused Docker suite is green: 185 tests covering
+  reconciliation, SEC publication integration, mapping generation, all listed
+  consumers, document correction lineage, and stock-pool behavior. Full
+  closing gates and Terra R2 remain pending.

@@ -1662,7 +1662,14 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
         user_id=user.id,
         stock_id=stock.id,
         metric_key="mkt.market_cap",
-        value_json={"raw": "$9.5 billion", "fact_nature": "snapshot"},
+        value_json={
+            "raw": "$9.5 billion",
+            "fact_nature": "snapshot",
+            "mapping_id": "mkt.market_cap.as_of",
+            "source_mapping_version": "value-line-spec-v2",
+            "definition_basis": "adjusted",
+            "dimensions_identity": "empty",
+        },
         value_numeric=9_500_000_000.0,
         unit="USD",
         period_type="AS_OF",
@@ -1698,6 +1705,10 @@ def test_document_review_correction_creates_manual_current_fact_without_mutating
     assert manual_fact.unit == "USD"
     assert manual_fact.value_json["raw"] == "$9.6 billion"
     assert manual_fact.value_json["correction"] is True
+    assert manual_fact.value_json["corrected_from_fact_id"] == parsed_fact.id
+    assert manual_fact.value_json["mapping_id"] == "mkt.market_cap.as_of"
+    assert manual_fact.value_json["source_mapping_version"] == "value-line-spec-v2"
+    assert manual_fact.value_json["dimensions_identity"] == "empty"
     assert manual_fact.value_json["note"] == "Checked against report."
 
 

@@ -21,11 +21,13 @@ from typing import Any, Iterable, Sequence
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+import yaml
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.services.canonical_financials import (
     CanonicalSourceConflictError,
+    partition_sec_run_availability,
     visible_metric_fact_predicate,
 )
 
@@ -38,6 +40,18 @@ ALLOWED_SOURCE_TYPES = frozenset({"sec", "parsed", "manual", "calculated"})
 MAX_RECONCILIATION_FACTS = 250
 MAX_METRIC_FILTERS = 50
 METRIC_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
+BLOCKING_EXCLUSION_REASONS = frozenset(
+    {
+        "source_unauthorized",
+        "source_revoked",
+        "source_retired",
+        "unsupported_source_type",
+        "unresolved_amendment_parse_failure",
+    }
+)
+PASSTHROUGH_EXCLUSION_REASONS = frozenset(
+    {"user_authored_valuation_out_of_scope", "user_manual_input_out_of_scope"}
+)
 
 
 @dataclass(frozen=True)
@@ -52,8 +66,11 @@ class ReconciliationCandidate:
     definition_basis: str
     definition_id: str
     mapping_version: str
+    source_mapping_version: str
     period_type: str
     period_end_date: date
+    fiscal_year: int | None
+    fiscal_quarter_ordinal: int | None
     period_start_date: date | None
     duration_days: int | None
     dimensions_identity: str
@@ -113,9 +130,32 @@ def _candidate_sort_key(candidate: ReconciliationCandidate) -> tuple[Any, ...]:
 
 
 def _bucket_key(candidate: ReconciliationCandidate) -> tuple[Any, ...]:
+    if candidate.period_type in FISCAL_PERIOD_TYPES:
+        period_family = (
+            "FY"
+            if candidate.period_type in {"FY", "PROJ_FY"}
+            else candidate.period_type
+        )
+        if candidate.fiscal_year is not None and (
+            candidate.period_type not in {"Q", "YTD"}
+            or candidate.fiscal_quarter_ordinal is not None
+        ):
+            return (
+                candidate.metric_key,
+                "fiscal",
+                period_family,
+                candidate.fiscal_year,
+                candidate.fiscal_quarter_ordinal,
+            )
+        return (
+            candidate.metric_key,
+            "fiscal_identity_unavailable",
+            period_family,
+            candidate.period_end_date,
+        )
     return (
         candidate.metric_key,
-        "fiscal" if candidate.period_type in FISCAL_PERIOD_TYPES else "as_of",
+        "as_of",
         candidate.period_end_date,
     )
 
@@ -146,8 +186,11 @@ def _safe_candidate(candidate: ReconciliationCandidate) -> dict[str, Any]:
         "definition_basis": candidate.definition_basis,
         "definition_id": candidate.definition_id,
         "mapping_version": candidate.mapping_version,
+        "source_mapping_version": candidate.source_mapping_version,
         "period_type": candidate.period_type,
         "period_end_date": _iso(candidate.period_end_date),
+        "fiscal_year": candidate.fiscal_year,
+        "fiscal_quarter_ordinal": candidate.fiscal_quarter_ordinal,
         "period_start_date": _iso(candidate.period_start_date),
         "duration_days": candidate.duration_days,
         "dimensions_identity": candidate.dimensions_identity,
@@ -236,6 +279,30 @@ def _finish(
 def _reconcile_group(candidates: list[ReconciliationCandidate]) -> dict[str, Any]:
     candidates = sorted(candidates, key=_candidate_sort_key)
     item = _base_item(candidates)
+    missing_manual_lineage = any(
+        candidate.source_role == "user_manual_correction"
+        and not candidate.lineage_fact_ids
+        for candidate in candidates
+    )
+    if missing_manual_lineage:
+        return _finish(
+            item,
+            status="unresolved",
+            reason_code="manual_lineage_unavailable",
+            blocking=True,
+        )
+    missing_derived_lineage = any(
+        candidate.source_type == "calculated" and not candidate.lineage_fact_ids
+        for candidate in candidates
+    )
+    if missing_derived_lineage:
+        return _finish(
+            item,
+            status="unresolved",
+            reason_code="derived_lineage_unavailable",
+            blocking=True,
+        )
+
     if len(candidates) == 1:
         return _finish(
             item,
@@ -265,6 +332,15 @@ def _reconcile_group(candidates: list[ReconciliationCandidate]) -> dict[str, Any
         )
 
     source_types = {candidate.source_type for candidate in candidates}
+    if len(source_types) == 1 and len(
+        {candidate.source_mapping_version for candidate in candidates}
+    ) > 1:
+        return _finish(
+            item,
+            status="mapping_conflict",
+            reason_code="source_mapping_version_mismatch",
+            blocking=True,
+        )
     if len(source_types) == 1 and any(not candidate.is_current for candidate in candidates):
         values = {candidate.value_numeric for candidate in candidates}
         if len(values) > 1:
@@ -344,6 +420,47 @@ def _reconcile_group(candidates: list[ReconciliationCandidate]) -> dict[str, Any
             blocking=True,
         )
 
+    definition_bases = {candidate.definition_basis for candidate in candidates}
+    definition_ids = {candidate.definition_id for candidate in candidates}
+    if definition_bases == {"as_filed", "adjusted"} and source_types == {
+        "sec",
+        "parsed",
+    }:
+        if any(
+            candidate.value_numeric is None or not candidate.value_numeric.is_finite()
+            for candidate in candidates
+        ):
+            return _finish(
+                item,
+                status="expected_definition_difference",
+                reason_code="as_filed_vs_adjusted",
+                blocking=False,
+            )
+        numeric_values = [
+            candidate.value_numeric
+            for candidate in candidates
+            if candidate.value_numeric is not None
+        ]
+        absolute_variance = max(numeric_values) - min(numeric_values)
+        magnitude = max(abs(value) for value in numeric_values)
+        item["absolute_variance"] = _decimal_text(absolute_variance)
+        item["relative_variance"] = _decimal_text(
+            Decimal(0) if magnitude == 0 else absolute_variance / magnitude
+        )
+        return _finish(
+            item,
+            status="expected_definition_difference",
+            reason_code="as_filed_vs_adjusted",
+            blocking=False,
+        )
+    if len(definition_ids) > 1 or len(definition_bases) > 1:
+        return _finish(
+            item,
+            status="mapping_conflict",
+            reason_code="definition_mismatch",
+            blocking=True,
+        )
+
     if any(
         candidate.value_numeric is None or not candidate.value_numeric.is_finite()
         for candidate in candidates
@@ -376,25 +493,6 @@ def _reconcile_group(candidates: list[ReconciliationCandidate]) -> dict[str, Any
             blocking=False,
         )
 
-    definition_bases = {candidate.definition_basis for candidate in candidates}
-    if definition_bases == {"as_filed", "adjusted"} and source_types == {
-        "sec",
-        "parsed",
-    }:
-        return _finish(
-            item,
-            status="expected_definition_difference",
-            reason_code="as_filed_vs_adjusted",
-            blocking=False,
-        )
-    definition_ids = {candidate.definition_id for candidate in candidates}
-    if len(definition_ids) > 1 or len(definition_bases) > 1:
-        return _finish(
-            item,
-            status="mapping_conflict",
-            reason_code="definition_mismatch",
-            blocking=True,
-        )
     return _finish(
         item,
         status="unresolved",
@@ -422,6 +520,7 @@ def reconcile_candidates(
 
     if knowledge_cutoff.tzinfo is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
+    knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
     ordered = sorted(facts, key=_candidate_sort_key)
     eligible: list[ReconciliationCandidate] = []
     excluded: list[dict[str, Any]] = []
@@ -432,6 +531,10 @@ def reconcile_candidates(
             reason = "unsupported_source_type"
         elif candidate.stock_id != expected_stock_id:
             reason = "cross_stock_fact"
+        elif candidate.authorization_state == "retired":
+            reason = "source_retired"
+        elif candidate.authorization_state == "revoked":
+            reason = "source_revoked"
         elif candidate.authorization_state != "authorized":
             reason = "source_unauthorized"
         elif candidate.known_at > knowledge_cutoff:
@@ -444,9 +547,62 @@ def reconcile_candidates(
             eligible.append(candidate)
 
     grouped: dict[tuple[Any, ...], list[ReconciliationCandidate]] = {}
+    lineage_blocked_ids = {
+        candidate.fact_id
+        for candidate in eligible
+        if (
+            candidate.source_role == "user_manual_correction"
+            and not candidate.lineage_fact_ids
+        )
+        or (
+            candidate.source_type == "calculated"
+            and not candidate.lineage_fact_ids
+        )
+    }
+    lineage_items = [
+        _reconcile_group([candidate])
+        for candidate in eligible
+        if candidate.fact_id in lineage_blocked_ids
+    ]
+    period_identity_blocked_ids: set[int] = set()
+    fiscal_by_metric: dict[str, list[ReconciliationCandidate]] = {}
     for candidate in eligible:
+        if candidate.fact_id in lineage_blocked_ids:
+            continue
+        if candidate.period_type in FISCAL_PERIOD_TYPES:
+            fiscal_by_metric.setdefault(candidate.metric_key, []).append(candidate)
+    identity_items: list[dict[str, Any]] = []
+    for candidates in fiscal_by_metric.values():
+        if len({candidate.source_type for candidate in candidates}) <= 1:
+            continue
+        incomplete = any(
+            candidate.fiscal_year is None
+            or (
+                candidate.period_type in {"Q", "YTD"}
+                and candidate.fiscal_quarter_ordinal is None
+            )
+            for candidate in candidates
+        )
+        if incomplete:
+            period_identity_blocked_ids.update(
+                candidate.fact_id for candidate in candidates
+            )
+            identity_items.append(
+                _finish(
+                    _base_item(sorted(candidates, key=_candidate_sort_key)),
+                    status="mapping_conflict",
+                    reason_code="period_identity_unavailable",
+                    blocking=True,
+                )
+            )
+    for candidate in eligible:
+        if (
+            candidate.fact_id in lineage_blocked_ids
+            or candidate.fact_id in period_identity_blocked_ids
+        ):
+            continue
         grouped.setdefault(_bucket_key(candidate), []).append(candidate)
-    items: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = [*lineage_items, *identity_items]
     for key in sorted(grouped, key=lambda value: tuple(str(part) for part in value)):
         rows = grouped[key]
         history_items: list[dict[str, Any]] = []
@@ -486,9 +642,25 @@ _SPEC_PATH = Path(__file__).resolve().parents[2] / "docs" / "metric_facts_mappin
 
 
 @lru_cache(maxsize=1)
-def _mapping_spec_identity() -> tuple[str, str]:
+def _mapping_spec_identity() -> tuple[str, str, str]:
     payload = _SPEC_PATH.read_bytes()
-    return POLICY_VERSION, hashlib.sha256(payload).hexdigest()
+    spec = yaml.safe_load(payload)
+    versions = spec.get("source_reconciliation", {}).get("versions", [])
+    policy = next(
+        (
+            version
+            for version in versions
+            if version.get("id") == POLICY_VERSION
+            and version.get("status") == "approved"
+        ),
+        None,
+    )
+    if not isinstance(policy, dict):
+        raise RuntimeError("approved source reconciliation policy is unavailable")
+    definition_version = policy.get("canonical_definition_version")
+    if not isinstance(definition_version, str) or not definition_version:
+        raise RuntimeError("canonical definition version is unavailable")
+    return POLICY_VERSION, hashlib.sha256(payload).hexdigest(), definition_version
 
 
 def _aware(value: datetime | None) -> datetime:
@@ -515,7 +687,13 @@ def _parse_date(value: Any) -> date | None:
 def _lineage_ids(metadata: dict[str, Any], *, source_type: str) -> tuple[int, ...]:
     raw: list[Any] = []
     if source_type == "manual":
-        raw.extend((metadata.get("corrects_fact_id"), metadata.get("source_fact_id")))
+        raw.extend(
+            (
+                metadata.get("corrects_fact_id"),
+                metadata.get("corrected_from_fact_id"),
+                metadata.get("source_fact_id"),
+            )
+        )
     elif source_type == "calculated":
         inputs = metadata.get("inputs")
         if isinstance(inputs, list):
@@ -561,6 +739,7 @@ def _sec_authority(
             SELECT p.metric_fact_id, p.id AS publication_id, p.status AS publication_status,
                    p.source_role,
                    p.fact_nature, p.derivation_kind, p.period_start_date,
+                   p.fiscal_year, p.fiscal_quarter_ordinal,
                    p.period_basis, p.dimensions_policy, p.dimensions_sha256,
                    p.known_at, p.created_at, p.mapping_rule_id,
                    r.id AS publication_run_id, r.mapping_version_id,
@@ -582,7 +761,8 @@ def _sec_authority(
             LEFT JOIN sec_metric_publications source ON source.id=i.source_publication_id
             WHERE p.metric_fact_id = ANY(:fact_ids)
             GROUP BY p.metric_fact_id, p.id, p.status, p.source_role, p.fact_nature,
-                     p.derivation_kind, p.period_start_date, p.period_basis,
+                     p.derivation_kind, p.period_start_date, p.fiscal_year,
+                     p.fiscal_quarter_ordinal, p.period_basis,
                      p.dimensions_policy, p.dimensions_sha256, p.known_at,
                      p.created_at, p.mapping_rule_id, r.id, r.mapping_version_id,
                      r.status, r.requested_cutoff, a.available_at, v.status,
@@ -608,7 +788,7 @@ def materialize_reconciliation_candidates(
     rows = list(facts)
     documents = _document_authority(session, rows)
     sec = _sec_authority(session, rows, knowledge_cutoff=knowledge_cutoff)
-    mapping_version, _ = _mapping_spec_identity()
+    _, _, canonical_definition_version = _mapping_spec_identity()
     candidates: list[ReconciliationCandidate] = []
     excluded: list[dict[str, Any]] = []
 
@@ -647,6 +827,11 @@ def materialize_reconciliation_candidates(
         fact_nature = str(metadata.get("fact_nature") or "")
         lineage = _lineage_ids(metadata, source_type=fact.source_type)
         source_authority_complete = True
+        source_mapping_version = str(metadata.get("source_mapping_version") or "")
+        fiscal_year = metadata.get("fiscal_year")
+        fiscal_year = fiscal_year if isinstance(fiscal_year, int) else None
+        fiscal_quarter = metadata.get("fiscal_quarter_ordinal")
+        fiscal_quarter = fiscal_quarter if isinstance(fiscal_quarter, int) else None
 
         if fact.source_type == "sec":
             authority = sec.get(fact.id)
@@ -673,12 +858,18 @@ def materialize_reconciliation_candidates(
                     and _aware(authority["mapping_effective_from"]) <= knowledge_cutoff
                     and (retired_at is None or _aware(retired_at) > knowledge_cutoff)
                 )
-                authorization_state = "authorized" if authorized else "unauthorized"
+                if retired_at is not None and _aware(retired_at) <= knowledge_cutoff:
+                    authorization_state = "retired"
+                else:
+                    authorization_state = "authorized" if authorized else "unauthorized"
                 source_role = str(authority["source_role"])
                 fact_nature = str(authority["fact_nature"])
                 definition_basis = "as_filed"
                 definition_id = str(authority["rule_id"])
+                source_mapping_version = str(authority["mapping_version_id"])
                 period_start = authority["period_start_date"]
+                fiscal_year = int(authority["fiscal_year"])
+                fiscal_quarter = authority["fiscal_quarter_ordinal"]
                 duration_days = (
                     (fact.period_end_date - period_start).days + 1
                     if fact.period_end_date is not None and period_start is not None
@@ -694,7 +885,7 @@ def materialize_reconciliation_candidates(
             authorized = fact.source_document_id is None or (
                 document is not None
                 and document.user_id == user_id
-                and document.source == "value_line"
+                and document.source in {"upload", "value_line"}
                 and document.parse_status == "parsed"
                 and not document.identity_needs_review
                 and (document.stock_id is None or document.stock_id == fact.stock_id)
@@ -711,17 +902,35 @@ def materialize_reconciliation_candidates(
         elif fact.source_type == "manual":
             if fact.metric_key == "val.fair_value":
                 reason = "user_authored_valuation_out_of_scope"
+            is_correction = bool(
+                metadata.get("correction") is True
+                or metadata.get("corrects_fact_id")
+                or metadata.get("corrected_from_fact_id")
+                or metadata.get("source_fact_id")
+            )
+            if reason is None and (
+                metadata.get("manual_role") == "original_input"
+                or not is_correction
+            ):
+                reason = "user_manual_input_out_of_scope"
             source_role = "user_manual_correction"
+            source_mapping_version = source_mapping_version or "manual-financial-v1"
             fact_nature = "manual"
             definition_basis = definition_basis or "adjusted"
         elif fact.source_type == "calculated":
             source_role = "deterministic_derived"
+            source_mapping_version = str(metadata.get("calculation_version") or "")
             fact_nature = "derived_actual"
             definition_basis = definition_basis or "derived"
         else:
             reason = "unsupported_source_type"
 
-        if metadata.get("authorization_state") in {"revoked", "unauthorized"}:
+        metadata_authorization = metadata.get("authorization_state")
+        if metadata.get("retired") is True or metadata_authorization == "retired":
+            authorization_state = "retired"
+        elif metadata_authorization == "revoked":
+            authorization_state = "revoked"
+        elif metadata_authorization == "unauthorized":
             authorization_state = "unauthorized"
         if fact.period_end_date is None and fact.as_of_date is None:
             period_end = date.min
@@ -735,13 +944,23 @@ def materialize_reconciliation_candidates(
                 and dimensions
                 and definition_id
                 and definition_basis
+                and source_mapping_version
                 and (
                     fact.period_type not in FISCAL_PERIOD_TYPES
-                    or (period_start is not None and isinstance(duration_days, int))
+                    or (
+                        period_start is not None
+                        and isinstance(duration_days, int)
+                        and fiscal_year is not None
+                        and (
+                            fact.period_type not in {"Q", "YTD"}
+                            or fiscal_quarter in {1, 2, 3, 4}
+                        )
+                    )
                 )
             )
         if fact.source_type in {"manual", "calculated"} and lineage:
-            lineage = tuple(
+            expected_lineage = lineage
+            visible_valid_lineage = tuple(
                 value
                 for value in lineage
                 if value in visible_lineage
@@ -752,6 +971,11 @@ def materialize_reconciliation_candidates(
                 )
                 <= knowledge_cutoff
                 and value != fact.id
+            )
+            lineage = (
+                visible_valid_lineage
+                if visible_valid_lineage == expected_lineage
+                else ()
             )
         if reason is not None:
             excluded.append(_excluded_fact(fact, reason))
@@ -771,9 +995,12 @@ def materialize_reconciliation_candidates(
                 definition_family=f"canonical:{fact.metric_key}",
                 definition_basis=definition_basis,
                 definition_id=definition_id,
-                mapping_version=mapping_version,
+                mapping_version=canonical_definition_version,
+                source_mapping_version=source_mapping_version or "unknown",
                 period_type=fact.period_type or "UNSPECIFIED",
                 period_end_date=period_end,
+                fiscal_year=fiscal_year,
+                fiscal_quarter_ordinal=fiscal_quarter,
                 period_start_date=period_start,
                 duration_days=duration_days if isinstance(duration_days, int) else None,
                 dimensions_identity=dimensions or "unknown",
@@ -799,6 +1026,183 @@ def _excluded_fact(fact: MetricFact, reason_code: str) -> dict[str, Any]:
         "metric_key": fact.metric_key,
         "reason_code": reason_code,
     }
+
+
+def _lineage_blocking_item(
+    fact: MetricFact,
+    *,
+    reason_code: str,
+) -> dict[str, Any]:
+    return {
+        "status": "unresolved",
+        "reason_code": reason_code,
+        "blocking": True,
+        "fact_ids": [fact.id],
+        "source_types": [fact.source_type],
+        "metric_key": fact.metric_key,
+    }
+
+
+def _expand_visible_lineage(
+    session: Session,
+    *,
+    facts: Sequence[MetricFact],
+    user_id: int,
+    knowledge_cutoff: datetime,
+    max_facts: int,
+) -> tuple[list[MetricFact], list[dict[str, Any]]]:
+    """Resolve a bounded tenant-visible lineage closure and reject cycles."""
+
+    if not facts:
+        return [], []
+    stock_id = facts[0].stock_id
+    by_id = {fact.id: fact for fact in facts}
+    queue = {
+        lineage_id
+        for fact in facts
+        for lineage_id in _lineage_ids(
+            _json_dict(fact.value_json), source_type=fact.source_type
+        )
+        if lineage_id not in by_id
+    }
+    errors: list[dict[str, Any]] = []
+    while queue:
+        if len(by_id) + len(queue) > max_facts:
+            errors.append(
+                _lineage_blocking_item(
+                    facts[0], reason_code="derived_lineage_bound_exceeded"
+                )
+            )
+            break
+        requested = sorted(queue)
+        queue.clear()
+        fetched = list(
+            session.scalars(
+                select(MetricFact).where(
+                    MetricFact.id.in_(requested),
+                    visible_metric_fact_predicate(MetricFact, user_id=user_id),
+                )
+            )
+        )
+        fetched_by_id = {fact.id: fact for fact in fetched}
+        missing = set(requested) - set(fetched_by_id)
+        if missing:
+            parent = next(
+                fact
+                for fact in by_id.values()
+                if missing
+                & set(
+                    _lineage_ids(
+                        _json_dict(fact.value_json), source_type=fact.source_type
+                    )
+                )
+            )
+            errors.append(
+                _lineage_blocking_item(
+                    parent, reason_code="lineage_reference_unavailable"
+                )
+            )
+            break
+        for fact in fetched:
+            if fact.stock_id != stock_id:
+                errors.append(
+                    _lineage_blocking_item(
+                        fact, reason_code="cross_stock_lineage_reference"
+                    )
+                )
+                continue
+            if max(_aware(fact.created_at), _aware(fact.updated_at)) > knowledge_cutoff:
+                errors.append(
+                    _lineage_blocking_item(
+                        fact, reason_code="lineage_known_after_cutoff"
+                    )
+                )
+                continue
+            by_id[fact.id] = fact
+            queue.update(
+                lineage_id
+                for lineage_id in _lineage_ids(
+                    _json_dict(fact.value_json), source_type=fact.source_type
+                )
+                if lineage_id not in by_id
+            )
+        if errors:
+            break
+
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(fact_id: int) -> bool:
+        if fact_id in visiting:
+            return True
+        if fact_id in visited:
+            return False
+        visiting.add(fact_id)
+        fact = by_id[fact_id]
+        for lineage_id in _lineage_ids(
+            _json_dict(fact.value_json), source_type=fact.source_type
+        ):
+            if lineage_id in by_id and visit(lineage_id):
+                return True
+        visiting.remove(fact_id)
+        visited.add(fact_id)
+        return False
+
+    if not errors:
+        for fact_id in sorted(by_id):
+            if visit(fact_id):
+                errors.append(
+                    _lineage_blocking_item(
+                        by_id[fact_id], reason_code="lineage_cycle_detected"
+                    )
+                )
+                break
+    return list(by_id.values()), errors
+
+
+def _partition_available_sec_facts(
+    session: Session,
+    *,
+    stock_id: int,
+    facts: Sequence[MetricFact],
+) -> tuple[list[MetricFact], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply the canonical unresolved-amendment boundary before comparison."""
+
+    available, states = partition_sec_run_availability(
+        session,
+        stock_id=stock_id,
+        facts=facts,
+    )
+    available_object_ids = {id(fact) for fact in available}
+    blocked = [
+        fact
+        for fact in facts
+        if fact.source_type == "sec" and id(fact) not in available_object_ids
+    ]
+    exclusions = [
+        _excluded_fact(fact, "unresolved_amendment_parse_failure")
+        for fact in blocked
+    ]
+    safe_states = [
+        {
+            "status": state.get("status"),
+            "reason_code": state.get("reason_code"),
+            "period_end_date": _iso(state.get("period_end_date")),
+            "mapping_version": state.get("mapping_version"),
+            "known_at": _iso(state.get("known_at")),
+            "requested_knowledge_cutoff": _iso(
+                state.get("requested_knowledge_cutoff")
+            ),
+            "filing_cycle": {
+                "base_form": (state.get("filing_cycle") or {}).get("base_form"),
+                "report_date": _iso(
+                    (state.get("filing_cycle") or {}).get("report_date")
+                ),
+            },
+        }
+        for state in states
+    ]
+    return list(available), exclusions, safe_states
 
 
 def build_source_reconciliation_report(
@@ -867,29 +1271,47 @@ def build_source_reconciliation_report_from_facts(
         raise ValueError("reconciliation fact set exceeds bounded contract")
     if any(fact.stock_id != stock_id for fact in fact_rows):
         raise ValueError("reconciliation fact set contains another stock")
+    expanded_rows, lineage_errors = _expand_visible_lineage(
+        session,
+        facts=fact_rows,
+        user_id=user_id,
+        knowledge_cutoff=knowledge_cutoff,
+        max_facts=max_facts,
+    )
+    available_rows, sec_excluded, sec_unavailable_states = (
+        _partition_available_sec_facts(
+            session,
+            stock_id=stock_id,
+            facts=expanded_rows,
+        )
+    )
     candidates, materialization_excluded = materialize_reconciliation_candidates(
         session,
-        fact_rows,
+        available_rows,
         user_id=user_id,
         knowledge_cutoff=knowledge_cutoff,
     )
     report = reconcile_candidates(candidates, knowledge_cutoff=knowledge_cutoff)
+    report["items"].extend(lineage_errors)
+    report["blocking_item_count"] += len(lineage_errors)
     report["stock_id"] = stock_id
     report["excluded"] = sorted(
-        [*report["excluded"], *materialization_excluded],
+        [*report["excluded"], *materialization_excluded, *sec_excluded],
         key=lambda row: (row["metric_key"], row["source_type"], row["fact_id"]),
     )
     report["blocking_exclusion_count"] = sum(
-        row["reason_code"] in {"source_unauthorized", "unsupported_source_type"}
+        row["reason_code"] in BLOCKING_EXCLUSION_REASONS
         for row in report["excluded"]
     )
+    report["sec_unavailable_states"] = sec_unavailable_states
     report["consumer_gate_status"] = (
         "blocked"
         if report["blocking_item_count"] or report["blocking_exclusion_count"]
         else "clear"
     )
-    _, spec_digest = _mapping_spec_identity()
+    _, spec_digest, definition_version = _mapping_spec_identity()
     report["mapping_spec_sha256"] = spec_digest
+    report["canonical_definition_version"] = definition_version
     report["point_in_time_status"] = (
         "historical_current_projection_unverifiable"
         if historical_request and any(fact.source_type != "sec" for fact in fact_rows)
@@ -931,12 +1353,33 @@ def guard_reconciled_source_selection(
     if originals and isinstance(originals[0], MetricFact):
         if session is None or user_id is None:
             raise ValueError("session and user_id are required for metric_facts")
+        stock_ids = {fact.stock_id for fact in originals}
+        if len(stock_ids) != 1:
+            raise ValueError("reconciliation fact set contains multiple stocks")
+        expanded_facts, lineage_errors = _expand_visible_lineage(
+            session,
+            facts=originals,  # type: ignore[arg-type]
+            user_id=user_id,
+            knowledge_cutoff=knowledge_cutoff,
+            max_facts=MAX_RECONCILIATION_FACTS,
+        )
+        if lineage_errors:
+            raise CanonicalReconciliationError(
+                consumer=consumer,
+                blocking_items=lineage_errors,
+            )
+        available_originals, sec_excluded, _ = _partition_available_sec_facts(
+            session,
+            stock_id=next(iter(stock_ids)),
+            facts=expanded_facts,
+        )
         candidates, materialization_excluded = materialize_reconciliation_candidates(
             session,
-            originals,  # type: ignore[arg-type]
+            available_originals,
             user_id=user_id,
             knowledge_cutoff=knowledge_cutoff,
         )
+        materialization_excluded = [*materialization_excluded, *sec_excluded]
     else:
         candidates = list(originals)  # type: ignore[assignment]
         materialization_excluded = []
@@ -952,8 +1395,7 @@ def guard_reconciled_source_selection(
             "metric_key": row["metric_key"],
         }
         for row in [*report["excluded"], *materialization_excluded]
-        if row["reason_code"]
-        in {"source_unauthorized", "unsupported_source_type"}
+        if row["reason_code"] in BLOCKING_EXCLUSION_REASONS
     ]
     blocking.extend(blocking_exclusions)
     if blocking:
@@ -962,9 +1404,18 @@ def guard_reconciled_source_selection(
             blocking_items=blocking,
         )
     eligible_ids = set(report["eligible_fact_ids"])
+    passthrough_ids = {
+        row["fact_id"]
+        for row in materialization_excluded
+        if row["reason_code"] in PASSTHROUGH_EXCLUSION_REASONS
+    }
     eligible_originals = [fact for fact in originals if fact.fact_id in eligible_ids] if (
         originals and isinstance(originals[0], ReconciliationCandidate)
-    ) else [fact for fact in originals if fact.id in eligible_ids]
+    ) else [
+        fact
+        for fact in originals
+        if fact.id in eligible_ids or fact.id in passthrough_ids
+    ]
     if selected_source_type is not None:
         if selected_source_type not in ALLOWED_SOURCE_TYPES:
             raise ValueError("unsupported source_type selection")
@@ -973,10 +1424,43 @@ def guard_reconciled_source_selection(
             for fact in eligible_originals
             if fact.source_type == selected_source_type
         ]
-    source_types = {fact.source_type for fact in eligible_originals}
-    if len(source_types) > 1:
+    exact_slots: dict[tuple[Any, ...], set[str]] = {}
+    for fact in eligible_originals:
+        exact_slots.setdefault(
+            (
+                fact.metric_key,
+                getattr(fact, "period_type", None),
+                getattr(fact, "period_end_date", None),
+                getattr(fact, "as_of_date", None),
+            ),
+            set(),
+        ).add(fact.source_type)
+    passthrough_collisions = [
+        source_types
+        for source_types in exact_slots.values()
+        if len(source_types) > 1
+    ]
+    if passthrough_collisions:
         raise CanonicalSourceConflictError(
             consumer=consumer,
-            source_types=source_types,
+            source_types={
+                source_type
+                for source_types in passthrough_collisions
+                for source_type in source_types
+            },
+        )
+    ambiguous_items = [
+        item
+        for item in report["items"]
+        if len(item.get("source_types", ())) > 1
+    ]
+    if ambiguous_items:
+        raise CanonicalSourceConflictError(
+            consumer=consumer,
+            source_types={
+                source_type
+                for item in ambiguous_items
+                for source_type in item["source_types"]
+            },
         )
     return eligible_originals

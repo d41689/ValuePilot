@@ -8,7 +8,10 @@ from app.models.artifacts import PdfDocument
 from app.models.facts import Formula, MetricFact
 from app.models.stocks import Stock
 from app.services.formula_engine import FormulaEngine
-from app.services.source_reconciliation import CanonicalReconciliationError
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    guard_reconciled_source_selection,
+)
 
 
 def _document(*, user_id: int, stock_id: int, suffix: str = "") -> PdfDocument:
@@ -41,9 +44,11 @@ def _parsed_fact(
         value_json={
             "fact_nature": "actual",
             "mapping_id": "is.net_income.fy",
+            "source_mapping_version": "value-line-spec-v2",
             "definition_basis": "adjusted",
             "period_start_date": "2025-01-01",
             "duration_days": 365,
+            "fiscal_year": 2025,
             "dimensions_identity": "empty",
         },
         unit="USD",
@@ -111,6 +116,7 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
             "definition_basis": "adjusted",
             "period_start_date": "2025-01-01",
             "duration_days": 365,
+            "fiscal_year": 2025,
             "dimensions_identity": "empty",
         },
         unit="USD",
@@ -133,6 +139,9 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
     assert payload["point_in_time_status"] == "verified_from_available_authority"
     assert payload["status"] == "complete"
     assert payload["policy_version"] == "financial-source-reconciliation-v1"
+    assert payload["canonical_definition_version"] == (
+        "canonical-financial-definitions-v1"
+    )
     assert len(payload["mapping_spec_sha256"]) == 64
     assert payload["eligible_fact_ids"] == [owner_fact.id, manual.id]
     returned_fact_ids = {
@@ -188,10 +197,17 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
         document_id=revoked_doc.id,
         metric_key="bs.total_equity",
     )
+    retired = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=valid_doc.id,
+        metric_key="bs.total_liabilities",
+    )
+    retired.value_json = {**retired.value_json, "authorization_state": "retired"}
     cutoff = datetime.now(timezone.utc)
     post_cutoff.created_at = cutoff + timedelta(hours=1)
     post_cutoff.updated_at = cutoff + timedelta(hours=1)
-    db_session.add_all([valid, post_cutoff, revoked])
+    db_session.add_all([valid, post_cutoff, revoked, retired])
     db_session.commit()
 
     response = client.get(
@@ -209,6 +225,7 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     reasons = {row["fact_id"]: row["reason_code"] for row in payload["excluded"]}
     assert reasons[post_cutoff.id] == "fact_known_after_cutoff"
     assert reasons[revoked.id] == "source_unauthorized"
+    assert reasons[retired.id] == "source_retired"
 
     future = client.get(
         f"/api/v1/stocks/{stock.id}/source-reconciliation",
@@ -287,7 +304,10 @@ def test_formula_persists_exact_input_lineage_for_replay(db_session, user_factor
         stock_id=stock.id,
         metric_key="source_metric",
         value_numeric=10,
-        value_json={"fact_nature": "manual"},
+        value_json={
+            "fact_nature": "manual",
+            "manual_role": "original_input",
+        },
         source_type="manual",
         is_current=True,
     )
@@ -304,6 +324,7 @@ def test_formula_persists_exact_input_lineage_for_replay(db_session, user_factor
 
     output = db_session.query(MetricFact).filter_by(source_ref_id=run.id).one()
     assert output.value_json["fact_nature"] == "derived_actual"
+    assert output.value_json["calculation_version"] == "formula-engine-v1"
     assert output.value_json["inputs"] == [
         {
             "fact_id": source.id,
@@ -326,7 +347,10 @@ def test_formula_never_overwrites_periods_in_dependency_dictionary(
             stock_id=stock.id,
             metric_key="period_metric",
             value_numeric=value,
-            value_json={"fact_nature": "manual"},
+            value_json={
+                "fact_nature": "manual",
+                "manual_role": "original_input",
+            },
             unit="USD",
             period_type="FY",
             period_end_date=period_end,
@@ -353,6 +377,93 @@ def test_formula_never_overwrites_periods_in_dependency_dictionary(
     assert (
         raised.value.blocking_items[0]["reason_code"]
         == "formula_period_selection_required"
+    )
+
+
+def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
+    db_session, user_factory
+):
+    user = user_factory("reconcile-lineage-boundary@example.com")
+    stocks = [
+        Stock(ticker="RLCA", exchange="NYSE", company_name="Lineage A"),
+        Stock(ticker="RLCB", exchange="NYSE", company_name="Lineage B"),
+    ]
+    db_session.add_all(stocks)
+    db_session.flush()
+    first = MetricFact(
+        user_id=user.id,
+        stock_id=stocks[0].id,
+        metric_key="derived.first",
+        value_numeric=1,
+        value_json={
+            "fact_nature": "derived_actual",
+            "calculation_version": "test-v1",
+            "inputs": [],
+        },
+        source_type="calculated",
+        is_current=True,
+    )
+    second = MetricFact(
+        user_id=user.id,
+        stock_id=stocks[0].id,
+        metric_key="derived.second",
+        value_numeric=2,
+        value_json={
+            "fact_nature": "derived_actual",
+            "calculation_version": "test-v1",
+            "inputs": [],
+        },
+        source_type="calculated",
+        is_current=True,
+    )
+    foreign = MetricFact(
+        user_id=user.id,
+        stock_id=stocks[1].id,
+        metric_key="input.foreign",
+        value_numeric=3,
+        value_json={"manual_role": "original_input"},
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add_all([first, second, foreign])
+    db_session.flush()
+    first.value_json = {
+        **first.value_json,
+        "inputs": [{"fact_id": second.id}],
+    }
+    second.value_json = {
+        **second.value_json,
+        "inputs": [{"fact_id": first.id}],
+    }
+    db_session.commit()
+
+    with pytest.raises(CanonicalReconciliationError) as cycle:
+        guard_reconciled_source_selection(
+            [first],
+            consumer="stock_pool_piotroski_display",
+            knowledge_cutoff=datetime.now(timezone.utc),
+            session=db_session,
+            user_id=user.id,
+        )
+    assert cycle.value.blocking_items[0]["reason_code"] == (
+        "lineage_cycle_detected"
+    )
+
+    first.value_json = {
+        **first.value_json,
+        "inputs": [{"fact_id": foreign.id}],
+    }
+    db_session.commit()
+    with pytest.raises(CanonicalReconciliationError) as cross_stock:
+        guard_reconciled_source_selection(
+            [first],
+            consumer="stock_pool_piotroski_display",
+            knowledge_cutoff=datetime.now(timezone.utc),
+            session=db_session,
+            user_id=user.id,
+        )
+    assert cross_stock.value.blocking_items[0]["reason_code"] == (
+        "cross_stock_lineage_reference"
     )
 
 

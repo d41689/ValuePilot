@@ -16,7 +16,10 @@ def _fact(metric_key, value, period_end, *, fact_nature="actual", fact_id=1, sou
         "id": fact_id,
         "metric_key": metric_key,
         "value_numeric": value,
-        "value_json": {"fact_nature": fact_nature},
+        "value_json": {
+            "fact_nature": fact_nature,
+            "fiscal_year": period_end.year,
+        },
         "period_type": period_type,
         "period_end_date": period_end,
         "source_type": source_type,
@@ -53,6 +56,11 @@ def test_build_piotroski_f_score_facts_calculates_complete_standard_total():
     assert by_key["score.piotroski.total"]["unit"] == "score_total"
     assert by_key["score.piotroski.total"]["value_json"]["status"] == "calculated"
     assert by_key["score.piotroski.total"]["value_json"]["variant"] == "standard"
+    assert {
+        item["fact_id"]
+        for item in by_key["score.piotroski.total"]["value_json"]["inputs"]
+    } == set(range(1, 15))
+    assert len(by_key["score.piotroski.total"]["value_json"]["components"]) == 9
     assert by_key["score.piotroski.roa_positive"]["value_json"]["method"] == "standard_roa"
     assert by_key["score.piotroski.roa_improving"]["value_json"]["method"] == "standard_roa"
 

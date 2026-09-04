@@ -1838,9 +1838,10 @@ def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_summary_agg
         "message": (
             "stock_summary requires an explicit source selection; "
             "available sources: manual, parsed"
-        ),
-        "source_types": ["manual", "parsed"],
-    }
+            ),
+            "source_types": ["manual", "parsed"],
+            "blocking_reasons": [],
+        }
 
 
 def test_lookup_stock_by_ticker_returns_typed_source_conflict_before_growth_aggregation(

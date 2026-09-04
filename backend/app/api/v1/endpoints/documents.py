@@ -690,6 +690,19 @@ def correct_document_review_fact(
         "correction": True,
         "corrected_from_fact_id": fact.id,
     }
+    source_metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    for identity_key in (
+        "mapping_id",
+        "source_mapping_version",
+        "definition_basis",
+        "period_start_date",
+        "duration_days",
+        "fiscal_year",
+        "fiscal_quarter_ordinal",
+        "dimensions_identity",
+    ):
+        if identity_key in source_metadata:
+            value_json[identity_key] = source_metadata[identity_key]
     if note:
         value_json["note"] = str(note)
 

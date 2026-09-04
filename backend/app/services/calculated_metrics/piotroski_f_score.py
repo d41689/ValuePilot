@@ -511,6 +511,24 @@ def _total_fact(
     missing = [key for key in COMPONENT_KEYS if key not in available_keys]
     complete = not missing
     variant = "insurance_adjusted" if company_type == "insurance" else _total_variant(results)
+    lineage_inputs = sorted(
+        {
+            (
+                fact.id,
+                fact.metric_key,
+                fact.period_end_date,
+                fact.source_type,
+            ): fact
+            for result in results
+            for fact in result.inputs
+        }.values(),
+        key=lambda fact: (
+            fact.id if fact.id is not None else -1,
+            fact.metric_key,
+            fact.period_end_date,
+            fact.source_type or "",
+        ),
+    )
     value_json = {
         "status": "calculated" if complete else "partial",
         "variant": variant,
@@ -520,7 +538,8 @@ def _total_fact(
             {fact.source_type for result in results for fact in result.inputs if fact.source_type}
         ),
         "fiscal_year": period_end.year,
-        "inputs": [
+        "inputs": [_lineage_item(fact) for fact in lineage_inputs],
+        "components": [
             {"metric_key": result.metric_key, "value_numeric": float(result.value), "method": result.method}
             for result in results
         ],

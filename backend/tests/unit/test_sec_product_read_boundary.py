@@ -50,8 +50,18 @@ def test_shared_visibility_and_source_guard_are_wired_to_real_consumers():
     dcf = (BACKEND / "app/services/dcf_inputs.py").read_text()
     lens = (BACKEND / "app/services/oracles_lens/dashboard.py").read_text()
     workspace = (BACKEND / "app/services/research_workspace.py").read_text()
+    stock_pools = (BACKEND / "app/api/v1/endpoints/stock_pools.py").read_text()
     assert "visible_metric_fact_predicate" in stocks
-    for source in (stocks, screener, formula, ratios, piotroski, dcf, lens):
+    for source in (
+        stocks,
+        stock_pools,
+        screener,
+        formula,
+        ratios,
+        piotroski,
+        dcf,
+        lens,
+    ):
         assert "guard_reconciled_source_selection" in source
     assert "build_source_reconciliation_report_from_facts" in workspace
     assert "guard_sec_run_availability" in screener

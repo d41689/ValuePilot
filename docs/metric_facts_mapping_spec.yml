@@ -31,6 +31,8 @@ source_reconciliation:
       fact_store: metric_facts
       result_role: comparison_audit_projection
       decimal_arithmetic: required
+      canonical_definition_version: canonical-financial-definitions-v1
+      source_mapping_identity_required: true
       source_roles:
         sec: [primary_as_filed_actual, primary_as_filed_derived_actual]
         parsed: [value_line_adjusted_actual, value_line_estimate]

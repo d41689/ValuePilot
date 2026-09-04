@@ -68,6 +68,19 @@ class MappingSpec:
                 if period_end_date is None and period_type in {"FY", "Q", "EVENT", "AS_OF"}:
                     # Skip facts that require a concrete date but none is available.
                     continue
+                value_json = dict(value_json or {})
+                value_json.setdefault("mapping_id", str(mapping.get("id") or ""))
+                value_json.setdefault(
+                    "source_mapping_version",
+                    f"value-line-spec-v{self.spec.get('version', 'unknown')}",
+                )
+                value_json.setdefault("definition_basis", "adjusted")
+                value_json.setdefault("dimensions_identity", "empty")
+                fiscal_year = _parse_year(
+                    match.context.get("calendar_year") or match.context.get("key")
+                )
+                if period_type in {"FY", "PROJ_FY"} and fiscal_year is not None:
+                    value_json.setdefault("fiscal_year", fiscal_year)
                 facts.append(
                     {
                         "metric_key": metric_key,

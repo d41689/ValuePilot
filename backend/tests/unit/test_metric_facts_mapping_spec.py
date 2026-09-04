@@ -38,6 +38,15 @@ def test_mapping_spec_generates_core_facts():
     eps_2024 = by_key.get(("per_share.eps", "FY", date(2024, 12, 31)))
     assert eps_2024 is not None
     assert eps_2024["value_numeric"] == pytest.approx(11.18)
+    assert eps_2024["value_json"]["mapping_id"] == "per_share.eps.fy"
+    assert eps_2024["value_json"]["source_mapping_version"] == (
+        "value-line-spec-v2"
+    )
+    assert eps_2024["value_json"]["definition_basis"] == "adjusted"
+    assert eps_2024["value_json"]["dimensions_identity"] == "empty"
+    assert eps_2024["value_json"]["fiscal_year"] == 2024
+    assert "period_start_date" not in eps_2024["value_json"]
+    assert "duration_days" not in eps_2024["value_json"]
 
     rate = by_key.get(("rates.premium_income.cagr_10y", "AS_OF", date(2026, 1, 9)))
     assert rate is not None
