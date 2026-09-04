@@ -198,3 +198,23 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   triggers both execute the final `guard_ft07_method_review_insert` function.
   Fresh strict full-diff review and exact canonical closing gates remain
   pending.
+- 2026-09-04: Strict Terra R3 found that a retained valuation fact could become
+  numeric again when its linked revision was missing, tenant/stock-mismatched,
+  or redacted, and that using the final user assumption as source identity
+  could both misclassify an empty-assumption human replacement and permit an
+  ordered-marker bypass. Tests reproduced all cases before the fix.
+- 2026-09-04: New research valuation publications now carry a server-controlled
+  `research-valuation-origin-v1` snapshot in `metric_facts.value_json`, binding
+  the product source to the exact revision ID independently of user-authored
+  assumptions. Manual/watchlist publications remain usable even with empty
+  assumptions; DCF publications remain quarantined across later assumption
+  markers and revision redaction.
+- 2026-09-04: Legacy linked values resolve conservatively: the revision must
+  match the fact tenant and stock, remain unredacted, and contain explicit
+  non-DCF human provenance. Any DCF assumption remains pending FT-09;
+  missing/redacted/cross-tenant/wrong-stock or otherwise unprovable lineage is
+  typed `valuation_origin_unverifiable`. Direct legacy manual values with no
+  revision link remain available, and no path falls back to an older numeric.
+  R3 focused verification is `82 passed`; the expanded 17-file affected set is
+  `269 passed`. Fresh strict full-diff review and exact canonical closing gates
+  remain pending.

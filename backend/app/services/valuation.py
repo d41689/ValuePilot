@@ -16,6 +16,9 @@ from app.models.research import ResearchCaseRevision
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
 VALUE_LINE_TARGET_REFERENCE_KEY = "target.price_18m.mid"
 VALUATION_VALUE_QUANTUM = Decimal("0.000001")
+VALUATION_ORIGIN_VERSION = "research-valuation-origin-v1"
+VALUATION_ORIGIN_SOURCES = frozenset({"manual", "watchlist", "dcf"})
+HUMAN_VALUATION_ORIGINS = frozenset({"manual", "watchlist"})
 
 
 def quantize_valuation_value(value: Decimal) -> Decimal:
@@ -75,17 +78,40 @@ def _has_source_type(fact: ValuationFact, *, source_type: str) -> bool:
     return fact.source_type == source_type
 
 
-def _revision_valuation_source(assumptions: Any) -> str | None:
+def _server_valuation_origin(fact: MetricFact) -> tuple[str, str | None]:
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    if "valuation_origin" not in metadata:
+        return "absent", None
+    origin = metadata.get("valuation_origin")
+    if not isinstance(origin, dict):
+        return "invalid", None
+    source = origin.get("source")
+    if (
+        origin.get("version") != VALUATION_ORIGIN_VERSION
+        or source not in VALUATION_ORIGIN_SOURCES
+        or fact.source_ref_id is None
+        or origin.get("research_revision_id") != fact.source_ref_id
+    ):
+        return "invalid", None
+    return "valid", str(source)
+
+
+def _legacy_valuation_reason(revision: Any | None) -> str | None:
+    if revision is None or revision.is_redacted is True:
+        return "valuation_origin_unverifiable"
+    assumptions = revision.assumptions_json
     if not isinstance(assumptions, list):
+        return "valuation_origin_unverifiable"
+    sources = {
+        item.get("source")
+        for item in assumptions
+        if isinstance(item, dict) and isinstance(item.get("source"), str)
+    }
+    if "dcf" in sources:
+        return "system_valuation_method_pending_ft09"
+    if sources & HUMAN_VALUATION_ORIGINS:
         return None
-    # Product valuation saves preserve prior assumptions and append the current
-    # source's assumptions.  The last explicit source therefore identifies the
-    # value published by this revision without allowing an older DCF assumption
-    # to quarantine a later human replacement.
-    for item in reversed(assumptions):
-        if isinstance(item, dict) and isinstance(item.get("source"), str):
-            return item["source"]
-    return None
+    return "valuation_origin_unverifiable"
 
 
 def _latest_current_fact(
@@ -236,24 +262,22 @@ def read_valuation_facts_by_stock(
         if fact.metric_key == USER_INTRINSIC_VALUE_KEY
         and fact.source_ref_id is not None
     }
-    dcf_revision_stock_pairs: set[tuple[int, int]] = set()
     if revision_ids:
         revisions = session.execute(
             select(
                 ResearchCaseRevision.id,
                 ResearchCaseRevision.snapshot_stock_id,
                 ResearchCaseRevision.assumptions_json,
+                ResearchCaseRevision.is_redacted,
             ).where(
                 ResearchCaseRevision.id.in_(revision_ids),
                 ResearchCaseRevision.created_by_user_id == user_id,
                 ResearchCaseRevision.snapshot_stock_id.in_(unique_stock_ids),
             )
         ).all()
-        dcf_revision_stock_pairs = {
-            (int(revision.id), int(revision.snapshot_stock_id))
-            for revision in revisions
-            if _revision_valuation_source(revision.assumptions_json) == "dcf"
-        }
+        revisions_by_id = {int(revision.id): revision for revision in revisions}
+    else:
+        revisions_by_id = {}
     for fact in facts:
         if (
             fact.metric_key == USER_INTRINSIC_VALUE_KEY
@@ -266,12 +290,18 @@ def read_valuation_facts_by_stock(
         ):
             continue
         selected: ValuationFact = fact
-        if (
-            fact.metric_key == USER_INTRINSIC_VALUE_KEY
-            and fact.source_ref_id is not None
-            and (int(fact.source_ref_id), int(fact.stock_id))
-            in dcf_revision_stock_pairs
-        ):
+        blocked_reason = None
+        if fact.metric_key == USER_INTRINSIC_VALUE_KEY:
+            origin_state, origin_source = _server_valuation_origin(fact)
+            if origin_state == "invalid":
+                blocked_reason = "valuation_origin_unverifiable"
+            elif origin_state == "valid" and origin_source == "dcf":
+                blocked_reason = "system_valuation_method_pending_ft09"
+            elif origin_state == "absent" and fact.source_ref_id is not None:
+                blocked_reason = _legacy_valuation_reason(
+                    revisions_by_id.get(int(fact.source_ref_id))
+                )
+        if blocked_reason is not None:
             selected = ValuationFactProjection(
                 id=int(fact.id),
                 user_id=fact.user_id,
@@ -280,7 +310,7 @@ def read_valuation_facts_by_stock(
                 value_numeric=None,
                 value_json={
                     "status": "unsupported",
-                    "reason_code": "system_valuation_method_pending_ft09",
+                    "reason_code": blocked_reason,
                 },
                 unit=fact.unit,
                 currency=fact.currency,
@@ -304,6 +334,7 @@ def publish_user_intrinsic_value(
     as_of_date: date,
     unavailable_reason: str | None = None,
     source_ref_id: int | None = None,
+    valuation_origin: str | None = None,
 ) -> MetricFact:
     persisted_value = (
         quantize_valuation_value(value_numeric) if value_numeric is not None else None
@@ -322,11 +353,25 @@ def publish_user_intrinsic_value(
         .values(is_current=False)
     )
 
+    if valuation_origin is not None and valuation_origin not in VALUATION_ORIGIN_SOURCES:
+        raise ValueError("unsupported valuation_origin")
+    if valuation_origin is not None and source_ref_id is None:
+        raise ValueError("valuation_origin requires a research revision")
+
     value_json: dict[str, Any] | None = None
     if value_numeric is None:
         value_json = {
             "status": "unavailable",
             "reason": unavailable_reason or "user_cleared",
+        }
+    if valuation_origin is not None:
+        value_json = {
+            **(value_json or {}),
+            "valuation_origin": {
+                "version": VALUATION_ORIGIN_VERSION,
+                "source": valuation_origin,
+                "research_revision_id": source_ref_id,
+            },
         }
 
     fact = MetricFact(
@@ -372,10 +417,16 @@ def redact_published_unavailable_reason(
         )
     ).all()
     for fact in facts:
+        metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
         fact.value_json = {
             "status": "unavailable",
             "reason": "[redacted]",
             "redaction_content_hash": content_hash,
+            **(
+                {"valuation_origin": metadata["valuation_origin"]}
+                if "valuation_origin" in metadata
+                else {}
+            ),
         }
 
 

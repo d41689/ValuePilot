@@ -356,6 +356,7 @@ def save_revision(
     case_id: int,
     payload: ResearchRevisionCreate,
     commit: bool = True,
+    valuation_origin: str = "manual",
 ) -> tuple[ResearchCase, ResearchCaseRevision]:
     case_stock_id = session.scalar(
         select(ResearchCase.stock_id).where(
@@ -482,6 +483,7 @@ def save_revision(
             as_of_date=payload.valuation_as_of_date,
             unavailable_reason=payload.valuation_unavailable_reason,
             source_ref_id=revision.id,
+            valuation_origin=valuation_origin,
         )
 
     prior_state = case.state
@@ -682,6 +684,7 @@ def save_product_valuation_revision(
             case_id=case.id,
             payload=revision_payload,
             commit=False,
+            valuation_origin=source,
         )
         fact = (
             session.query(MetricFact)

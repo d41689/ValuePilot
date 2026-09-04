@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 from app.models.facts import MetricFact
-from app.models.stocks import Stock
+from app.models.stocks import PoolMembership, Stock, StockPool
 import pytest
 
 from app.services.dcf_inputs import (
@@ -30,7 +30,10 @@ from app.services.oracles_lens.dashboard import (
     _quality_overlay_by_stock,
     _valuation_reference_by_stock,
 )
-from app.services.research_cases import save_product_valuation_revision
+from app.services.research_cases import (
+    redact_revision,
+    save_product_valuation_revision,
+)
 from app.services.valuation import (
     read_valuation_context,
     read_valuation_facts_by_stock,
@@ -820,3 +823,272 @@ def test_legacy_dcf_revision_is_quarantined_across_valuation_consumers(
     assert replacement_context.user_intrinsic_value_status == "available"
     assert replacement_context.user_intrinsic_value_reason_code is None
     assert replacement_context.user_intrinsic_value_fact_id == replacement_fact.id
+
+
+@pytest.mark.parametrize("source", ["manual", "watchlist"])
+def test_new_human_valuation_with_empty_assumptions_has_server_origin(
+    db_session, user_factory, source: str
+) -> None:
+    user = user_factory(f"server-origin-{source}@example.com")
+    stock = _stock(db_session, f"ORIGIN{source[:3].upper()}")
+    pool_id = None
+    if source == "watchlist":
+        pool = StockPool(user_id=user.id, name="Origin test watchlist")
+        db_session.add(pool)
+        db_session.flush()
+        db_session.add(
+            PoolMembership(
+                user_id=user.id,
+                pool_id=pool.id,
+                stock_id=stock.id,
+                inclusion_type="manual",
+            )
+        )
+        db_session.commit()
+        pool_id = pool.id
+
+    _, revision, fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=95,
+        valuation_low=90,
+        valuation_high=100,
+        as_of_date=date.today(),
+        source=source,
+        pool_id=pool_id,
+        assumptions=[],
+        valuation_currency="USD",
+    )
+
+    assert fact.value_json == {
+        "valuation_origin": {
+            "version": "research-valuation-origin-v1",
+            "source": source,
+            "research_revision_id": revision.id,
+        }
+    }
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    assert context.user_intrinsic_value == 95
+    assert context.user_intrinsic_value_status == "available"
+    assert context.user_intrinsic_value_reason_code is None
+
+
+def test_new_dcf_origin_cannot_be_overridden_by_assumption_order(
+    db_session, user_factory
+) -> None:
+    user = user_factory("server-dcf-origin@example.com")
+    stock = _stock(db_session, "DCFORIGIN")
+    case, revision, fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=105,
+        valuation_low=100,
+        valuation_high=110,
+        as_of_date=date.today(),
+        source="dcf",
+        pool_id=None,
+        assumptions=[
+            {"source": "dcf", "label": "System model"},
+            {"source": "manual", "label": "Attempted source override"},
+        ],
+        valuation_currency="USD",
+    )
+
+    assert fact.source_ref_id == revision.id
+    projected = read_valuation_facts_by_stock(
+        db_session, user_id=user.id, stock_ids=[stock.id]
+    )[stock.id]["val.fair_value"]
+    assert projected.value_numeric is None
+    assert projected.value_json["reason_code"] == (
+        "system_valuation_method_pending_ft09"
+    )
+    redact_revision(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        revision_number=revision.revision_number,
+        reason="Redact user-controlled assumptions.",
+    )
+    projected_after_redaction = read_valuation_facts_by_stock(
+        db_session, user_id=user.id, stock_ids=[stock.id]
+    )[stock.id]["val.fair_value"]
+    assert projected_after_redaction.id == fact.id
+    assert projected_after_redaction.value_numeric is None
+    assert projected_after_redaction.value_json["reason_code"] == (
+        "system_valuation_method_pending_ft09"
+    )
+
+
+@pytest.mark.parametrize(
+    "lineage_state", ["redacted", "missing", "cross_user", "wrong_stock"]
+)
+def test_unverifiable_legacy_linked_valuation_never_exposes_numeric(
+    db_session, user_factory, lineage_state: str
+) -> None:
+    owner = user_factory(f"legacy-origin-owner-{lineage_state}@example.com")
+    reader = (
+        user_factory(f"legacy-origin-reader-{lineage_state}@example.com")
+        if lineage_state == "cross_user"
+        else owner
+    )
+    revision_stock = _stock(db_session, f"RV{lineage_state[:5]}")
+    fact_stock = (
+        _stock(db_session, f"FV{lineage_state[:5]}")
+        if lineage_state == "wrong_stock"
+        else revision_stock
+    )
+    case, revision, published = save_product_valuation_revision(
+        db_session,
+        user_id=owner.id,
+        stock_id=revision_stock.id,
+        value_numeric=115,
+        valuation_low=110,
+        valuation_high=120,
+        as_of_date=date.today(),
+        source="dcf",
+        pool_id=None,
+        assumptions=[{"source": "dcf", "label": "Legacy DCF"}],
+        valuation_currency="USD",
+    )
+    # Simulate a retained pre-origin-contract fact without rewriting its
+    # revision/fact provenance identity.
+    published.value_json = None
+    db_session.commit()
+
+    if lineage_state == "redacted":
+        redact_revision(
+            db_session,
+            user_id=owner.id,
+            case_id=case.id,
+            revision_number=revision.revision_number,
+            reason="Remove user-authored valuation inputs.",
+        )
+        fact = published
+    elif lineage_state == "missing":
+        published.source_ref_id = revision.id + 1_000_000
+        db_session.commit()
+        fact = published
+    else:
+        fact = MetricFact(
+            user_id=reader.id,
+            stock_id=fact_stock.id,
+            metric_key="val.fair_value",
+            value_numeric=115,
+            unit="USD",
+            currency="USD",
+            period_type="AS_OF",
+            period_end_date=date.today(),
+            source_type="manual",
+            source_ref_id=revision.id,
+            is_current=True,
+        )
+        db_session.add(fact)
+        db_session.commit()
+
+    projected = read_valuation_facts_by_stock(
+        db_session, user_id=reader.id, stock_ids=[fact_stock.id]
+    )[fact_stock.id]["val.fair_value"]
+    assert projected.id == fact.id
+    assert projected.source_ref_id == fact.source_ref_id
+    assert projected.value_numeric is None
+    assert projected.value_json == {
+        "status": "unsupported",
+        "reason_code": "valuation_origin_unverifiable",
+    }
+
+
+def test_legacy_dcf_assumption_cannot_be_hidden_by_later_manual_marker(
+    db_session, user_factory
+) -> None:
+    user = user_factory("legacy-dcf-order@example.com")
+    stock = _stock(db_session, "LEGDCFORDER")
+    _, revision, fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=120,
+        valuation_low=110,
+        valuation_high=130,
+        as_of_date=date.today(),
+        source="dcf",
+        pool_id=None,
+        assumptions=[
+            {"source": "dcf", "label": "Legacy DCF"},
+            {"source": "manual", "label": "Later user marker"},
+        ],
+        valuation_currency="USD",
+    )
+    fact.value_json = None
+    db_session.commit()
+
+    projected = read_valuation_facts_by_stock(
+        db_session, user_id=user.id, stock_ids=[stock.id]
+    )[stock.id]["val.fair_value"]
+    assert projected.source_ref_id == revision.id
+    assert projected.value_numeric is None
+    assert projected.value_json["reason_code"] == (
+        "system_valuation_method_pending_ft09"
+    )
+
+
+def test_direct_legacy_manual_value_without_revision_remains_available(
+    db_session, user_factory
+) -> None:
+    user = user_factory("direct-legacy-manual@example.com")
+    stock = _stock(db_session, "DIRECTMAN")
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.fair_value",
+        value_numeric=75,
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date.today(),
+        source_type="manual",
+        source_ref_id=None,
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    assert context.user_intrinsic_value == 75
+    assert context.user_intrinsic_value_status == "available"
+    assert context.user_intrinsic_value_fact_id == fact.id
+
+
+def test_legacy_linked_explicit_human_origin_remains_available(
+    db_session, user_factory
+) -> None:
+    user = user_factory("linked-legacy-manual@example.com")
+    stock = _stock(db_session, "LINKEDMAN")
+    _, revision, fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=85,
+        valuation_low=80,
+        valuation_high=90,
+        as_of_date=date.today(),
+        source="manual",
+        pool_id=None,
+        assumptions=[{"source": "manual", "label": "Legacy human value"}],
+        valuation_currency="USD",
+    )
+    fact.value_json = None
+    db_session.commit()
+
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+    assert context.user_intrinsic_value == 85
+    assert context.user_intrinsic_value_status == "available"
+    assert context.user_intrinsic_value_fact_id == fact.id
+    assert fact.source_ref_id == revision.id

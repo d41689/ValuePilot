@@ -492,7 +492,11 @@ def test_batch_valuation_reader_respects_newest_unavailable_tombstone(
     )[stock.id]["val.fair_value"]
 
     assert selected.value_numeric is None
-    assert selected.value_json["reason"] == "evidence_insufficient"
+    assert selected.value_json == {
+        "status": "unsupported",
+        "reason_code": "valuation_origin_unverifiable",
+    }
+    assert selected.source_ref_id == 2
 
 
 def test_append_only_tables_reject_normal_update_and_delete(
