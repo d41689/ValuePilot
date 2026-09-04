@@ -9,9 +9,8 @@ from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
     guard_sec_run_availability,
-    guard_piotroski_method_authority,
     is_reserved_system_output_key,
-    PiotroskiMethodAuthorityError,
+    require_applicable_method_facts,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
@@ -158,14 +157,13 @@ class FormulaEngine:
             user_id=user_id,
         )
         facts = guard_sec_run_availability(self.db, stock_id=stock_id, facts=facts)
-        facts, method_blocked = guard_piotroski_method_authority(
+        facts = require_applicable_method_facts(
             self.db,
+            stock_id=stock_id,
             facts=facts,
             effective_as_of=date.today(),
             knowledge_at=evaluated_at,
         )
-        if method_blocked:
-            raise PiotroskiMethodAuthorityError(method_blocked[0])
         facts_by_metric = {
             metric_key: [fact for fact in facts if fact.metric_key == metric_key]
             for metric_key in formula.dependencies_json

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -17,6 +18,7 @@ from app.services.calculated_metrics.piotroski_f_score import (
 from app.services.canonical_financials import (
     PiotroskiMethodAuthorityError,
     apply_reviewed_method_gates,
+    guard_piotroski_method_authority,
     reviewed_method_gate,
 )
 from app.services.formula_engine import FormulaEngine
@@ -301,6 +303,15 @@ def test_generation_persists_exact_roic_authority_on_proxy_components_and_total(
         ).value_json["inputs"]
     }
     assert total_inputs == {fact.id for fact in source_facts}
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=affected,
+        effective_as_of=date.today(),
+        knowledge_at=max(fact.created_at for fact in affected)
+        + timedelta(seconds=1),
+    )
+    assert kept == affected
+    assert blocked == []
 
 
 def test_standard_roa_path_does_not_require_roic_proxy_approval(
@@ -423,6 +434,39 @@ def _retained_total(
     )
 
 
+def _clone_fact(fact: MetricFact) -> MetricFact:
+    return MetricFact(
+        user_id=fact.user_id,
+        stock_id=fact.stock_id,
+        metric_key=fact.metric_key,
+        value_numeric=fact.value_numeric,
+        value_text=fact.value_text,
+        value_json=deepcopy(fact.value_json),
+        unit=fact.unit,
+        currency=fact.currency,
+        period_type=fact.period_type,
+        period_end_date=fact.period_end_date,
+        source_type=fact.source_type,
+        is_current=True,
+        created_at=fact.created_at,
+    )
+
+
+def _strict_lineage_item(fact: MetricFact) -> dict:
+    return {
+        "fact_id": fact.id,
+        "user_id": fact.user_id,
+        "stock_id": fact.stock_id,
+        "metric_key": fact.metric_key,
+        "period_type": fact.period_type,
+        "period_end_date": fact.period_end_date.isoformat(),
+        "value_numeric": format(fact.value_numeric, "f"),
+        "source_type": fact.source_type,
+        "fact_nature": fact.value_json["fact_nature"],
+        "created_at": fact.created_at.isoformat(),
+    }
+
+
 @pytest.mark.parametrize(
     ("snapshot_kind", "reason_code"),
     [
@@ -441,51 +485,40 @@ def test_retained_total_capital_proxy_requires_exact_origin_authority(
 ) -> None:
     reviewer = user_factory(f"piot-retained-{snapshot_kind}@example.com", role="admin")
     stock = _stock(db_session, f"PR{snapshot_kind[:5]}")
-    snapshot = _approved_roic_snapshot(
-        db_session, reviewer=reviewer, stock=stock
+    _approved_roic_snapshot(db_session, reviewer=reviewer, stock=stock)
+    _add_total_capital_inputs(db_session, user=reviewer, stock=stock)
+    generated = PiotroskiFScoreCalculator(db_session).calculate_for_stock(
+        user_id=reviewer.id, stock_id=stock.id
+    )
+    fact = _clone_fact(
+        next(
+            item
+            for item in generated
+            if item.metric_key == "score.piotroski.total"
+            and item.period_end_date == PERIOD_1
+        )
     )
     if snapshot_kind == "missing":
-        snapshot = None
+        fact.value_json.pop("analysis_method")
     elif snapshot_kind == "malformed":
-        snapshot = ["not", "authority"]
+        fact.value_json["analysis_method"] = ["not", "authority"]
     elif snapshot_kind == "forged":
-        snapshot["policy_sha256"] = "0" * 64
+        fact.value_json["analysis_method"]["policy_sha256"] = "0" * 64
     elif snapshot_kind == "future":
-        snapshot = reviewed_method_gate(
-            db_session,
-            stock_id=stock.id,
-            method_key="roic",
-            effective_as_of=PERIOD_1,
-            knowledge_at=datetime.now(timezone.utc) + timedelta(days=1),
-        ).as_dict()
+        fact.value_json["analysis_method"]["knowledge_at"] = (
+            fact.created_at + timedelta(days=1)
+        ).isoformat()
     else:
-        snapshot["effective_as_of"] = PERIOD_0.isoformat()
-    input_fact = _input_fact(
-        user_id=reviewer.id,
-        stock_id=stock.id,
-        metric_key="returns.total_capital",
-        value=0.12,
-        period_end=PERIOD_1,
-        source_type="manual",
-    )
-    db_session.add(input_fact)
-    db_session.flush()
-    fact = _retained_total(
-        user_id=reviewer.id,
-        stock_id=stock.id,
-        input_fact=input_fact,
-        snapshot=snapshot,
-        partial=True,
-    )
-    db_session.add(fact)
-    db_session.commit()
+        fact.value_json["analysis_method"]["effective_as_of"] = (
+            PERIOD_0.isoformat()
+        )
 
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,
         stock_id=stock.id,
         facts=[fact],
         effective_as_of=date.today(),
-        knowledge_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+        knowledge_at=fact.created_at + timedelta(seconds=1),
     )
 
     assert kept == []
@@ -515,35 +548,41 @@ def test_retained_piotroski_requires_verifiable_input_lineage(
     other = user_factory(f"piot-lineage-other-{lineage_state}@example.com")
     stock = _stock(db_session, f"PL{lineage_state[:5]}")
     other_stock = _stock(db_session, f"PX{lineage_state[:5]}")
-    snapshot = _approved_roic_snapshot(db_session, reviewer=owner, stock=stock)
-    input_fact = None
-    if lineage_state != "missing":
+    _approved_roic_snapshot(db_session, reviewer=owner, stock=stock)
+    _add_total_capital_inputs(db_session, user=owner, stock=stock)
+    generated = PiotroskiFScoreCalculator(db_session).calculate_for_stock(
+        user_id=owner.id, stock_id=stock.id
+    )
+    fact = _clone_fact(
+        next(
+            item
+            for item in generated
+            if item.metric_key == "score.piotroski.total"
+            and item.period_end_date == PERIOD_1
+        )
+    )
+    if lineage_state == "missing":
+        fact.value_json["inputs"] = []
+    elif lineage_state in {"cross_stock", "cross_user"}:
         input_fact = _input_fact(
             user_id=other.id if lineage_state == "cross_user" else owner.id,
             stock_id=other_stock.id if lineage_state == "cross_stock" else stock.id,
             metric_key="returns.total_capital",
             value=0.12,
             period_end=PERIOD_1,
-            source_type="manual",
+            source_type="parsed",
         )
         db_session.add(input_fact)
-        db_session.flush()
-    fact = _retained_total(
-        user_id=owner.id,
-        stock_id=stock.id,
-        input_fact=input_fact,
-        snapshot=snapshot,
-    )
-    if lineage_state == "wrong_key":
+        db_session.commit()
+        fact.value_json["inputs"][0] = _strict_lineage_item(input_fact)
+    elif lineage_state == "wrong_key":
         fact.value_json["inputs"][0]["metric_key"] = "returns.roa"
     elif lineage_state == "wrong_date":
-        fact.value_json["inputs"][0]["period_end_date"] = PERIOD_0.isoformat()
+        fact.value_json["inputs"][0]["period_end_date"] = date(2022, 12, 31).isoformat()
     elif lineage_state == "wrong_value":
         fact.value_json["inputs"][0]["value_numeric"] = "0.13"
     elif lineage_state == "wrong_source":
-        fact.value_json["inputs"][0]["source_type"] = "parsed"
-    db_session.add(fact)
-    db_session.commit()
+        fact.value_json["inputs"][0]["source_type"] = "manual"
 
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,
@@ -554,11 +593,11 @@ def test_retained_piotroski_requires_verifiable_input_lineage(
 
     assert kept == []
     assert blocked[0]["reason_code"] == (
-        "piotroski_method_authority_lineage_unverifiable"
+        "piotroski_method_authority_manifest_invalid"
     )
 
 
-def test_legacy_total_with_verified_non_proxy_inputs_remains_available(
+def test_legacy_total_with_verified_non_proxy_inputs_is_still_quarantined(
     db_session, user_factory
 ) -> None:
     user = user_factory("piot-legacy-standard@example.com")
@@ -590,8 +629,10 @@ def test_legacy_total_with_verified_non_proxy_inputs_remains_available(
         effective_as_of=date.today(),
     )
 
-    assert kept == [fact]
-    assert blocked == []
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_method_authority_manifest_missing"
+    )
 
 
 def test_non_calculated_piotroski_namespace_is_never_numeric_authority(
@@ -639,35 +680,25 @@ def test_retained_proxy_requires_current_roic_gate_to_remain_approved(
 ) -> None:
     reviewer = user_factory("piot-current-gate@example.com", role="admin")
     stock = _stock(db_session, "PIOTCUR")
-    snapshot = _approved_roic_snapshot(
-        db_session, reviewer=reviewer, stock=stock
-    )
-    source = _input_fact(
+    _approved_roic_snapshot(db_session, reviewer=reviewer, stock=stock)
+    _add_total_capital_inputs(db_session, user=reviewer, stock=stock)
+    generated = PiotroskiFScoreCalculator(db_session).calculate_for_stock(
         user_id=reviewer.id,
         stock_id=stock.id,
-        metric_key="returns.total_capital",
-        value=0.12,
-        period_end=PERIOD_1,
-        source_type="manual",
     )
-    db_session.add(source)
-    db_session.flush()
-    fact = _retained_total(
-        user_id=reviewer.id,
-        stock_id=stock.id,
-        input_fact=source,
-        snapshot=snapshot,
+    fact = next(
+        item
+        for item in generated
+        if item.metric_key == "score.piotroski.total"
+        and item.period_end_date == PERIOD_1
     )
-    fact.created_at = datetime.now(timezone.utc) + timedelta(seconds=1)
-    db_session.add(fact)
-    db_session.commit()
 
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,
         stock_id=stock.id,
         facts=[fact],
         effective_as_of=date.today(),
-        knowledge_at=datetime.now(timezone.utc) + timedelta(seconds=2),
+        knowledge_at=fact.created_at + timedelta(seconds=1),
     )
     assert kept == [fact]
     assert blocked == []
@@ -691,7 +722,7 @@ def test_retained_proxy_requires_current_roic_gate_to_remain_approved(
         stock_id=stock.id,
         facts=[fact],
         effective_as_of=date.today(),
-        knowledge_at=datetime.now(timezone.utc) + timedelta(seconds=2),
+        knowledge_at=datetime.now(timezone.utc) + timedelta(seconds=1),
     )
     assert kept == []
     assert blocked[0]["reason_code"] == "roic_unsupported_for_bank"
@@ -702,24 +733,32 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
 ) -> None:
     owner = user_factory("piot-consumer-owner@example.com")
     stock = _stock(db_session, "PCONS")
-    source = _input_fact(
+    db_session.add_all(
+        [
+            _input_fact(
+                user_id=owner.id,
+                stock_id=stock.id,
+                metric_key="returns.total_capital",
+                value=0.12,
+                period_end=PERIOD_1,
+            ),
+            _input_fact(
+                user_id=owner.id,
+                stock_id=stock.id,
+                metric_key="is.operating_cash_flow",
+                value=150,
+                period_end=PERIOD_1,
+            ),
+        ]
+    )
+    db_session.commit()
+    generated = PiotroskiFScoreCalculator(db_session).calculate_for_stock(
         user_id=owner.id,
         stock_id=stock.id,
-        metric_key="returns.total_capital",
-        value=0.12,
-        period_end=PERIOD_1,
-        source_type="manual",
     )
-    db_session.add(source)
-    db_session.flush()
-    total = _retained_total(
-        user_id=owner.id,
-        stock_id=stock.id,
-        input_fact=source,
-        snapshot=None,
-        partial=True,
+    total = next(
+        fact for fact in generated if fact.metric_key == "score.piotroski.total"
     )
-    db_session.add(total)
     research_case = ResearchCase(
         user_id=owner.id,
         stock_id=stock.id,
@@ -743,7 +782,7 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
     )
     assert card["years"] == []
     assert card["state"]["reason_code"] == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )
 
     pool_facts, pool_state = _guard_piotroski_display_facts(
@@ -755,7 +794,7 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
     )
     assert pool_facts == []
     assert pool_state["reason_code"] == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )
 
     oracle_facts, oracle_states = _m3_facts_by_stock(
@@ -768,14 +807,14 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
     )
     assert oracle_facts[stock.id] == {}
     assert oracle_states[stock.id]["reason_code"] == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )
 
     drawer = _m3_panel_for_stock(db_session, stock.id, user_id=owner.id)
     assert drawer.piotroski_score is None
     assert drawer.piotroski_max is None
     assert drawer.canonical_source_status.reason_code == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )
 
     workspace = build_research_workspace(
@@ -793,7 +832,7 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
     assert len(blocked) == 1
     assert blocked[0]["value_numeric"] is None
     assert blocked[0]["reason_code"] == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )
 
     with pytest.raises(PiotroskiMethodAuthorityError) as formula_error:
@@ -801,7 +840,7 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
             formula.id, stock.id, owner.id
         )
     assert formula_error.value.code == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )
 
     with pytest.raises(PiotroskiMethodAuthorityError) as screener_error:
@@ -819,7 +858,7 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
             current_user_id=owner.id,
         )
     assert screener_error.value.code == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )
 
     response = client.post(
@@ -838,5 +877,5 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == (
-        "piotroski_method_authority_snapshot_missing"
+        "classification_unreviewed"
     )

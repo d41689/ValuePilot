@@ -305,8 +305,38 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   the Piotroski guard. The migration artifact SHA-256 is
   `6e4a999f114c70616dca196ae94b8bd4f1c9f346821660b805f58625ad0eec77`, and the
   final isolated migration-focused rerun is `9 passed`. Rollout policy is
-  fail-closed: any legacy proxy score in
-  another environment remains unavailable until a later reviewed, authorized
+  fail-closed: any legacy score without the strict versioned manifest in
+  another environment remains unavailable until a later authorized
   recomputation appends a new score. The missing operator-triggered bounded
   recomputation entry point is recorded in `docs/BACKLOG.md`; this PR does not
   rewrite legacy authority or add a batch job.
+- 2026-09-04: Strict Terra R7 found two remaining numeric read paths and an
+  under-specified retained Piotroski manifest. Formula and screener execution
+  now apply the complete shared method gate to only the facts named by the
+  formula dependencies or screen conditions before evaluation or SQL predicate
+  execution. Owner Earnings, ROIC aliases, per-share trends, system valuation,
+  and Piotroski authority therefore fail closed with stable typed errors, while
+  custom outputs and unrelated facts remain usable.
+- 2026-09-04: Piotroski generation now publishes calculation version
+  `piotroski_value_line_v2` with strict manifest marker
+  `piotroski-strict-manifest-v1`. Every component and total records a unique,
+  exact, database-stamped input manifest; the shared read guard bulk-loads those
+  inputs and reconstructs the claimed component or total before exposing any
+  numeric. Duplicate, extra, omitted, cross-tenant/stock, wrong-period,
+  future-input, metadata-method, and output-value tampering are quarantined.
+  All pre-v2 Piotroski facts are intentionally unavailable even when they do
+  not claim the ROIC proxy, because their unversioned metadata cannot prove the
+  complete input set. The existing non-destructive recomputation backlog item
+  is the recovery path; no retained fact is rewritten.
+- 2026-09-04: Piotroski publication is period-atomic. If a total-capital proxy
+  component is blocked, generation demotes the prior period projection and
+  appends one typed unavailable total with no component, partial-score, or
+  numeric payload. Normal periods append strict components and a matching
+  total; any invalid retained fact quarantines every Piotroski fact for the
+  same tenant, stock, and period without crossing tenant boundaries. R7 focused
+  verification is `74 passed`, the Piotroski consumer/fixture set is
+  `217 passed`, and the serial 27-file R5+R6+R7 affected superset is
+  `464 passed`; only the pre-existing Starlette/httpx and anyio deprecation
+  warnings remain. Migration 160 was not modified and no migration 170 was
+  needed because its OLD/NEW trigger already protects the complete calculated
+  Piotroski payload and identity.

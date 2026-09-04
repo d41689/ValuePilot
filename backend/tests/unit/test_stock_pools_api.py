@@ -8,6 +8,7 @@ from app.models.users import User
 from app.models.stocks import Stock, StockPool, PoolMembership, StockPrice
 from app.models.facts import MetricFact
 from app.core.security import hash_password
+from tests.piotroski_test_helpers import seed_strict_piotroski_total
 
 
 ET = ZoneInfo("America/New_York")
@@ -410,10 +411,6 @@ def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
 
     stock_a = _make_stock(db_session, "ASML")
     stock_b = _make_stock(db_session, "FICO")
-    source_a = _piotroski_lineage_source(user.id, stock_a.id)
-    source_b = _piotroski_lineage_source(user.id, stock_b.id)
-    db_session.add_all([source_a, source_b])
-    db_session.flush()
     db_session.add_all(
         [
             PoolMembership(
@@ -432,49 +429,47 @@ def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
             ),
         ]
     )
-    db_session.add_all(
-        [
-            *[
-                _piotroski_total_fact(
-                    user.id,
-                    stock_a.id,
-                    year,
-                    float(score),
-                    lineage_fact_id=source_a.id,
-                )
-                for year, score in [
-                    (2019, 4),
-                    (2020, 5),
-                    (2021, 6),
-                    (2022, 7),
-                    (2023, 8),
-                    (2024, 9),
-                ]
-            ],
-            _piotroski_total_fact(
-                user.id, stock_a.id, 2025, 7.0,
-                fact_nature="estimate", lineage_fact_id=source_a.id,
-            ),
-            _piotroski_total_fact(
-                user.id, stock_a.id, 2026, 6.0,
-                fact_nature="estimate", lineage_fact_id=source_a.id,
-            ),
-            _piotroski_total_fact(
-                user.id, stock_a.id, 2027, 5.0,
-                fact_nature="estimate", lineage_fact_id=source_a.id,
-            ),
-            _piotroski_total_fact(
-                user.id,
-                stock_b.id,
-                2024,
-                None,
-                partial_score=6,
-                max_available_score=8,
-                lineage_fact_id=source_b.id,
-            ),
-        ]
-    )
     db_session.commit()
+    for year, score in [
+        (2019, 4),
+        (2020, 5),
+        (2021, 6),
+        (2022, 7),
+        (2023, 8),
+    ]:
+        seed_strict_piotroski_total(
+            db_session,
+            user_id=user.id,
+            stock_id=stock_a.id,
+            score=score,
+            period_end=date(year, 12, 31),
+            complete=True,
+        )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=9,
+        period_end=date(2024, 12, 31),
+        complete=True,
+    )
+    for year, score in [(2025, 7), (2026, 6), (2027, 5)]:
+        seed_strict_piotroski_total(
+            db_session,
+            user_id=user.id,
+            stock_id=stock_a.id,
+            score=score,
+            period_end=date(year, 12, 31),
+            complete=True,
+            fact_nature="estimate",
+        )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_b.id,
+        score=6,
+        period_end=date(2024, 12, 31),
+    )
 
     resp = client.get(f"/api/v1/stock_pools/{pool.id}/f-score-compare", headers=headers)
     assert resp.status_code == 200, resp.text
@@ -517,19 +512,20 @@ def test_overview_f_score_compare_deduplicates_members(client, db_session, auth_
     db_session.commit()
 
     stock = _make_stock(db_session, "MSFT")
-    source = _piotroski_lineage_source(user.id, stock.id)
-    db_session.add(source)
-    db_session.flush()
     db_session.add_all(
         [
             PoolMembership(user_id=user.id, pool_id=pool_a.id, stock_id=stock.id, inclusion_type="manual"),
             PoolMembership(user_id=user.id, pool_id=pool_b.id, stock_id=stock.id, inclusion_type="manual"),
-            _piotroski_total_fact(
-                user.id, stock.id, 2024, 8.0, lineage_fact_id=source.id
-            ),
         ]
     )
     db_session.commit()
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        score=8,
+        period_end=date(2024, 12, 31),
+    )
 
     resp = client.get("/api/v1/stock_pools/overview/f-score-compare", headers=headers)
     assert resp.status_code == 200, resp.text
@@ -588,19 +584,6 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     stock_a = _make_stock(db_session, "AOS")
     stock_b = _make_stock(db_session, "MSFT")
     stock_c = _make_stock(db_session, "SHOP")
-    piotroski_source = _piotroski_lineage_source(user.id, stock_a.id)
-    db_session.add(piotroski_source)
-    db_session.flush()
-    piotroski_lineage = [
-        {
-            "fact_id": piotroski_source.id,
-            "metric_key": piotroski_source.metric_key,
-            "period_end_date": None,
-            "value_numeric": "1",
-            "source_type": "manual",
-            "fact_nature": None,
-        }
-    ]
 
     db_session.add(
         PoolMembership(
@@ -775,106 +758,39 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
             is_current=True,
         )
     )
-    db_session.add_all(
-        [
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=9.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "valueline_proxy",
-                    "fiscal_year": 2999,
-                    "fact_nature": "estimate",
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2999, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=8.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "valueline_proxy",
-                    "fiscal_year": 2024,
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2024, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=None,
-                value_json={
-                    "status": "partial",
-                    "variant": "insurance_adjusted",
-                    "fiscal_year": 2023,
-                    "partial_score": 6,
-                    "available_indicators": 8,
-                    "max_available_score": 8,
-                    "missing_indicators": ["score.piotroski.current_ratio_improving"],
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2023, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=4.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "standard",
-                    "fiscal_year": 2022,
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2022, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=3.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "standard",
-                    "fiscal_year": 2021,
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2021, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-        ]
-    )
     db_session.commit()
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=4,
+        period_end=date(2022, 12, 31),
+        complete=True,
+    )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=6,
+        period_end=date(2023, 12, 31),
+    )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=8,
+        period_end=date(2024, 12, 31),
+        complete=True,
+    )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=9,
+        period_end=date(2999, 12, 31),
+        complete=True,
+        fact_nature="estimate",
+    )
 
     resp = client.get(f"/api/v1/stock_pools/{pool.id}/members", headers=headers)
     assert resp.status_code == 200
@@ -907,7 +823,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
             "fiscal_year": 2024,
             "score": 8.0,
             "status": "calculated",
-            "variant": "valueline_proxy",
+            "variant": "standard",
             "partial_score": None,
             "available_indicators": None,
             "max_available_score": None,
@@ -918,11 +834,11 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
             "fiscal_year": 2023,
             "score": None,
             "status": "partial",
-            "variant": "insurance_adjusted",
+            "variant": "standard",
             "partial_score": 6,
             "available_indicators": 8,
             "max_available_score": 8,
-            "missing_indicators": ["score.piotroski.current_ratio_improving"],
+            "missing_indicators": ["score.piotroski.asset_turnover_improving"],
         },
         {
             "period_end_date": "2022-12-31",

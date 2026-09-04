@@ -9,6 +9,7 @@ from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
+from tests.piotroski_test_helpers import seed_strict_piotroski_total
 from app.services.market_data_service import ET, compute_target_date, expected_session_on_or_before
 from app.services.method_applicability import (
     RISK_ATTRIBUTES,
@@ -439,22 +440,15 @@ def test_oracles_lens_adds_value_line_quality_overlay(
 ):
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
-    lineage_source = _derived_lineage_source(db_session, target)
-    piotroski = _metric_fact(
-        target,
-        "score.piotroski.total",
-        8,
-        source_type="calculated",
-        source_document_id=document.id,
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=target._test_user_id,
+        stock_id=target.id,
+        score=8,
+        period_end=date(2031, 12, 31),
     )
-    piotroski.value_json = {
-        **piotroski.value_json,
-        "calculation_version": "piotroski-test-v1",
-        "inputs": [_piotroski_lineage(lineage_source)],
-    }
     db_session.add_all(
         [
-            piotroski,
             _metric_fact(target, "bs.return_on_total_capital", 0.24, source_document_id=document.id),
             _metric_fact(target, "bs.return_on_equity", 0.31, source_document_id=document.id),
             _metric_fact(target, "is.net_profit_margin", 0.22, source_document_id=document.id),
@@ -543,10 +537,10 @@ def test_oracles_lens_adds_value_line_quality_overlay(
             "primary_source_document_id": document.id,
             "source_document_ids": [document.id],
             "facts": [
-                {
-                    "label": "piotroski_total",
-                    "metric_key": "score.piotroski.total",
-                    "source_document_id": document.id,
+                    {
+                        "label": "piotroski_total",
+                        "metric_key": "score.piotroski.total",
+                        "source_document_id": None,
                     "source_type": "calculated",
                     "period_type": "FY",
                     "period_end_date": "2031-12-31",
@@ -593,31 +587,13 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
     """
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
-    lineage_source = _derived_lineage_source(db_session, target)
-    # Piotroski fact: value_numeric=None, value_json carries partial_score.
-    db_session.add(
-        MetricFact(
-            user_id=target._test_user_id,
-            stock_id=target.id,
-            metric_key="score.piotroski.total",
-            value_numeric=None,
-            value_json={
-                "partial_score": 6,
-                "max_available_score": 8,
-                "status": "partial",
-                "fact_nature": "actual",
-                "calculation_version": "piotroski-test-v1",
-                "inputs": [_piotroski_lineage(lineage_source)],
-            },
-            unit=None,
-            period_type="FY",
-            period_end_date=date(2031, 12, 31),
-            source_document_id=document.id,
-            source_type="calculated",
-            is_current=True,
-        )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=target._test_user_id,
+        stock_id=target.id,
+        score=6,
+        period_end=date(2031, 12, 31),
     )
-    db_session.commit()
 
     response = client.get(
         "/api/v1/13f/oracles-lens?use_persisted_scores=false",
@@ -631,14 +607,10 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
     assert overlay["coverage"]["value_line"] is True
 
 
-def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
+def test_oracles_lens_quarantines_legacy_divergent_piotroski_numeric(
     client, db_session, auth_headers,
 ):
-    """D2 post-review (Backend B5): when BOTH ``value_numeric`` and
-    ``value_json['partial_score']`` are set with different values, the
-    column wins. The value_json fallback only fires when value_numeric is
-    null — never as a silent override of the canonical column.
-    """
+    """Legacy payloads cannot prove which of two divergent scores is valid."""
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
     lineage_source = _derived_lineage_source(db_session, target)
@@ -672,8 +644,11 @@ def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
     )
     assert response.status_code == 200
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
-    # value_numeric (8.0) wins over value_json.partial_score (3).
-    assert item["quality_overlay"]["piotroski_total"] == 8.0
+    overlay = item["quality_overlay"]
+    assert overlay["piotroski_total"] is None
+    assert overlay["canonical_source_status"]["reason_code"] == (
+        "piotroski_method_authority_manifest_missing"
+    )
 
 
 def test_oracles_lens_adds_conservative_valuation_reference(
@@ -1148,12 +1123,12 @@ def test_missing_derived_lineage_does_not_hide_unrelated_legal_source(
     assert overlay["piotroski_total"] is None
     assert overlay["canonical_source_status"] == {
         "status": "partial",
-        "reason_code": "piotroski_method_authority_lineage_unverifiable",
+        "reason_code": "piotroski_method_authority_manifest_missing",
         "unavailable_metrics": [
             {
                 "metric_key": "score.piotroski.total",
                 "blocking_reasons": [
-                    "piotroski_method_authority_lineage_unverifiable"
+                    "piotroski_method_authority_manifest_missing"
                 ],
             }
         ],

@@ -19,7 +19,8 @@ from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
-CALCULATION_VERSION = "piotroski_value_line_v1"
+CALCULATION_VERSION = "piotroski_value_line_v2"
+MANIFEST_VERSION = "piotroski-strict-manifest-v1"
 COMPONENT_KEYS = [
     "score.piotroski.roa_positive",
     "score.piotroski.cfo_positive",
@@ -62,12 +63,15 @@ PIOTROSKI_INPUT_KEYS = frozenset(
 @dataclass(frozen=True)
 class FactSnapshot:
     id: Optional[int]
+    user_id: Optional[int]
+    stock_id: int
     metric_key: str
     value_numeric: Optional[Decimal]
     value_json: dict[str, Any]
     period_type: Optional[str]
     period_end_date: date
     source_type: Optional[str]
+    created_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,8 @@ class ComponentResult:
 class MethodBlock:
     component_key: str
     reason_code: str
+    inputs: list[FactSnapshot]
+    method_gate: dict[str, Any]
 
 
 class FactIndex:
@@ -157,13 +163,22 @@ def build_piotroski_f_score_facts(
             ]
             if result is not None
         ]
-        derived.extend(_component_fact(result, period_end) for result in component_results)
+        if not method_blocks:
+            derived.extend(
+                _component_fact(
+                    result,
+                    period_end,
+                    economic_class=decision.economic_class,
+                )
+                for result in component_results
+            )
         if component_results or method_blocks:
             derived.append(
                 _total_fact(
                     component_results,
                     period_end,
                     company_type=company_type,
+                    economic_class=decision.economic_class,
                     method_blocks=method_blocks,
                 )
             )
@@ -175,12 +190,15 @@ class PiotroskiFScoreCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
-        knowledge_cutoff = datetime.now(timezone.utc)
+        knowledge_cutoff = self.db.scalar(select(func.clock_timestamp()))
+        if knowledge_cutoff is None or knowledge_cutoff.tzinfo is None:
+            raise RuntimeError("database clock did not return an aware timestamp")
         source_facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
                 MetricFact.metric_key.in_(PIOTROSKI_INPUT_KEYS),
+                MetricFact.created_at <= knowledge_cutoff,
                 or_(
                     and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
                     and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),
@@ -215,8 +233,29 @@ class PiotroskiFScoreCalculator:
         derived = build_piotroski_f_score_facts(
             source_facts, roic_decisions_by_period=roic_decisions
         )
+        periods = sorted(roic_decisions)
+        if periods:
+            self.db.execute(
+                update(MetricFact)
+                .where(
+                    MetricFact.user_id == user_id,
+                    MetricFact.stock_id == stock_id,
+                    MetricFact.metric_key.like("score.piotroski.%"),
+                    MetricFact.period_type == "FY",
+                    MetricFact.period_end_date.in_(periods),
+                    MetricFact.source_type == "calculated",
+                    MetricFact.is_current.is_(True),
+                )
+                .values(is_current=False)
+            )
+            self.db.flush()
         return [
-            self._insert_calculated_fact(user_id=user_id, stock_id=stock_id, payload=payload)
+            self._insert_calculated_fact(
+                user_id=user_id,
+                stock_id=stock_id,
+                payload=payload,
+                created_at=knowledge_cutoff,
+            )
             for payload in derived
         ]
 
@@ -226,6 +265,7 @@ class PiotroskiFScoreCalculator:
         user_id: int,
         stock_id: int,
         payload: dict[str, Any],
+        created_at: datetime,
     ) -> MetricFact:
         self.db.execute(
             update(MetricFact)
@@ -255,7 +295,7 @@ class PiotroskiFScoreCalculator:
             source_ref_id=None,
             source_document_id=None,
             is_current=True,
-            created_at=func.clock_timestamp(),
+            created_at=created_at,
         )
         self.db.add(fact)
         self.db.flush()
@@ -284,6 +324,8 @@ def _roa_positive(
             return None, MethodBlock(
                 component_key="score.piotroski.roa_positive",
                 reason_code=decision.reason_code,
+                inputs=[total_capital],
+                method_gate=decision.as_dict(),
             )
         result = _first_current_rule(
             index,
@@ -349,12 +391,19 @@ def _roa_improving(
         return standard, None
     current = index.get("returns.total_capital", period_end)
     prior = index.get("returns.total_capital", previous)
-    if current is None or prior is None:
+    if (
+        current is None
+        or prior is None
+        or current.value_numeric is None
+        or prior.value_numeric is None
+    ):
         return None, None
     if decision.status != "approved":
         return None, MethodBlock(
             component_key="score.piotroski.roa_improving",
             reason_code=decision.reason_code,
+            inputs=[current, prior],
+            method_gate=decision.as_dict(),
         )
     result = _first_comparison_rule(
         index,
@@ -626,12 +675,19 @@ def _binary_component(
     )
 
 
-def _component_fact(result: ComponentResult, period_end: date) -> dict[str, Any]:
+def _component_fact(
+    result: ComponentResult,
+    period_end: date,
+    *,
+    economic_class: str | None,
+) -> dict[str, Any]:
     value_json = {
         "status": "calculated",
         "variant": result.variant,
         "method": result.method,
         "calculation_version": CALCULATION_VERSION,
+        "manifest_version": MANIFEST_VERSION,
+        "economic_class": economic_class,
         "standard_metric": result.standard_metric,
         "fact_nature": _fact_nature(result.inputs),
         "source_types": sorted({fact.source_type for fact in result.inputs if fact.source_type}),
@@ -656,7 +712,8 @@ def _total_fact(
     results: list[ComponentResult],
     period_end: date,
     *,
-    company_type: str,
+    company_type: str | None,
+    economic_class: str | None,
     method_blocks: list[MethodBlock],
 ) -> dict[str, Any]:
     available_keys = {result.metric_key for result in results}
@@ -671,8 +728,10 @@ def _total_fact(
                 fact.period_end_date,
                 fact.source_type,
             ): fact
-            for result in results
-            for fact in result.inputs
+            for fact in [
+                *(fact for result in results for fact in result.inputs),
+                *(fact for block in method_blocks for fact in block.inputs),
+            ]
         }.values(),
         key=lambda fact: (
             fact.id if fact.id is not None else -1,
@@ -685,16 +744,14 @@ def _total_fact(
         "status": "unavailable" if method_blocks else ("calculated" if complete else "partial"),
         "variant": variant,
         "calculation_version": CALCULATION_VERSION,
-        "fact_nature": _fact_nature([fact for result in results for fact in result.inputs]),
+        "manifest_version": MANIFEST_VERSION,
+        "economic_class": economic_class,
+        "fact_nature": _fact_nature(lineage_inputs),
         "source_types": sorted(
-            {fact.source_type for result in results for fact in result.inputs if fact.source_type}
+            {fact.source_type for fact in lineage_inputs if fact.source_type}
         ),
         "fiscal_year": period_end.year,
         "inputs": [_lineage_item(fact) for fact in lineage_inputs],
-        "components": [
-            {"metric_key": result.metric_key, "value_numeric": float(result.value), "method": result.method}
-            for result in results
-        ],
     }
     authority_snapshots = {
         str(result.analysis_method)
@@ -718,13 +775,23 @@ def _total_fact(
                         "component_key": block.component_key,
                         "method_key": "roic",
                         "reason_code": block.reason_code,
+                        "method_gate": block.method_gate,
                     }
                     for block in method_blocks
                 ],
                 "missing_indicators": missing,
             }
         )
-    elif not complete:
+    else:
+        value_json["components"] = [
+            {
+                "metric_key": result.metric_key,
+                "value_numeric": float(result.value),
+                "method": result.method,
+            }
+            for result in results
+        ]
+    if not method_blocks and not complete:
         value_json.update(
             {
                 "partial_score": sum(result.value for result in results),
@@ -769,12 +836,15 @@ def _snapshot(raw: Any) -> Optional[FactSnapshot]:
     value_numeric = _get(raw, "value_numeric")
     return FactSnapshot(
         id=_get(raw, "id"),
+        user_id=_get(raw, "user_id"),
+        stock_id=_get(raw, "stock_id"),
         metric_key=metric_key,
         value_numeric=Decimal(str(value_numeric)) if isinstance(value_numeric, (int, float, Decimal)) else None,
         value_json=value_json,
         period_type=period_type,
         period_end_date=period_end,
         source_type=_get(raw, "source_type"),
+        created_at=_get(raw, "created_at"),
     )
 
 
@@ -791,12 +861,16 @@ def _is_positive(value: Any) -> bool:
 
 def _lineage_item(fact: FactSnapshot) -> dict[str, Any]:
     return {
-        "metric_key": fact.metric_key,
-        "period_end_date": fact.period_end_date.isoformat(),
         "fact_id": fact.id,
+        "user_id": fact.user_id,
+        "stock_id": fact.stock_id,
+        "metric_key": fact.metric_key,
+        "period_type": fact.period_type,
+        "period_end_date": fact.period_end_date.isoformat(),
         "value_numeric": format(fact.value_numeric, "f") if fact.value_numeric is not None else None,
-        "fact_nature": fact.value_json.get("fact_nature"),
         "source_type": fact.source_type,
+        "fact_nature": fact.value_json.get("fact_nature"),
+        "created_at": fact.created_at.isoformat() if fact.created_at is not None else None,
     }
 
 

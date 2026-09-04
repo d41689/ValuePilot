@@ -691,15 +691,16 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
         "returns.return_on_equity",
         "score.piotroski.total",
     }
-    assert payload["piotroski_f_score"] == [
-        {
-            "fiscal_year": 2025,
-            "period_end_date": "2025-12-31",
-            "score": 8.0,
-            "status": "calculated",
-            "variant": "standard",
-        }
-    ]
+    assert payload["piotroski_f_score"] == []
+    piotroski_state = next(
+        fact
+        for fact in payload["fundamentals"]
+        if fact["metric_key"] == "score.piotroski.total"
+    )
+    assert piotroski_state["value_numeric"] is None
+    assert piotroski_state["reason_code"] == (
+        "piotroski_method_authority_manifest_missing"
+    )
     assert payload["valuation"]["display_state"] == "missing"
     assert payload["coverage"][0]["state"] == "ready"
     assert payload["holders_13f"]["status"] == "unavailable"

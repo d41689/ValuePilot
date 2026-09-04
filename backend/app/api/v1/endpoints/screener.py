@@ -6,6 +6,7 @@ from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     CanonicalUnavailableError,
     PiotroskiMethodAuthorityError,
+    UnsupportedSystemMethodError,
 )
 from app.services.source_reconciliation import CanonicalReconciliationError
 
@@ -57,6 +58,7 @@ def run_screen(
         CanonicalUnavailableError,
         CanonicalReconciliationError,
         PiotroskiMethodAuthorityError,
+        UnsupportedSystemMethodError,
     ) as error:
         raise HTTPException(
             status_code=409,

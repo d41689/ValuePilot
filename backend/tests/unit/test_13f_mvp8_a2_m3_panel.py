@@ -14,6 +14,7 @@ from app.api.v1.endpoints.stocks_13f import _m3_panel_for_stock
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.models.users import User
+from tests.piotroski_test_helpers import seed_strict_piotroski_total
 
 
 def _user(db_session, email: str) -> User:
@@ -41,34 +42,17 @@ def _fact(
     period_end: date = date(2024, 12, 31),
     source_type: str = "parsed",
 ) -> MetricFact:
-    if metric_key.startswith("score.piotroski."):
-        source_type = "calculated"
-        source = MetricFact(
+    if metric_key == "score.piotroski.total":
+        score = value_numeric
+        if score is None:
+            score = (value_json or {}).get("partial_score")
+        return seed_strict_piotroski_total(
+            db_session,
             user_id=user_id,
             stock_id=stock_id,
-            metric_key="piotroski.test_input",
-            value_numeric=1,
-            value_json={"fact_nature": "actual"},
-            source_type="manual",
-            period_type="FY",
-            period_end_date=period_end,
-            is_current=True,
+            score=int(score),
+            period_end=period_end,
         )
-        db_session.add(source)
-        db_session.flush()
-        value_json = {
-            **(value_json or {"fact_nature": "actual"}),
-            "inputs": [
-                {
-                    "fact_id": source.id,
-                    "metric_key": source.metric_key,
-                    "period_end_date": period_end.isoformat(),
-                    "value_numeric": "1",
-                    "source_type": "manual",
-                    "fact_nature": "actual",
-                }
-            ],
-        }
     fact = MetricFact(
         user_id=user_id,
         stock_id=stock_id,

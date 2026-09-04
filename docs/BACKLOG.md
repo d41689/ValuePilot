@@ -11,13 +11,13 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ### FT-07 — operator-triggered Piotroski authority recomputation
 - **Found:** 2026-09-04, PR #143 Terra R6 review
-- **Severity:** medium (legacy return-on-total-capital proxy scores correctly
-  fail closed, but recovery currently depends on a later ingestion, correction,
-  or document-reconciliation event)
+- **Severity:** medium (all legacy scores without the strict versioned input
+  manifest correctly fail closed, but recovery currently depends on a later
+  ingestion, correction, or document-reconciliation event)
 - **Problem:** no bounded operator action can non-destructively recompute current
   Piotroski facts immediately after the required classification and risk
-  reviews are approved. Migration 160 intentionally does not backfill or
-  re-authorize retained scores.
+  reviews are approved when the governed proxy is needed. Migration 160
+  intentionally does not backfill, rewrite, or re-authorize retained scores.
 - **Acceptance criteria:**
   - An authorized operator can request a stock-scoped recomputation without
     editing or deleting retained `metric_facts`.

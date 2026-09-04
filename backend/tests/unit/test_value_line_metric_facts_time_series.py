@@ -198,7 +198,8 @@ def test_value_line_upload_creates_piotroski_partial_diagnostic_fact(
     # Industry-specific shaping requires an explicit reviewed classification;
     # parsing insurer-looking fields is not authority to classify the company.
     assert total.value_json["variant"] == "valueline_proxy"
-    assert total.value_json["calculation_version"] == "piotroski_value_line_v1"
+    assert total.value_json["calculation_version"] == "piotroski_value_line_v2"
+    assert total.value_json["manifest_version"] == "piotroski-strict-manifest-v1"
     assert "missing_indicators" in total.value_json
 
 

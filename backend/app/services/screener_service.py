@@ -8,8 +8,7 @@ from app.models.facts import MetricFact
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
     guard_sec_run_availability,
-    guard_piotroski_method_authority,
-    PiotroskiMethodAuthorityError,
+    require_applicable_method_facts,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import guard_reconciled_source_selection
@@ -300,11 +299,10 @@ class ScreenerService:
                 stock_id=stock_id,
                 facts=stock_facts,
             )
-            _, method_blocked = guard_piotroski_method_authority(
+            require_applicable_method_facts(
                 self.db,
+                stock_id=stock_id,
                 facts=stock_facts,
                 effective_as_of=date.today(),
                 knowledge_at=evaluated_at,
             )
-            if method_blocked:
-                raise PiotroskiMethodAuthorityError(method_blocked[0])

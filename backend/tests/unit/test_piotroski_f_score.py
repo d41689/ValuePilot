@@ -384,11 +384,15 @@ def test_piotroski_calculator_inserts_current_calculated_facts(db_session, user_
     assert old_fact.is_current is False
     assert current_total.value_numeric == 9.0
     assert current_total.source_type == "calculated"
-    assert current_total.value_json["calculation_version"] == "piotroski_value_line_v1"
+    assert current_total.value_json["calculation_version"] == "piotroski_value_line_v2"
+    assert current_total.value_json["manifest_version"] == (
+        "piotroski-strict-manifest-v1"
+    )
 
 
 def test_piotroski_calculator_explicitly_selects_parsed_source():
     db = MagicMock()
+    db.scalar.return_value = datetime.now(timezone.utc)
     db.scalars.return_value.all.return_value = []
 
     with patch(
