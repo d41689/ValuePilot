@@ -72,6 +72,7 @@ def test_dcf_input_entry_exposes_one_validated_iso_currency(currency):
         (_inputs(eps="DKK", depreciation="EUR", capex="TWD"), "dcf_input_currency_mismatch"),
         (_inputs(eps=None), "dcf_input_currency_missing"),
         (_inputs(eps="ZZZ"), "dcf_input_currency_invalid"),
+        (_inputs(eps="XAU"), "dcf_input_currency_invalid"),
         (_inputs(eps=None), "dcf_input_currency_missing"),
         (_inputs(shares=False), "dcf_input_missing"),
     ],

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
 from sqlalchemy import event
 
 from app.models.stocks import Stock, StockPrice
@@ -403,7 +404,8 @@ def test_missing_currency_is_typed_and_never_fresh(db_session):
     assert result.reason_code == "price_currency_unavailable"
 
 
-def test_non_iso_currency_is_typed_and_never_fresh(db_session):
+@pytest.mark.parametrize("currency", ["ZZZ", "XAU", "XDR", "CLF"])
+def test_non_monetary_currency_is_typed_and_never_fresh(db_session, currency):
     from app.services.market_data_service import read_canonical_eod_price
 
     stock = _stock(db_session, "BADCCY")
@@ -412,7 +414,7 @@ def test_non_iso_currency_is_typed_and_never_fresh(db_session):
         stock,
         price_date=date(2026, 7, 17),
         source="licensed_fixture",
-        currency="ZZZ",
+        currency=currency,
         close=100,
         created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
     )

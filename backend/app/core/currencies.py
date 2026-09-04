@@ -22,17 +22,46 @@ ISO_4217_ACTIVE_CODES = frozenset(
     XBD XCD XCG XDR XOF XPD XPF XPT XSU XTS XUA XXX YER ZAR ZMW ZWG
     """.split()
 )
-_NON_MONETARY_SPECIAL_PURPOSE_CODES = frozenset({"XTS", "XXX"})
+# SIX List One includes active codes whose entity classification is fund,
+# precious metal, bond-market unit, testing, or no-currency. They remain in the
+# registry snapshot for audit fidelity but cannot authorize product money
+# arithmetic. XAF/XCD/XCG/XOF/XPF are circulating currencies and stay allowed.
+ISO_4217_NON_MONETARY_CODES = frozenset(
+    {
+        "BOV",
+        "CHE",
+        "CHW",
+        "CLF",
+        "COU",
+        "MXV",
+        "USN",
+        "UYI",
+        "UYW",
+        "XAD",
+        "XAG",
+        "XAU",
+        "XBA",
+        "XBB",
+        "XBC",
+        "XBD",
+        "XDR",
+        "XPD",
+        "XPT",
+        "XSU",
+        "XTS",
+        "XUA",
+        "XXX",
+    }
+)
+ISO_4217_MONETARY_CODES = ISO_4217_ACTIVE_CODES - ISO_4217_NON_MONETARY_CODES
 
 
 def normalize_iso4217_currency(value: Any) -> str | None:
     """Return a current monetary ISO 4217 code or fail closed with ``None``.
 
-    ISO reserves XTS for testing and XXX for transactions with no currency;
-    neither can authorize price or valuation arithmetic.
+    The registry snapshot also contains special-purpose codes. Only the
+    monetary allowlist can authorize price or valuation arithmetic.
     """
 
     normalized = str(value or "").strip().upper()
-    if normalized in _NON_MONETARY_SPECIAL_PURPOSE_CODES:
-        return None
-    return normalized if normalized in ISO_4217_ACTIVE_CODES else None
+    return normalized if normalized in ISO_4217_MONETARY_CODES else None

@@ -49,13 +49,14 @@ def _portfolio(db_session, user_id):
     )
 
 
-def test_manual_position_rejects_non_iso_currency():
+@pytest.mark.parametrize("currency", ["ZZZ", "XAU", "XDR", "CLF"])
+def test_manual_position_rejects_non_monetary_currency(currency):
     with pytest.raises(ValueError, match="current ISO 4217"):
         ManualPositionCreate(
             stock_id=1,
             quantity=Decimal("1"),
             average_unit_cost=Decimal("100"),
-            currency="ZZZ",
+            currency=currency,
             opened_on=date(2026, 9, 3),
         )
 
