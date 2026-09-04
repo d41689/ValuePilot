@@ -9,6 +9,7 @@ from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
     guard_sec_run_availability,
+    system_method_for_metric_key,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
@@ -26,6 +27,17 @@ SAFE_OPERATORS = {
     ast.Pow: operator.pow,
 }
 SAFE_COMPARISONS = {ast.Lt: operator.lt, ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge, ast.Eq: operator.eq, ast.NotEq: operator.ne}
+
+
+class ReservedMethodFormulaOutputError(ValueError):
+    code = "method_reserved_formula_output"
+
+    def __init__(self, metric_key: str):
+        self.metric_key = metric_key
+        super().__init__(
+            f"Formula output {metric_key!r} is reserved for a reviewed system method."
+        )
+
 
 class FormulaEngine:
     def __init__(self, db: Session):
@@ -117,6 +129,9 @@ class FormulaEngine:
         formula = self.db.get(Formula, formula_id)
         if not formula or formula.user_id != user_id:
             raise ValueError("Formula not found")
+        output_key = formula.name.lower().replace(" ", "_")
+        if system_method_for_metric_key(output_key) is not None:
+            raise ReservedMethodFormulaOutputError(output_key)
         
         # Fetch dependencies
         # In V1, we fetch the *current* fact for each dependency
@@ -196,8 +211,6 @@ class FormulaEngine:
             # Let's assume formula.name IS the key for simplicity in V1, 
             # or we add an output_key field to Formula. 
             # Using formula.name as key (normalized).
-            output_key = formula.name.lower().replace(" ", "_")
-            
             # Deactivate old current fact for this calculated metric
             # (Simple "latest is current" logic)
             # ... skipping deactivation for brevity, ideally handled in transaction

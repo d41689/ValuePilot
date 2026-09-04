@@ -1299,23 +1299,6 @@ def _m3_facts_by_stock(
                 statuses[stock_id] = error.state
                 result[stock_id] = {}
                 break
-            if metric_key.startswith("owners_earnings_per_share"):
-                authoring_types = {
-                    "user_authored"
-                    if isinstance(fact.value_json, dict)
-                    and fact.value_json.get("user_authored_formula") is True
-                    else "system_method"
-                    for fact in selected
-                }
-                if len(authoring_types) > 1:
-                    statuses[stock_id] = {
-                        "status": "source_conflict",
-                        "reason_code": "authoring_conflict",
-                        "source_types": sorted({fact.source_type for fact in selected}),
-                        "authoring_types": sorted(authoring_types),
-                    }
-                    result[stock_id] = {}
-                    break
             result[stock_id][metric_key] = selected[0]
     return result, statuses
 
@@ -1372,42 +1355,29 @@ def _quality_overlay_by_stock(
     )
     method_decisions: dict[int, MethodGateDecision | dict[str, Any]] = {}
     for stock_id in unique_stock_ids:
-        owner_fact = facts_by_stock.get(stock_id, {}).get("owners_earnings")
-        owner_metadata = (
-            owner_fact.value_json
-            if owner_fact is not None and isinstance(owner_fact.value_json, dict)
-            else {}
+        owner_block = next(
+            (
+                reason
+                for item in source_statuses[stock_id].get(
+                    "unavailable_metrics", []
+                )
+                if str(item.get("metric_key", "")).startswith(
+                    "owners_earnings_per_share"
+                )
+                for reason in item.get("blocking_reasons", [])
+                if str(reason).startswith("method_authority_snapshot_")
+            ),
+            None,
         )
-        if owner_metadata.get("user_authored_formula") is True:
-            method_decisions[stock_id] = {
+        method_decisions[stock_id] = (
+            {
                 "method_key": "owner_earnings",
-                "status": "user_defined",
-                "reason_code": "user_authored_formula",
+                "status": "unsupported",
+                "reason_code": owner_block,
             }
-        else:
-            owner_block = next(
-                (
-                    reason
-                    for item in source_statuses[stock_id].get(
-                        "unavailable_metrics", []
-                    )
-                    if str(item.get("metric_key", "")).startswith(
-                        "owners_earnings_per_share"
-                    )
-                    for reason in item.get("blocking_reasons", [])
-                    if str(reason).startswith("method_authority_snapshot_")
-                ),
-                None,
-            )
-            method_decisions[stock_id] = (
-                {
-                    "method_key": "owner_earnings",
-                    "status": "unsupported",
-                    "reason_code": owner_block,
-                }
-                if owner_block is not None
-                else gate_decisions[stock_id]["owner_earnings"]
-            )
+            if owner_block is not None
+            else gate_decisions[stock_id]["owner_earnings"]
+        )
     return {
         stock_id: _quality_payload(
             facts_by_stock.get(stock_id, {}),

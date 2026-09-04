@@ -231,3 +231,36 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   FT-07 exact-terminal error. The expanded 19-file affected suite is
   `308 passed`. Fresh strict full-diff review and exact canonical closing gates
   remain pending.
+- 2026-09-04: Strict Terra R5 identified two retained-authority mutation paths.
+  Migration `20260904150000` now installs a database `BEFORE UPDATE` guard for
+  every old or new calculated Owner Earnings fact and every old or new manual
+  `val.fair_value` fact. It prevents snapshot injection, numeric/provenance/
+  identity rewriting, and simultaneous key/source escape; the only semantic
+  history change is current-fact demotion, plus the existing narrow unavailable-
+  reason redaction whose origin is unchanged. Downgrade refuses retained V2
+  method snapshots or versioned valuation origins before any schema mutation,
+  and a clean roundtrip proves the fact guard is removed and restored.
+- 2026-09-04: A syntactically valid server valuation-origin snapshot is not
+  sufficient by itself. Reads still require the exact linked research revision
+  to exist and match the fact tenant and stock. Verified server DCF origins
+  remain quarantined after revision redaction; verified manual/watchlist
+  publication origins remain available because redaction removes authored
+  content, not the immutable server-recorded publication source. Legacy linked
+  facts retain the stricter unredacted-assumption proof rule.
+- 2026-09-04: User formulas can no longer publish into method-governed output
+  keys. The formula engine raises typed
+  `method_reserved_formula_output` before loading inputs or writing a run/fact
+  for Owner Earnings aliases, ROIC/return-on-total-capital outputs, per-share
+  trend/rate outputs, and system valuation; `custom.*` outputs remain usable.
+  Legacy `user_authored_formula` metadata is not authority: stock, workspace,
+  DCF, and Oracle reads apply the shared method gate, and calculated Owner
+  Earnings still requires its exact origin snapshot.
+- 2026-09-04: R5 tests-first verification is green: the final focused migration/
+  formula/consumer set is `57 passed`; the serial 16-file affected set is
+  `321 passed`, with three additional workspace/pool/product-boundary suites at
+  `31 passed`. The shared development database had zero retained reviews,
+  method snapshots, or versioned valuation origins, so it was safely replayed
+  from `20260904150000` to `20260904140000` and back without reset. It is at
+  head with one final fact-authority trigger and both final review-authority
+  triggers. Fresh strict full-diff review and exact canonical closing gates
+  remain pending.

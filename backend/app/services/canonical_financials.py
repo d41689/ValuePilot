@@ -495,11 +495,7 @@ def require_reviewed_method(*args: Any, **kwargs: Any) -> MethodGateDecision:
     return decision
 
 
-def system_method_for_fact(fact: MetricFact) -> str | None:
-    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
-    if metadata.get("user_authored_formula") is True:
-        return None
-    key = fact.metric_key
+def system_method_for_metric_key(key: str) -> str | None:
     if key.startswith("owners_earnings_per_share"):
         return "owner_earnings"
     if key in {
@@ -515,9 +511,13 @@ def system_method_for_fact(fact: MetricFact) -> str | None:
         or (key.startswith("rates.") and ".cagr_" in key)
     ):
         return "per_share_trend"
-    if key.startswith("system_valuation."):
+    if key == "system_valuation" or key.startswith("system_valuation."):
         return "system_valuation"
     return None
+
+
+def system_method_for_fact(fact: MetricFact) -> str | None:
+    return system_method_for_metric_key(fact.metric_key)
 
 
 def _owner_earnings_origin_error(

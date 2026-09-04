@@ -124,6 +124,65 @@ def test_v2_fact_snapshot_refuses_downgrade_before_any_schema_mutation(isolated)
         } <= columns
 
 
+def test_versioned_valuation_origin_refuses_downgrade_before_mutation(isolated) -> None:
+    url, engine = isolated
+    upgraded = _alembic_result(url, "upgrade", HEAD)
+    assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+    with engine.begin() as connection:
+        user_id = connection.execute(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) "
+                "VALUES ('ft07-origin-down@example.com','x',true) RETURNING id"
+            )
+        ).scalar_one()
+        stock_id = connection.execute(
+            text(
+                "INSERT INTO stocks "
+                "(ticker,exchange,market_country,company_name,is_active) "
+                "VALUES ('ORIGDOWN','NYSE','US','Origin Downgrade',true) RETURNING id"
+            )
+        ).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,"
+                "source_ref_id,is_current) VALUES "
+                "(:user,:stock,'val.fair_value',100,CAST(:payload AS jsonb),"
+                "'manual',900,true)"
+            ),
+            {
+                "user": user_id,
+                "stock": stock_id,
+                "payload": json.dumps(
+                    {
+                        "valuation_origin": {
+                            "version": "research-valuation-origin-v1",
+                            "source": "manual",
+                            "research_revision_id": 900,
+                        }
+                    }
+                ),
+            },
+        )
+
+    refused = _alembic_result(url, "downgrade", PARENT)
+    assert refused.returncode != 0
+    assert "cannot downgrade retained FT-07 method authority" in (
+        refused.stdout + refused.stderr
+    )
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == HEAD
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgname='trg_metric_facts_ft07_authority_update' "
+                "AND tgrelid='metric_facts'::regclass AND NOT tgisinternal"
+            )
+        ).scalar_one() == 1
+
+
 @pytest.mark.parametrize("review_kind", ["classification", "high_sbc"])
 def test_v2_upgrade_rejects_disjoint_legacy_roots_before_schema_mutation(
     isolated, review_kind: str
@@ -261,9 +320,30 @@ def test_v2_clean_downgrade_upgrade_roundtrip_restores_final_review_guard(
     isolated,
 ) -> None:
     url, engine = isolated
-    for args in (("upgrade", HEAD), ("downgrade", PARENT), ("upgrade", HEAD)):
-        result = _alembic_result(url, *args)
-        assert result.returncode == 0, result.stdout + result.stderr
+    upgraded = _alembic_result(url, "upgrade", HEAD)
+    assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgname='trg_metric_facts_ft07_authority_update' "
+                "AND tgrelid='metric_facts'::regclass AND NOT tgisinternal"
+            )
+        ).scalar_one() == 1
+
+    downgraded = _alembic_result(url, "downgrade", PARENT)
+    assert downgraded.returncode == 0, downgraded.stdout + downgraded.stderr
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgname='trg_metric_facts_ft07_authority_update' "
+                "AND tgrelid='metric_facts'::regclass AND NOT tgisinternal"
+            )
+        ).scalar_one() == 0
+
+    restored = _alembic_result(url, "upgrade", HEAD)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
 
     with engine.connect() as connection:
         assert connection.execute(
@@ -287,3 +367,237 @@ def test_v2_clean_downgrade_upgrade_roundtrip_restores_final_review_guard(
             "guard_ft07_method_review_insert" in statement
             for statement in trigger_functions.values()
         )
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgname='trg_metric_facts_ft07_authority_update' "
+                "AND tgrelid='metric_facts'::regclass AND NOT tgisinternal"
+            )
+        ).scalar_one() == 1
+
+
+def test_metric_fact_authority_cannot_be_injected_or_rewritten(isolated) -> None:
+    url, engine = isolated
+    upgraded = _alembic_result(url, "upgrade", HEAD)
+    assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+    with engine.begin() as connection:
+        user_id = connection.execute(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) "
+                "VALUES ('ft07-fact-guard@example.com','x',true) RETURNING id"
+            )
+        ).scalar_one()
+        other_user_id = connection.execute(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) "
+                "VALUES ('ft07-fact-guard-other@example.com','x',true) RETURNING id"
+            )
+        ).scalar_one()
+        stock_id = connection.execute(
+            text(
+                "INSERT INTO stocks "
+                "(ticker,exchange,market_country,company_name,is_active) "
+                "VALUES ('FACTGUARD','NYSE','US','FT07 Fact Guard',true) RETURNING id"
+            )
+        ).scalar_one()
+        other_stock_id = connection.execute(
+            text(
+                "INSERT INTO stocks "
+                "(ticker,exchange,market_country,company_name,is_active) "
+                "VALUES ('FACTGUARD2','NYSE','US','FT07 Other Fact Guard',true) "
+                "RETURNING id"
+            )
+        ).scalar_one()
+        legacy_oe_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,is_current) "
+                "VALUES (:user,:stock,'owners_earnings_per_share',5,'{}'::jsonb,"
+                "'calculated',true) RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        ).scalar_one()
+        governed_oe_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,is_current) "
+                "VALUES (:user,:stock,'owners_earnings_per_share_normalized',6,"
+                "CAST(:payload AS jsonb),'calculated',true) RETURNING id"
+            ),
+            {
+                "user": user_id,
+                "stock": stock_id,
+                "payload": json.dumps({"analysis_method": {"status": "approved"}}),
+            },
+        ).scalar_one()
+        dcf_fact_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,period_type,"
+                "period_end_date,source_type,source_ref_id,is_current) VALUES "
+                "(:user,:stock,'val.fair_value',100,CAST(:payload AS jsonb),"
+                "'AS_OF','2025-01-01','manual',501,true) RETURNING id"
+            ),
+            {
+                "user": user_id,
+                "stock": stock_id,
+                "payload": json.dumps(
+                    {
+                        "valuation_origin": {
+                            "version": "research-valuation-origin-v1",
+                            "source": "dcf",
+                            "research_revision_id": 501,
+                        }
+                    }
+                ),
+            },
+        ).scalar_one()
+        legacy_manual_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,period_type,"
+                "period_end_date,source_type,source_ref_id,is_current) VALUES "
+                "(:user,:stock,'val.fair_value',75,NULL,'AS_OF','2024-01-01',"
+                "'manual',NULL,true) RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        ).scalar_one()
+        unavailable_id = connection.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,value_json,period_type,"
+                "period_end_date,source_type,source_ref_id,is_current) VALUES "
+                "(:user,:stock,'val.fair_value',NULL,CAST(:payload AS jsonb),"
+                "'AS_OF','2023-01-01','manual',503,true) RETURNING id"
+            ),
+            {
+                "user": user_id,
+                "stock": stock_id,
+                "payload": json.dumps(
+                    {
+                        "status": "unavailable",
+                        "reason": "authored private reason",
+                        "valuation_origin": {
+                            "version": "research-valuation-origin-v1",
+                            "source": "manual",
+                            "research_revision_id": 503,
+                        },
+                    }
+                ),
+            },
+        ).scalar_one()
+
+    rejected_updates = [
+        (
+            "UPDATE metric_facts SET value_json=jsonb_set(value_json, "
+            "'{analysis_method}', '{\"status\":\"approved\"}'::jsonb) WHERE id=:id",
+            legacy_oe_id,
+        ),
+        ("UPDATE metric_facts SET value_numeric=998 WHERE id=:id", legacy_oe_id),
+        ("UPDATE metric_facts SET value_numeric=999 WHERE id=:id", governed_oe_id),
+        (
+            "UPDATE metric_facts SET metric_key='custom.oe', source_type='manual', "
+            "value_numeric=999 WHERE id=:id",
+            governed_oe_id,
+        ),
+        (
+            "UPDATE metric_facts SET value_json=jsonb_set(value_json, "
+            "'{valuation_origin,source}', '\"manual\"'::jsonb) WHERE id=:id",
+            dcf_fact_id,
+        ),
+        ("UPDATE metric_facts SET value_numeric=101 WHERE id=:id", dcf_fact_id),
+        ("UPDATE metric_facts SET source_ref_id=502 WHERE id=:id", dcf_fact_id),
+        (
+            "UPDATE metric_facts SET user_id=:other_user WHERE id=:id",
+            dcf_fact_id,
+        ),
+        (
+            "UPDATE metric_facts SET stock_id=:other_stock WHERE id=:id",
+            dcf_fact_id,
+        ),
+        (
+            "UPDATE metric_facts SET metric_key='custom.value', source_type='calculated', "
+            "value_numeric=999 WHERE id=:id",
+            dcf_fact_id,
+        ),
+        (
+            "UPDATE metric_facts SET value_json=CAST(:payload AS jsonb) WHERE id=:id",
+            legacy_manual_id,
+        ),
+    ]
+    for statement, fact_id in rejected_updates:
+        parameters = {"id": fact_id}
+        if ":other_user" in statement:
+            parameters["other_user"] = other_user_id
+        if ":other_stock" in statement:
+            parameters["other_stock"] = other_stock_id
+        if ":payload" in statement:
+            parameters["payload"] = json.dumps(
+                {
+                    "valuation_origin": {
+                        "version": "research-valuation-origin-v1",
+                        "source": "manual",
+                        "research_revision_id": 700,
+                    }
+                }
+            )
+        with engine.begin() as connection:
+            with pytest.raises(DBAPIError, match="FT-07 metric fact authority"):
+                connection.execute(text(statement), parameters)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE metric_facts SET is_current=false WHERE id IN (:oe,:dcf)"),
+            {"oe": governed_oe_id, "dcf": dcf_fact_id},
+        )
+        connection.execute(
+            text(
+                "UPDATE metric_facts SET value_json=CAST(:payload AS jsonb) "
+                "WHERE id=:id"
+            ),
+            {
+                "id": unavailable_id,
+                "payload": json.dumps(
+                    {
+                        "status": "unavailable",
+                        "reason": "[redacted]",
+                        "redaction_content_hash": "a" * 64,
+                        "valuation_origin": {
+                            "version": "research-valuation-origin-v1",
+                            "source": "manual",
+                            "research_revision_id": 503,
+                        },
+                    }
+                ),
+            },
+        )
+    with engine.connect() as connection:
+        facts = connection.execute(
+            text(
+                "SELECT id,metric_key,value_numeric,value_json,source_type,source_ref_id,"
+                "is_current FROM metric_facts WHERE id IN "
+                "(:legacy_oe,:oe,:dcf,:legacy,:unavailable)"
+            ),
+            {
+                "legacy_oe": legacy_oe_id,
+                "oe": governed_oe_id,
+                "dcf": dcf_fact_id,
+                "legacy": legacy_manual_id,
+                "unavailable": unavailable_id,
+            },
+        ).mappings()
+        by_id = {row["id"]: row for row in facts}
+        assert "analysis_method" not in by_id[legacy_oe_id]["value_json"]
+        assert by_id[governed_oe_id]["value_numeric"] == 6
+        assert by_id[governed_oe_id]["metric_key"] == (
+            "owners_earnings_per_share_normalized"
+        )
+        assert by_id[dcf_fact_id]["value_json"]["valuation_origin"]["source"] == "dcf"
+        assert by_id[dcf_fact_id]["source_ref_id"] == 501
+        assert by_id[legacy_manual_id]["value_json"] is None
+        assert by_id[unavailable_id]["value_json"]["reason"] == "[redacted]"
+        assert by_id[unavailable_id]["value_json"]["valuation_origin"]["source"] == (
+            "manual"
+        )
+        assert by_id[governed_oe_id]["is_current"] is False
+        assert by_id[dcf_fact_id]["is_current"] is False

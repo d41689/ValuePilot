@@ -288,6 +288,99 @@ def upgrade() -> None:
           FOR EACH ROW EXECUTE FUNCTION guard_ft07_method_review_insert();
         """
     )
+    op.execute(
+        """
+        CREATE FUNCTION guard_ft07_metric_fact_authority_update()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE
+          governs_owner_earnings boolean;
+          governs_manual_valuation boolean;
+          current_state_allowed boolean;
+          valuation_content_allowed boolean;
+        BEGIN
+          governs_owner_earnings :=
+            (OLD.source_type='calculated'
+             AND OLD.metric_key LIKE 'owners\\_earnings\\_per\\_share%' ESCAPE '\\')
+            OR
+            (NEW.source_type='calculated'
+             AND NEW.metric_key LIKE 'owners\\_earnings\\_per\\_share%' ESCAPE '\\');
+          governs_manual_valuation :=
+            (OLD.source_type='manual' AND OLD.metric_key='val.fair_value')
+            OR
+            (NEW.source_type='manual' AND NEW.metric_key='val.fair_value');
+          current_state_allowed :=
+            OLD.is_current IS NOT DISTINCT FROM NEW.is_current
+            OR (OLD.is_current IS TRUE AND NEW.is_current IS FALSE);
+
+          IF governs_owner_earnings THEN
+            IF ROW(
+                OLD.id, OLD.user_id, OLD.stock_id, OLD.metric_key,
+                OLD.value_json, OLD.value_numeric, OLD.value_text, OLD.unit,
+                OLD.currency, OLD.period, OLD.period_type, OLD.period_end_date,
+                OLD.as_of_date, OLD.source_document_id, OLD.source_type,
+                OLD.source_ref_id, OLD.value_line_parse_run_id,
+                OLD.value_line_legacy_revision, OLD.created_at
+              ) IS DISTINCT FROM ROW(
+                NEW.id, NEW.user_id, NEW.stock_id, NEW.metric_key,
+                NEW.value_json, NEW.value_numeric, NEW.value_text, NEW.unit,
+                NEW.currency, NEW.period, NEW.period_type, NEW.period_end_date,
+                NEW.as_of_date, NEW.source_document_id, NEW.source_type,
+                NEW.source_ref_id, NEW.value_line_parse_run_id,
+                NEW.value_line_legacy_revision, NEW.created_at
+              )
+              OR NOT current_state_allowed THEN
+              RAISE EXCEPTION 'FT-07 metric fact authority is immutable';
+            END IF;
+          END IF;
+
+          IF governs_manual_valuation THEN
+            IF ROW(
+                OLD.id, OLD.user_id, OLD.stock_id, OLD.metric_key,
+                OLD.value_numeric, OLD.value_text, OLD.unit, OLD.currency,
+                OLD.period, OLD.period_type, OLD.period_end_date, OLD.as_of_date,
+                OLD.source_document_id, OLD.source_type, OLD.source_ref_id,
+                OLD.value_line_parse_run_id, OLD.value_line_legacy_revision,
+                OLD.created_at
+              ) IS DISTINCT FROM ROW(
+                NEW.id, NEW.user_id, NEW.stock_id, NEW.metric_key,
+                NEW.value_numeric, NEW.value_text, NEW.unit, NEW.currency,
+                NEW.period, NEW.period_type, NEW.period_end_date, NEW.as_of_date,
+                NEW.source_document_id, NEW.source_type, NEW.source_ref_id,
+                NEW.value_line_parse_run_id, NEW.value_line_legacy_revision,
+                NEW.created_at
+              )
+              OR OLD.value_json->'valuation_origin'
+                   IS DISTINCT FROM NEW.value_json->'valuation_origin'
+              OR NOT current_state_allowed THEN
+              RAISE EXCEPTION 'FT-07 metric fact authority is immutable';
+            END IF;
+
+            valuation_content_allowed :=
+              OLD.value_json IS NOT DISTINCT FROM NEW.value_json
+              OR (
+                OLD.value_numeric IS NULL
+                AND OLD.value_json->>'status'='unavailable'
+                AND NEW.value_json->>'status'='unavailable'
+                AND NEW.value_json->>'reason'='[redacted]'
+                AND NEW.value_json->>'redaction_content_hash' ~ '^[0-9a-f]{64}$'
+                AND (OLD.value_json - 'reason' - 'redaction_content_hash'
+                     - 'valuation_origin')
+                    IS NOT DISTINCT FROM
+                    (NEW.value_json - 'reason' - 'redaction_content_hash'
+                     - 'valuation_origin')
+              );
+            IF NOT valuation_content_allowed THEN
+              RAISE EXCEPTION 'FT-07 metric fact authority is immutable';
+            END IF;
+          END IF;
+          RETURN NEW;
+        END $$;
+
+        CREATE TRIGGER trg_metric_facts_ft07_authority_update
+          BEFORE UPDATE ON metric_facts
+          FOR EACH ROW EXECUTE FUNCTION guard_ft07_metric_fact_authority_update();
+        """
+    )
     op.add_column(
         "sec_method_policy_rules",
         sa.Column("method_version_id", sa.String(80), nullable=True),
@@ -367,7 +460,10 @@ def downgrade() -> None:
             "(SELECT count(*) FROM sec_economic_classification_reviews) + "
             "(SELECT count(*) FROM sec_economic_risk_attribute_reviews) + "
             "(SELECT count(*) FROM metric_facts WHERE "
-            " value_json->'analysis_method'->>'method_policy_version_id'=:policy)"
+            " value_json->'analysis_method'->>'method_policy_version_id'=:policy) + "
+            "(SELECT count(*) FROM metric_facts WHERE "
+            " value_json->'valuation_origin'->>'version'="
+            " 'research-valuation-origin-v1')"
         ),
         {"policy": POLICY_ID},
     ).scalar_one()
@@ -378,6 +474,7 @@ def downgrade() -> None:
     # unmerged revision return through the canonical migration path. Retained
     # authority was already rejected above, before any mutation.
     op.execute(
+        "DROP FUNCTION IF EXISTS guard_ft07_metric_fact_authority_update() CASCADE; "
         "DROP FUNCTION IF EXISTS guard_ft07_method_review_insert() CASCADE; "
         "DROP FUNCTION IF EXISTS guard_ft07_method_reviewer_authority() CASCADE; "
         "DROP TRIGGER IF EXISTS trg_sec_economic_classification_guard "

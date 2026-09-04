@@ -263,7 +263,7 @@ def test_reviewed_method_policy_defaults_system_outputs_to_typed_unsupported(
     user_formula = MetricFact(
         user_id=reviewer.id,
         stock_id=company.id,
-        metric_key="owners_earnings_per_share_custom",
+        metric_key="custom.owners_earnings_per_share",
         value_numeric=1,
         value_json={"user_authored_formula": True},
         source_type="calculated",

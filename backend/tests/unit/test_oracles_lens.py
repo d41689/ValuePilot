@@ -10,6 +10,11 @@ from app.models.institutions import Filing13F, Holding13F, InstitutionManager, P
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
 from app.services.market_data_service import ET, compute_target_date, expected_session_on_or_before
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -249,6 +254,31 @@ def _derived_lineage_source(db_session, stock: Stock) -> MetricFact:
     db_session.add(source)
     db_session.flush()
     return source
+
+
+def _review_ordinary_method_profile(db_session, stock: Stock) -> None:
+    reviewer = db_session.get(User, stock._test_user_id)
+    reviewer.role = "admin"
+    db_session.flush()
+    review_company_classification(
+        db_session,
+        reviewer_user_id=reviewer.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=date(2020, 1, 1),
+        review_reason="Reviewed ordinary-company test profile.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=date(2020, 1, 1),
+            review_reason=f"Reviewed {risk_attribute} for consumer test.",
+        )
+    db_session.commit()
 
 
 def _pdf_document(db_session, stock: Stock, *, report_date: date = date(2032, 1, 31)) -> PdfDocument:
@@ -781,6 +811,7 @@ def test_oracles_lens_price_dependent_outputs_fail_closed(
         True,
     )
     target = _seed_oracles_lens_fixture(db_session)
+    _review_ordinary_method_profile(db_session, target)
     if scenario == "inactive":
         target.is_active = False
     owner_earnings = _metric_fact(
@@ -1005,7 +1036,7 @@ def test_oracles_lens_historical_snapshot_ignores_late_inserted_price(
     assert response.json()["coverage"]["price_missing_count"] == 1
 
 
-def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session):
+def test_quality_overlay_quarantines_legacy_user_authored_owner_earnings(db_session):
     from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
 
     target = _seed_oracles_lens_fixture(db_session)
@@ -1044,12 +1075,11 @@ def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session)
         user_id=target._test_user_id,
     )[target.id]
 
-    assert overlay["owner_earnings_yield"] == 0.05
-    assert overlay["owner_earnings_method"] == {
-        "method_key": "owner_earnings",
-        "status": "user_defined",
-        "reason_code": "user_authored_formula",
-    }
+    assert overlay["owner_earnings_yield"] is None
+    assert overlay["owner_earnings_method"]["status"] == "unsupported"
+    assert overlay["owner_earnings_method"]["reason_code"] == (
+        "classification_unreviewed"
+    )
 
 
 def test_quality_overlay_returns_typed_conflict_before_cross_source_aggregation(
@@ -1117,7 +1147,7 @@ def test_missing_derived_lineage_does_not_hide_unrelated_legal_source(
     }
 
 
-def test_quality_overlay_gates_system_owner_earnings_before_selecting_user_authored(
+def test_quality_overlay_gates_all_legacy_owner_earnings_formula_claims(
     db_session
 ):
     from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
@@ -1168,8 +1198,11 @@ def test_quality_overlay_gates_system_owner_earnings_before_selecting_user_autho
         user_id=target._test_user_id,
     )[target.id]
 
-    assert overlay["owner_earnings_yield"] == 0.05
-    assert overlay["owner_earnings_method"]["status"] == "user_defined"
+    assert overlay["owner_earnings_yield"] is None
+    assert overlay["owner_earnings_method"]["status"] == "unsupported"
+    assert overlay["owner_earnings_method"]["reason_code"] == (
+        "classification_unreviewed"
+    )
 
 
 def test_oracles_lens_never_leaks_another_users_valuation(

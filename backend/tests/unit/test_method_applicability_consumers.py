@@ -124,6 +124,38 @@ def _legacy_owner_earnings_facts(
             ("owners_earnings_per_share_normalized", 3.5, "AS_OF"),
         )
     ]
+
+
+def _legacy_linked_valuation_fact(
+    db_session,
+    *,
+    published: MetricFact,
+    user_id: int | None = None,
+    stock_id: int | None = None,
+    source_ref_id: int | None = None,
+) -> MetricFact:
+    """Create retained pre-origin lineage without rewriting a newer fact."""
+
+    published.is_current = False
+    db_session.commit()
+    fact = MetricFact(
+        user_id=published.user_id if user_id is None else user_id,
+        stock_id=published.stock_id if stock_id is None else stock_id,
+        metric_key="val.fair_value",
+        value_numeric=published.value_numeric,
+        unit=published.unit,
+        currency=published.currency,
+        period_type=published.period_type,
+        period_end_date=published.period_end_date,
+        source_type="manual",
+        source_ref_id=(
+            published.source_ref_id if source_ref_id is None else source_ref_id
+        ),
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+    return fact
 def test_owner_earnings_persistence_requires_reviewed_method_authority(
     db_session, user_factory
 ) -> None:
@@ -343,6 +375,91 @@ def test_legacy_owner_earnings_without_origin_snapshot_is_quarantined_everywhere
         )
     assert captured.value.code == "unsupported"
     assert captured.value.reason_code == "method_authority_snapshot_missing"
+
+
+@pytest.mark.parametrize(
+    ("economic_class", "reason_code"),
+    [
+        (None, "classification_unreviewed"),
+        ("bank", "owner_earnings_unsupported_for_bank"),
+        ("reit", "owner_earnings_unsupported_for_reit"),
+    ],
+)
+def test_legacy_user_formula_flag_cannot_bypass_owner_earnings_gate(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+    economic_class: str | None,
+    reason_code: str,
+) -> None:
+    reviewer = user_factory(
+        f"legacy-formula-{economic_class or 'unreviewed'}@example.com",
+        role="admin",
+    )
+    stock = _stock(db_session, f"LF{(economic_class or 'none')[:5]}")
+    if economic_class is not None:
+        review_company_classification(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            economic_class=economic_class,
+            effective_from=date(2020, 1, 1),
+            review_reason="Reviewed regulated industry classification.",
+        )
+        db_session.commit()
+    fact = _legacy_owner_earnings_facts(
+        user_id=reviewer.id, stock_id=stock.id
+    )[1]
+    fact.value_json["user_authored_formula"] = True
+    db_session.add(fact)
+    db_session.commit()
+
+    stock_response = client.get(
+        f"/api/v1/stocks/{stock.id}/facts", headers=auth_headers(reviewer)
+    )
+    assert stock_response.status_code == 200, stock_response.text
+    stock_state = next(
+        row
+        for row in stock_response.json()
+        if row["metric_key"] == "owners_earnings_per_share_normalized"
+    )
+    assert stock_state["value_numeric"] is None
+    assert stock_state["reason_code"] == reason_code
+
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=auth_headers(reviewer),
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": f"legacy-formula-{economic_class or 'unreviewed'}",
+                "source_version": "user-action-v1",
+                "source_ref": {"entry_point": "test"},
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=auth_headers(reviewer),
+    )
+    assert workspace.status_code == 200, workspace.text
+    workspace_state = next(
+        row
+        for row in workspace.json()["fundamentals"]
+        if row["metric_key"] == "owners_earnings_per_share_normalized"
+    )
+    assert workspace_state["value_numeric"] is None
+    assert workspace_state["reason_code"] == reason_code
+
+    overlay = _quality_overlay_by_stock(
+        db_session, [stock.id], user_id=reviewer.id
+    )[stock.id]
+    assert overlay["owner_earnings_yield"] is None
+    assert overlay["owner_earnings_method"]["status"] == "unsupported"
+    assert overlay["owner_earnings_method"]["reason_code"] == reason_code
 
 
 def test_stock_facts_publish_method_authority_and_block_unreviewed_numeric(
@@ -923,6 +1040,110 @@ def test_new_dcf_origin_cannot_be_overridden_by_assumption_order(
     )
 
 
+@pytest.mark.parametrize("lineage_state", ["missing", "cross_user", "wrong_stock"])
+def test_server_valuation_origin_still_requires_matching_revision_identity(
+    db_session, user_factory, lineage_state: str
+) -> None:
+    owner = user_factory(f"server-origin-owner-{lineage_state}@example.com")
+    reader = (
+        user_factory(f"server-origin-reader-{lineage_state}@example.com")
+        if lineage_state == "cross_user"
+        else owner
+    )
+    revision_stock = _stock(db_session, f"SOR{lineage_state[:4]}")
+    fact_stock = (
+        _stock(db_session, f"SOF{lineage_state[:4]}")
+        if lineage_state == "wrong_stock"
+        else revision_stock
+    )
+    _, revision, published = save_product_valuation_revision(
+        db_session,
+        user_id=owner.id,
+        stock_id=revision_stock.id,
+        value_numeric=115,
+        valuation_low=110,
+        valuation_high=120,
+        as_of_date=date.today(),
+        source="manual",
+        pool_id=None,
+        assumptions=[],
+        valuation_currency="USD",
+    )
+    published.is_current = False
+    db_session.commit()
+    source_ref_id = (
+        revision.id + 1_000_000 if lineage_state == "missing" else revision.id
+    )
+    fact = MetricFact(
+        user_id=reader.id,
+        stock_id=fact_stock.id,
+        metric_key="val.fair_value",
+        value_numeric=115,
+        value_json={
+            "valuation_origin": {
+                "version": "research-valuation-origin-v1",
+                "source": "manual",
+                "research_revision_id": source_ref_id,
+            }
+        },
+        unit="USD",
+        currency="USD",
+        period_type="AS_OF",
+        period_end_date=date.today(),
+        source_type="manual",
+        source_ref_id=source_ref_id,
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+
+    projected = read_valuation_facts_by_stock(
+        db_session, user_id=reader.id, stock_ids=[fact_stock.id]
+    )[fact_stock.id]["val.fair_value"]
+
+    assert projected.id == fact.id
+    assert projected.value_numeric is None
+    assert projected.value_json == {
+        "status": "unsupported",
+        "reason_code": "valuation_origin_unverifiable",
+    }
+
+
+def test_server_human_valuation_origin_survives_revision_content_redaction(
+    db_session, user_factory
+) -> None:
+    user = user_factory("server-human-origin-redacted@example.com")
+    stock = _stock(db_session, "SORREDACT")
+    case, revision, fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=88,
+        valuation_low=80,
+        valuation_high=95,
+        as_of_date=date.today(),
+        source="manual",
+        pool_id=None,
+        assumptions=[],
+        valuation_currency="USD",
+    )
+    redact_revision(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        revision_number=revision.revision_number,
+        reason="Remove authored research narrative.",
+    )
+
+    context = read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    )
+
+    assert context.user_intrinsic_value == 88
+    assert context.user_intrinsic_value_status == "available"
+    assert context.user_intrinsic_value_fact_id == fact.id
+
+
 @pytest.mark.parametrize(
     "lineage_state", ["redacted", "missing", "cross_user", "wrong_stock"]
 )
@@ -954,12 +1175,10 @@ def test_unverifiable_legacy_linked_valuation_never_exposes_numeric(
         assumptions=[{"source": "dcf", "label": "Legacy DCF"}],
         valuation_currency="USD",
     )
-    # Simulate a retained pre-origin-contract fact without rewriting its
-    # revision/fact provenance identity.
-    published.value_json = None
-    db_session.commit()
-
     if lineage_state == "redacted":
+        fact = _legacy_linked_valuation_fact(
+            db_session, published=published
+        )
         redact_revision(
             db_session,
             user_id=owner.id,
@@ -967,12 +1186,14 @@ def test_unverifiable_legacy_linked_valuation_never_exposes_numeric(
             revision_number=revision.revision_number,
             reason="Remove user-authored valuation inputs.",
         )
-        fact = published
     elif lineage_state == "missing":
-        published.source_ref_id = revision.id + 1_000_000
-        db_session.commit()
-        fact = published
+        fact = _legacy_linked_valuation_fact(
+            db_session,
+            published=published,
+            source_ref_id=revision.id + 1_000_000,
+        )
     else:
+        published.is_current = False
         fact = MetricFact(
             user_id=reader.id,
             stock_id=fact_stock.id,
@@ -1022,8 +1243,7 @@ def test_legacy_dcf_assumption_cannot_be_hidden_by_later_manual_marker(
         ],
         valuation_currency="USD",
     )
-    fact.value_json = None
-    db_session.commit()
+    fact = _legacy_linked_valuation_fact(db_session, published=fact)
 
     projected = read_valuation_facts_by_stock(
         db_session, user_id=user.id, stock_ids=[stock.id]
@@ -1082,8 +1302,7 @@ def test_legacy_linked_explicit_human_origin_remains_available(
         assumptions=[{"source": "manual", "label": "Legacy human value"}],
         valuation_currency="USD",
     )
-    fact.value_json = None
-    db_session.commit()
+    fact = _legacy_linked_valuation_fact(db_session, published=fact)
 
     context = read_valuation_context(
         db_session, user_id=user.id, stock_id=stock.id
@@ -1113,7 +1332,7 @@ def test_batch_valuation_revision_identity_is_checked_per_fact(
         assumptions=[{"source": "manual", "label": "Legacy human value"}],
         valuation_currency="USD",
     )
-    fact_b.value_json = None
+    fact_b = _legacy_linked_valuation_fact(db_session, published=fact_b)
     fact_a = MetricFact(
         user_id=user.id,
         stock_id=stock_a.id,

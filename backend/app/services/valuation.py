@@ -121,6 +121,27 @@ def _legacy_valuation_reason(
     return "valuation_origin_unverifiable"
 
 
+def _server_valuation_reason(
+    revision: Any | None, *, fact: MetricFact, origin_source: str
+) -> str | None:
+    """Validate the retained publication identity behind a server origin.
+
+    Revision redaction removes authored research content, not the immutable
+    publication source recorded on the fact. A verified DCF publication stays
+    quarantined after redaction; a verified human publication remains usable.
+    """
+
+    if (
+        revision is None
+        or int(revision.created_by_user_id) != fact.user_id
+        or int(revision.snapshot_stock_id) != fact.stock_id
+    ):
+        return "valuation_origin_unverifiable"
+    if origin_source == "dcf":
+        return "system_valuation_method_pending_ft09"
+    return None
+
+
 def _latest_current_fact(
     session: Session,
     *,
@@ -303,8 +324,12 @@ def read_valuation_facts_by_stock(
             origin_state, origin_source = _server_valuation_origin(fact)
             if origin_state == "invalid":
                 blocked_reason = "valuation_origin_unverifiable"
-            elif origin_state == "valid" and origin_source == "dcf":
-                blocked_reason = "system_valuation_method_pending_ft09"
+            elif origin_state == "valid" and origin_source is not None:
+                blocked_reason = _server_valuation_reason(
+                    revisions_by_id.get(int(fact.source_ref_id)),
+                    fact=fact,
+                    origin_source=origin_source,
+                )
             elif origin_state == "absent" and fact.source_ref_id is not None:
                 blocked_reason = _legacy_valuation_reason(
                     revisions_by_id.get(int(fact.source_ref_id)), fact=fact

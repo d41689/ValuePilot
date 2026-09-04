@@ -1,10 +1,10 @@
 import pytest
 from datetime import date
-from app.services.formula_engine import FormulaEngine
+from app.services.formula_engine import FormulaEngine, ReservedMethodFormulaOutputError
 from app.services.screener_service import ScreenerService
 from app.models.users import User
 from app.models.stocks import Stock
-from app.models.facts import MetricFact, Formula
+from app.models.facts import CalculatedRun, MetricFact, Formula
 from app.core.security import hash_password
 
 def test_formula_engine_validation():
@@ -69,6 +69,107 @@ def test_run_formula_integration(db_session):
     assert output_fact is not None
     assert output_fact.value_numeric == 400.0
     assert output_fact.source_type == "calculated"
+
+
+@pytest.mark.parametrize(
+    ("reserved_name", "ticker"),
+    [
+        ("owners_earnings_per_share", "RSV01"),
+        ("owners_earnings_per_share_normalized", "RSV02"),
+        ("returns.roic", "RSV03"),
+        ("roic", "RSV04"),
+        ("returns.total_capital", "RSV05"),
+        ("bs.return_on_total_capital", "RSV06"),
+        ("per_share_trend.revenue", "RSV07"),
+        ("trend.per_share.revenue", "RSV08"),
+        ("rates.sales.cagr_5y", "RSV09"),
+        ("system_valuation", "RSV10"),
+        ("system_valuation.dcf", "RSV11"),
+    ],
+)
+def test_formula_engine_rejects_reserved_method_output_before_writing(
+    db_session, reserved_name: str, ticker: str
+) -> None:
+    user = User(
+        email=f"reserved-{reserved_name.replace('.', '-')}@test.com",
+        hashed_password=hash_password("TestPass123!"),
+    )
+    stock = Stock(
+        ticker=ticker,
+        exchange="NYS",
+        company_name="Reserved Formula Corp",
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="revenue",
+            value_numeric=100,
+            source_type="manual",
+            is_current=True,
+        )
+    )
+    formula = Formula(
+        user_id=user.id,
+        name=reserved_name,
+        expression="revenue + 1",
+        dependencies_json=["revenue"],
+    )
+    db_session.add(formula)
+    db_session.commit()
+
+    with pytest.raises(ReservedMethodFormulaOutputError) as captured:
+        FormulaEngine(db_session).run_formula(formula.id, stock.id, user.id)
+
+    assert captured.value.code == "method_reserved_formula_output"
+    assert captured.value.metric_key == reserved_name
+    assert db_session.query(CalculatedRun).filter_by(formula_id=formula.id).count() == 0
+    assert db_session.query(MetricFact).filter_by(
+        stock_id=stock.id, metric_key=reserved_name
+    ).count() == 0
+
+
+def test_formula_engine_allows_custom_namespace_output(db_session) -> None:
+    user = User(
+        email="custom-formula@test.com",
+        hashed_password=hash_password("TestPass123!"),
+    )
+    stock = Stock(
+        ticker="CUSTOMF",
+        exchange="NYS",
+        company_name="Custom Formula Corp",
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="revenue",
+            value_numeric=100,
+            source_type="manual",
+            is_current=True,
+        )
+    )
+    formula = Formula(
+        user_id=user.id,
+        name="custom.owner_earnings_estimate",
+        expression="revenue + 1",
+        dependencies_json=["revenue"],
+    )
+    db_session.add(formula)
+    db_session.commit()
+
+    run = FormulaEngine(db_session).run_formula(formula.id, stock.id, user.id)
+
+    assert run is not None
+    fact = db_session.query(MetricFact).filter_by(
+        stock_id=stock.id, metric_key="custom.owner_earnings_estimate"
+    ).one()
+    assert fact.value_numeric == 101
+    assert fact.value_json["user_authored_formula"] is True
 
 
 def test_formula_selects_manual_before_checking_sec_amendment_state(
