@@ -1,6 +1,6 @@
 # FT-06 exact source reconciliation
 
-Status: in progress
+Status: ready for review
 
 Issue: #135
 
@@ -407,5 +407,9 @@ reconciliation outcomes or create another financial fact store.
   guards, and no-leakage behavior. Two candidates were closed as unreachable:
   the extraction route resolves an exact manifest before its downstream error
   mapper, and every declared source key in the supported mapping is produced
-  by the same parser extraction that supplies its mapped page-json value. The
-  final ordered canonical closing gate remains pending.
+  by the same parser extraction that supplies its mapped page-json value.
+- 2026-09-04: The final ordered canonical closing gate passed from branch head
+  `8b9695f3`: `docker compose up -d --build`; `alembic upgrade head`; backend
+  `pytest -q` at 2,323 passed with only two existing dependency-deprecation
+  warnings; frontend `node --test lib/*.test.js` at 233 passed; frontend lint;
+  production build; and `git diff --check`. No issue is knowingly deferred.
