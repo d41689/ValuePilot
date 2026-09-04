@@ -352,4 +352,6 @@ reconciliation outcomes or create another financial fact store.
   instance per check, and a warm-process regression proves that a second
   resolution observes a changed digest rather than continuing to accept the
   old approved policy. The R10 affected Docker suite is green at 114 tests.
-  Exact closing gates and fresh Terra R11 remain pending.
+  The exact full backend suite is green at 2,319 tests with only the two
+  existing dependency-deprecation warnings. Remaining frontend closing gates
+  and fresh Terra R11 remain pending.
