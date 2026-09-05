@@ -8,6 +8,7 @@ from app.api.deps import SessionDep, CurrentUser
 from app.core.currencies import normalize_iso4217_currency
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.valuation import (
     USER_INTRINSIC_VALUE_KEY,
     quantize_valuation_value,
@@ -29,6 +30,7 @@ from app.services.value_line_report_identity import (
     resolve_fact_report_identities,
 )
 from app.services.metric_fact_currentness import (
+    CurrentnessScope,
     HistoricalCurrentnessUnverifiableError,
     current_metric_fact_ids_at,
 )
@@ -393,6 +395,8 @@ def _build_piotroski_f_score_card(
     current_user_id: int,
     evaluated_at: datetime,
 ) -> dict[str, Any]:
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
     facts = session.scalars(
         select(MetricFact)
@@ -403,7 +407,12 @@ def _build_piotroski_f_score_card(
             MetricFact.source_type == "calculated",
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    session, knowledge_cutoff=evaluated_at
+                    session,
+                    knowledge_cutoff=evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id, metric_keys=tuple(metric_keys)
+                    ),
                 )
             ),
             MetricFact.period_type == "FY",
@@ -650,6 +659,8 @@ def _validated_dcf_save(
     server_evaluated_at: datetime,
     server_effective_as_of: date,
 ) -> tuple[str, list[dict[str, Any]], Decimal]:
+    evaluation_snapshot = database_evaluation_snapshot(session, server_evaluated_at)
+    server_evaluated_at = evaluation_snapshot.cutoff
     dcf_assumptions = [
         item for item in assumptions if isinstance(item, dict) and item.get("source") == "dcf"
     ]
@@ -766,7 +777,14 @@ def _validated_dcf_save(
             MetricFact.stock_id == stock_id,
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    session, knowledge_cutoff=server_evaluated_at
+                    session,
+                    knowledge_cutoff=server_evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=(
+                        CurrentnessScope(fact_ids=tuple(fact_ids))
+                        if fact_ids
+                        else CurrentnessScope.one_stock(stock_id)
+                    ),
                 )
             ),
             _visible_fact_predicate(current_user_id, []),
@@ -954,6 +972,8 @@ def _select_stock_for_ticker(
     admin_user_ids: list[int],
     knowledge_cutoff: datetime,
 ) -> Stock | None:
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_cutoff)
+    knowledge_cutoff = evaluation_snapshot.cutoff
     stocks = session.scalars(
         select(Stock)
         .where(func.lower(Stock.ticker) == ticker_normalized)
@@ -977,6 +997,7 @@ def _select_stock_for_ticker(
         current_user_id=current_user_id,
         shared_parsed_user_ids=admin_user_ids,
         knowledge_cutoff=knowledge_cutoff,
+        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
     )
     fact_counts = dict(
         session.execute(
@@ -985,7 +1006,10 @@ def _select_stock_for_ticker(
                 MetricFact.stock_id.in_(stock_ids),
                 MetricFact.id.in_(
                     current_metric_fact_ids_at(
-                        session, knowledge_cutoff=knowledge_cutoff
+                        session,
+                        knowledge_cutoff=knowledge_cutoff,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope(stock_ids=tuple(stock_ids)),
                     )
                 ),
                 _visible_fact_predicate(current_user_id, admin_user_ids),
@@ -1023,6 +1047,8 @@ def read_stock_by_ticker(
     # uploader convention.
     admin_user_ids: list[int] = []
     evaluation_cutoff = database_evaluation_cutoff(session)
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluation_cutoff)
+    evaluation_cutoff = evaluation_snapshot.cutoff
     try:
         stock = _select_stock_for_ticker(
             session,
@@ -1069,7 +1095,17 @@ def read_stock_by_ticker(
         MetricFact.stock_id == stock.id,
         MetricFact.id.in_(
             current_metric_fact_ids_at(
-                session, knowledge_cutoff=dcf_evaluated_at
+                session,
+                knowledge_cutoff=dcf_evaluated_at,
+                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                scope=CurrentnessScope.one_stock(
+                    stock.id,
+                    metric_keys=(
+                        "mkt.price",
+                        "val.pe",
+                        "owners_earnings_per_share_normalized",
+                    ),
+                ),
             )
         ),
         _visible_fact_predicate(current_user.id, admin_user_ids),
@@ -1147,7 +1183,13 @@ def read_stock_by_ticker(
                 MetricFact.stock_id == stock.id,
                 MetricFact.id.in_(
                     current_metric_fact_ids_at(
-                        session, knowledge_cutoff=dcf_evaluated_at
+                        session,
+                        knowledge_cutoff=dcf_evaluated_at,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(
+                            stock.id,
+                            metric_keys=("owners_earnings_per_share",),
+                        ),
                     )
                 ),
                 _visible_fact_predicate(current_user.id, admin_user_ids),
@@ -1193,7 +1235,12 @@ def read_stock_by_ticker(
             MetricFact.stock_id == stock.id,
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    session, knowledge_cutoff=dcf_evaluated_at
+                    session,
+                    knowledge_cutoff=dcf_evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock.id, metric_keys=tuple(growth_metric_keys)
+                    ),
                 )
             ),
             _visible_fact_predicate(current_user.id, admin_user_ids),
@@ -1599,13 +1646,17 @@ def read_stock_facts(
 
     admin_user_ids: list[int] = []
 
-    evaluation_cutoff = database_evaluation_cutoff(session)
+    evaluation_snapshot = database_evaluation_snapshot(session)
+    evaluation_cutoff = evaluation_snapshot.cutoff
     # Get current facts
     stmt = select(MetricFact).where(
         MetricFact.stock_id == stock_id,
         MetricFact.id.in_(
             current_metric_fact_ids_at(
-                session, knowledge_cutoff=evaluation_cutoff
+                session,
+                knowledge_cutoff=evaluation_cutoff,
+                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                scope=CurrentnessScope.one_stock(stock_id),
             )
         ),
         _visible_fact_predicate(current_user.id, admin_user_ids),

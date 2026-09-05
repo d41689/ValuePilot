@@ -4,9 +4,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import and_, bindparam, cast, func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
-from sqlalchemy.types import UserDefinedType
 
 from app.models.artifacts import (
     PdfDocument,
@@ -15,6 +14,10 @@ from app.models.artifacts import (
 )
 from app.models.facts import MetricFact
 from app.services.canonical_financials import database_evaluation_cutoff
+from app.services.evaluation_snapshot import (
+    database_evaluation_snapshot,
+    transaction_visible_in_snapshot_predicate,
+)
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import (
     ValueLineSourceUnavailableError,
@@ -54,27 +57,6 @@ class ActualConflictAuthorityAmbiguousError(ValueError):
         )
 
 
-class _TxidSnapshot(UserDefinedType):
-    cache_ok = True
-
-    def get_col_spec(self, **_kw):
-        return "txid_snapshot"
-
-
-def transaction_visible_in_snapshot_predicate(
-    transaction_id,
-    *,
-    visibility_snapshot: str,
-    bind_name: str,
-):
-    """Bind a PostgreSQL MVCC snapshot without interpolating SQL text."""
-
-    return func.txid_visible_in_snapshot(
-        transaction_id,
-        cast(bindparam(bind_name, visibility_snapshot), _TxidSnapshot()),
-    )
-
-
 @dataclass(frozen=True)
 class ActiveReportSelection:
     stock_id: int
@@ -112,6 +94,10 @@ def resolve_active_reports(
 
     if knowledge_cutoff is None:
         knowledge_cutoff = database_evaluation_cutoff(session)
+    if knowledge_txid_snapshot is None:
+        knowledge_txid_snapshot = database_evaluation_snapshot(
+            session, knowledge_cutoff
+        ).visibility_snapshot
     scope = [
         MetricFact.source_type == "parsed",
         MetricFact.source_document_id.is_not(None),

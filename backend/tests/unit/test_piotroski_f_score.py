@@ -397,7 +397,10 @@ def test_piotroski_calculator_explicitly_selects_parsed_source():
             2026, 1, 1, tzinfo=timezone.utc
         )
     }
-    db.scalar.return_value = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    db.execute.return_value.one.return_value = SimpleNamespace(
+        cutoff=now, visibility_snapshot="1:1:"
+    )
     db.scalars.return_value.all.return_value = []
 
     with patch(

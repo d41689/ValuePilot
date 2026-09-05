@@ -10,7 +10,8 @@ from sqlalchemy import select, func, delete
 from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import StockPool, PoolMembership, Stock
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.market_data_service import (
     read_canonical_eod_prices,
     read_current_eod_prices,
@@ -68,7 +69,8 @@ def _piotroski_scores_for_stocks(
     if not stock_ids:
         return {}, {}
 
-    evaluated_at = database_evaluation_cutoff(session, evaluated_at)
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     business_date = evaluation_business_date(evaluated_at)
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     scores_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in unique_stock_ids}
@@ -83,7 +85,13 @@ def _piotroski_scores_for_stocks(
             MetricFact.source_type == "calculated",
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    session, knowledge_cutoff=evaluated_at
+                    session,
+                    knowledge_cutoff=evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope(
+                        stock_ids=tuple(unique_stock_ids),
+                        metric_keys=(PIOTROSKI_TOTAL_KEY,),
+                    ),
                 )
             ),
             MetricFact.period_type == "FY",
@@ -243,7 +251,8 @@ def _piotroski_compare_payload(
     watchlist: dict[str, Any],
     evaluated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    evaluated_at = database_evaluation_cutoff(session, evaluated_at)
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     unique_members: list[PoolMembership] = []
     seen_stock_ids: set[int] = set()
     for member in members:
@@ -264,7 +273,13 @@ def _piotroski_compare_payload(
                 MetricFact.source_type == "calculated",
                 MetricFact.id.in_(
                     current_metric_fact_ids_at(
-                        session, knowledge_cutoff=evaluated_at
+                        session,
+                        knowledge_cutoff=evaluated_at,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope(
+                            stock_ids=tuple(stock_ids),
+                            metric_keys=(PIOTROSKI_TOTAL_KEY,),
+                        ),
                     )
                 ),
                 MetricFact.period_type == "FY",

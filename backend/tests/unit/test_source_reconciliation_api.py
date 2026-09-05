@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.artifacts import PdfDocument, ValueLineParseRun
@@ -950,7 +950,10 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
     ]
     db_session.add_all(stocks)
     db_session.flush()
+    first_id = db_session.scalar(text("SELECT nextval('metric_facts_id_seq')"))
+    second_id = db_session.scalar(text("SELECT nextval('metric_facts_id_seq')"))
     first = MetricFact(
+        id=first_id,
         user_id=user.id,
         stock_id=stocks[0].id,
         metric_key="derived.first",
@@ -958,12 +961,13 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
         value_json={
             "fact_nature": "derived_actual",
             "calculation_version": "test-v1",
-            "inputs": [],
+            "inputs": [{"fact_id": second_id}],
         },
         source_type="calculated",
         is_current=True,
     )
     second = MetricFact(
+        id=second_id,
         user_id=user.id,
         stock_id=stocks[0].id,
         metric_key="derived.second",
@@ -971,7 +975,7 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
         value_json={
             "fact_nature": "derived_actual",
             "calculation_version": "test-v1",
-            "inputs": [],
+            "inputs": [{"fact_id": first_id}],
         },
         source_type="calculated",
         is_current=True,
@@ -987,14 +991,6 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
     )
     db_session.add_all([first, second, foreign])
     db_session.flush()
-    first.value_json = {
-        **first.value_json,
-        "inputs": [{"fact_id": second.id}],
-    }
-    second.value_json = {
-        **second.value_json,
-        "inputs": [{"fact_id": first.id}],
-    }
     db_session.commit()
 
     with pytest.raises(CanonicalReconciliationError) as cycle:
@@ -1009,14 +1005,24 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
         "lineage_cycle_detected"
     )
 
-    first.value_json = {
-        **first.value_json,
-        "inputs": [{"fact_id": foreign.id}],
-    }
+    cross_stock_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stocks[0].id,
+        metric_key="derived.cross_stock",
+        value_numeric=4,
+        value_json={
+            "fact_nature": "derived_actual",
+            "calculation_version": "test-v1",
+            "inputs": [{"fact_id": foreign.id}],
+        },
+        source_type="calculated",
+        is_current=True,
+    )
+    db_session.add(cross_stock_fact)
     db_session.commit()
     with pytest.raises(CanonicalReconciliationError) as cross_stock:
         guard_reconciled_source_selection(
-            [first],
+            [cross_stock_fact],
             consumer="stock_pool_piotroski_display",
             knowledge_cutoff=datetime.now(timezone.utc),
             session=db_session,

@@ -17,6 +17,7 @@ from app.services.market_data_service import (
     read_current_eod_price,
     serialize_canonical_eod_price,
 )
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.research_cases import (
     ResearchCaseError,
     serialize_case,
@@ -41,6 +42,7 @@ from app.services.value_line_report_identity import (
     resolve_fact_report_identities,
 )
 from app.services.metric_fact_currentness import (
+    CurrentnessScope,
     HistoricalCurrentnessUnverifiableError,
     current_metric_fact_ids_at,
 )
@@ -48,7 +50,6 @@ from app.services.value_line_source_visibility import ValueLineSourceUnavailable
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
-    database_evaluation_cutoff,
     evaluation_business_date,
     reviewed_method_gate,
     system_method_for_fact,
@@ -167,7 +168,8 @@ def build_research_workspace(
     as_of: date | None = None,
     evaluated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    evaluated_at = database_evaluation_cutoff(session, evaluated_at)
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     current_as_of = evaluation_business_date(evaluated_at)
     as_of = as_of or current_as_of
     case = (
@@ -201,7 +203,10 @@ def build_research_workspace(
     )
     try:
         current_fact_ids = current_metric_fact_ids_at(
-            session, knowledge_cutoff=evaluated_at
+            session,
+            knowledge_cutoff=evaluated_at,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope.one_stock(stock.id),
         )
     except HistoricalCurrentnessUnverifiableError as error:
         raise ResearchCaseError(error.code, str(error), status_code=409) from error

@@ -5,10 +5,10 @@ from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.models.facts import MetricFact, Formula, CalculatedRun
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
-    database_evaluation_cutoff,
     evaluation_business_date,
     guard_sec_run_availability,
     is_reserved_system_output_key,
@@ -141,14 +141,21 @@ class FormulaEngine:
         # TODO: Handle period matching (e.g. Sales 2023 vs EPS 2023)
         # For now, we take the `is_current=True` fact.
         
-        evaluated_at = database_evaluation_cutoff(self.db)
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        evaluated_at = evaluation_snapshot.cutoff
         facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key.in_(formula.dependencies_json),
                 MetricFact.id.in_(
                     current_metric_fact_ids_at(
-                        self.db, knowledge_cutoff=evaluated_at
+                        self.db,
+                        knowledge_cutoff=evaluated_at,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(
+                            stock_id,
+                            metric_keys=tuple(formula.dependencies_json),
+                        ),
                     )
                 ),
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),

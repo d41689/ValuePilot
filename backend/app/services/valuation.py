@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.models.research import ResearchCaseRevision
-from app.services.canonical_financials import database_evaluation_cutoff
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 
 
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
@@ -152,14 +152,20 @@ def _latest_current_fact(
     metric_key: str,
     source_type: str | None = None,
 ) -> MetricFact | None:
-    knowledge_cutoff = database_evaluation_cutoff(session)
+    evaluation_snapshot = database_evaluation_snapshot(session)
+    knowledge_cutoff = evaluation_snapshot.cutoff
     stmt = select(MetricFact).where(
         MetricFact.user_id == user_id,
         MetricFact.stock_id == stock_id,
         MetricFact.metric_key == metric_key,
         MetricFact.id.in_(
             current_metric_fact_ids_at(
-                session, knowledge_cutoff=knowledge_cutoff
+                session,
+                knowledge_cutoff=knowledge_cutoff,
+                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                scope=CurrentnessScope.one_stock(
+                    stock_id, metric_keys=(metric_key,), user_ids=(user_id,)
+                ),
             )
         ),
     )
@@ -279,8 +285,8 @@ def read_valuation_facts_by_stock(
     }
     if user_id is None or not unique_stock_ids:
         return result
-    if knowledge_cutoff is None:
-        knowledge_cutoff = database_evaluation_cutoff(session)
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_cutoff)
+    knowledge_cutoff = evaluation_snapshot.cutoff
     if knowledge_cutoff.tzinfo is None:
         raise ValueError("knowledge cutoff must be timezone-aware")
     fact_query = select(MetricFact).where(
@@ -291,7 +297,16 @@ def read_valuation_facts_by_stock(
         ),
         MetricFact.id.in_(
             current_metric_fact_ids_at(
-                session, knowledge_cutoff=knowledge_cutoff
+                session,
+                knowledge_cutoff=knowledge_cutoff,
+                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                scope=CurrentnessScope(
+                    stock_ids=tuple(unique_stock_ids),
+                    metric_keys=(
+                        USER_INTRINSIC_VALUE_KEY,
+                        VALUE_LINE_TARGET_REFERENCE_KEY,
+                    ),
+                ),
             )
         ),
     )

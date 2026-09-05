@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.market_data_service import (
     CanonicalEodPrice,
     read_canonical_eod_prices,
@@ -1204,7 +1205,8 @@ def _m3_facts_by_stock(
     collapsed by ordering.
     """
     unique_stock_ids = list(dict.fromkeys(stock_ids))
-    evaluation_cutoff = database_evaluation_cutoff(session, knowledge_at)
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
+    evaluation_cutoff = evaluation_snapshot.cutoff
     if user_id is None or not unique_stock_ids or not metric_keys:
         return (
             {stock_id: {} for stock_id in unique_stock_ids},
@@ -1219,7 +1221,13 @@ def _m3_facts_by_stock(
         .filter(
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    session, knowledge_cutoff=evaluation_cutoff
+                    session,
+                    knowledge_cutoff=evaluation_cutoff,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope(
+                        stock_ids=tuple(unique_stock_ids),
+                        metric_keys=tuple(metric_keys),
+                    ),
                 )
             )
         )

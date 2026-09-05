@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -118,7 +119,10 @@ def test_value_line_ratio_calculator_explicitly_selects_parsed_source():
             2026, 1, 1, tzinfo=timezone.utc
         )
     }
-    db.scalar.return_value = datetime(2026, 9, 5, tzinfo=timezone.utc)
+    db.execute.return_value.one.return_value = SimpleNamespace(
+        cutoff=datetime(2026, 9, 5, tzinfo=timezone.utc),
+        visibility_snapshot="1:1:",
+    )
     db.scalars.return_value.all.return_value = []
 
     with patch(

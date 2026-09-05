@@ -41,10 +41,31 @@ def _bootstrap_lock_entities() -> tuple[int, int, int]:
 def _cleanup_lock_entities(user_id: int, first_id: int, second_id: int) -> None:
     cleanup = SessionLocal()
     try:
-        cleanup.execute(
-            text("DELETE FROM metric_facts WHERE stock_id IN (:first_id, :second_id)"),
-            {"first_id": first_id, "second_id": second_id},
-        )
+        for stock_id in (first_id, second_id):
+            document_id = cleanup.execute(
+                text(
+                    "INSERT INTO pdf_documents "
+                    "(user_id,stock_id,file_name,file_storage_key,source,parse_status,"
+                    "identity_needs_review) VALUES (:user_id,:stock_id,:file,:file,"
+                    "'value_line','pending',false) RETURNING id"
+                ),
+                {
+                    "user_id": user_id,
+                    "stock_id": stock_id,
+                    "file": f"lock-cleanup-{stock_id}.pdf",
+                },
+            ).scalar_one()
+            cleanup.execute(
+                text(
+                    "UPDATE metric_facts SET source_document_id=:document_id "
+                    "WHERE stock_id=:stock_id"
+                ),
+                {"document_id": document_id, "stock_id": stock_id},
+            )
+            cleanup.execute(
+                text("DELETE FROM pdf_documents WHERE id=:document_id"),
+                {"document_id": document_id},
+            )
         cleanup.execute(
             text("DELETE FROM stocks WHERE id IN (:first_id, :second_id)"),
             {"first_id": first_id, "second_id": second_id},
@@ -268,6 +289,7 @@ def test_metric_fact_trigger_locks_both_update_identities_and_delete():
             locked_stock_id=first_id,
             statement="DELETE FROM metric_facts WHERE id=:fact_id",
             parameters={"fact_id": delete_fact_id},
+            expected_error="metric facts cannot be deleted directly",
         )
     finally:
         _cleanup_lock_entities(user_id, first_id, second_id)

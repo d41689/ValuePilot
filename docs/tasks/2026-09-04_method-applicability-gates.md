@@ -803,3 +803,39 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   migration upgrade, `2669` backend tests, `233` frontend unit tests, frontend
   lint, production frontend build, and `git diff --check`. Only the pre-existing
   Starlette/httpx and anyio deprecation warnings remain in backend pytest.
+- 2026-09-05: Strict Terra R22 identified three remaining boundaries. Ordinary
+  current-truth reads now begin with one PostgreSQL statement that returns both
+  `clock_timestamp()` and `txid_current_snapshot()` after allocating the
+  evaluator's transaction identity. The exact pair is retained across nested
+  canonical, currentness, active-report, method-policy, unresolved-SEC,
+  screener, formula, valuation, Oracle, Workspace, stock/pool/ticker,
+  conflict, document and quant fact reads. Read-your-writes is recognized only
+  by equality with `txid_current()`; a writer that commits after capture is
+  excluded even when its database timestamp is no later than the cutoff. Tests
+  use separate committed PostgreSQL transactions and no clock epsilon.
+- 2026-09-05: Forward revision `20260904260000` freezes manual, calculated and
+  derived fact content/provenance and rejects false-to-true reactivation or
+  direct deletion. A correction remains append-new then demote-old. The only
+  narrow content exception is the existing one-way manual privacy tombstone;
+  the only provenance relocation is FT-06 manual document relocation.
+  Calculated/derived outputs remain immutable and are regenerated after a legal
+  parent document cascade. Source-document and report-identity foreign keys now
+  make those existing parent cascades the database-owned deletion boundaries;
+  the currentness timeline cascades only from the fact as before. Trigger order
+  remains after the existing FT-07, Value Line and canonical-slot guards.
+- 2026-09-05: Currentness resolution now requires an explicit candidate scope,
+  applies stock/metric/user/source/document/period filters before its window,
+  and refuses oversized fact, stock, document, metric or tenant input with
+  typed `metric_fact_currentness_scope_bound_exceeded`; an absent usable scope
+  is typed `metric_fact_currentness_scope_required`. Every production call site
+  was AST-audited to provide both its explicit scope and the retained
+  transaction-visibility snapshot. Revision 260 adds stock+metric, metric, and
+  document currentness indexes; isolated `EXPLAIN` regressions prove each
+  representative plan selects the expected index. Focused migration,
+  currentness, document-dedupe, quant, method, SEC-publication and amendment
+  coverage is `291 passed` with only the existing framework deprecations.
+  Shared development and the unique Alembic head are revision 260. Exact
+  closing gates are green: container build, migration upgrade, `2681` backend
+  tests, `233` frontend unit tests, frontend lint, production frontend build,
+  and `git diff --check`. Only the pre-existing Starlette/httpx and anyio
+  deprecation warnings remain in backend pytest.

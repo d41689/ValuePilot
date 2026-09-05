@@ -29,7 +29,9 @@ class MetricFact(Base):
     period_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     period_end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     as_of_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    source_document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("pdf_documents.id"), nullable=True)
+    source_document_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("pdf_documents.id", ondelete="CASCADE"), nullable=True
+    )
     source_type: Mapped[str] = mapped_column(String) # parsed / calculated / manual
     # Polymorphic durable source reference. For manual val.fair_value facts this
     # may identify the publishing research_case_revision.
@@ -50,7 +52,7 @@ class MetricFact(Base):
     # identity. Tenant or explicit-stock mismatches remain null and fail closed.
     value_line_report_identity_revision_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey(
-            "value_line_document_report_identity_revisions.id", ondelete="RESTRICT"
+            "value_line_document_report_identity_revisions.id", ondelete="CASCADE"
         ),
         nullable=True,
         index=True,

@@ -17,11 +17,12 @@ from app.services.active_report_resolver import (
     ActiveReportSelection,
     ActualConflictAuthorityAmbiguousError,
 )
-from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.metric_fact_currentness import (
+    CurrentnessScope,
     current_metric_fact_ids_at,
     currentness_state_subquery,
 )
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import (
     ValueLineSourceUnavailableError,
@@ -59,7 +60,8 @@ def detect_actual_conflicts(
     knowledge_cutoff: datetime | None = None,
 ) -> list[dict[str, Any]]:
     if knowledge_cutoff is None:
-        knowledge_cutoff = database_evaluation_cutoff(session)
+        evaluation_snapshot = database_evaluation_snapshot(session)
+        knowledge_cutoff = evaluation_snapshot.cutoff
     elif knowledge_cutoff.utcoffset() is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
     shared_ids = sorted(set(shared_parsed_user_ids or []))
@@ -67,8 +69,23 @@ def detect_actual_conflicts(
     # canonical projection. The returned ID query is used by simpler consumers;
     # conflicts need both true and false states and therefore join the complete
     # latest-state projection below.
-    current_metric_fact_ids_at(session, knowledge_cutoff=knowledge_cutoff)
-    currentness = currentness_state_subquery(knowledge_cutoff=knowledge_cutoff)
+    visibility_snapshot = database_evaluation_snapshot(
+        session, knowledge_cutoff
+    ).visibility_snapshot
+    currentness_scope = CurrentnessScope.one_stock(
+        stock_id, source_types=("parsed",)
+    )
+    current_metric_fact_ids_at(
+        session,
+        knowledge_cutoff=knowledge_cutoff,
+        knowledge_txid_snapshot=visibility_snapshot,
+        scope=currentness_scope,
+    )
+    currentness = currentness_state_subquery(
+        knowledge_cutoff=knowledge_cutoff,
+        knowledge_txid_snapshot=visibility_snapshot,
+        scope=currentness_scope,
+    )
     if len(shared_ids) > MAX_ACTUAL_CONFLICT_OBSERVATIONS:
         raise ActualConflictAuthorityBoundExceededError(
             dimension="shared_parsed_user_ids",

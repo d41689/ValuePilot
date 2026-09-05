@@ -17,6 +17,7 @@ from app.models.artifacts import (
 )
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.models.stocks import Stock
 from app.services.file_storage import FileStorageService
 from app.services.identity_service import IdentityService
@@ -37,7 +38,7 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
 )
 from app.services.value_line_report_identity import resolve_fact_report_identities
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 
@@ -765,14 +766,20 @@ class IngestionService:
             return []
         method_snapshot = decision.as_dict()
 
-        knowledge_cutoff = database_evaluation_cutoff(self.db)
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        knowledge_cutoff = evaluation_snapshot.cutoff
         source_query = select(MetricFact).where(
             MetricFact.user_id == user_id,
             MetricFact.stock_id == stock_id,
             MetricFact.source_type == "parsed",
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    self.db, knowledge_cutoff=knowledge_cutoff
+                    self.db,
+                    knowledge_cutoff=knowledge_cutoff,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id, metric_keys=tuple(OE_INPUT_KEYS)
+                    ),
                 )
             ),
             MetricFact.period_type == "FY",

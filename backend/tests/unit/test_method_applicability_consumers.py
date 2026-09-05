@@ -17,6 +17,10 @@ from app.services.dcf_inputs import (
     load_canonical_dcf_fact_universe,
 )
 from app.services.ingestion_service import IngestionService
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+)
 from app.services.method_applicability import (
     RISK_ATTRIBUTES,
     review_company_classification,
@@ -727,10 +731,14 @@ def test_oracles_lens_current_gate_uses_new_york_date_and_preserves_historical_d
         tzinfo=ZoneInfo("America/New_York"),
     ).astimezone(timezone.utc) + timedelta(minutes=30)
     clock = [early]
+    visibility_snapshot = database_evaluation_snapshot(db_session).visibility_snapshot
     monkeypatch.setattr(
         oracles_dashboard,
-        "database_evaluation_cutoff",
-        lambda _session, supplied=None: supplied or clock[0],
+        "database_evaluation_snapshot",
+        lambda _session, supplied=None: EvaluationSnapshot(
+            cutoff=supplied or clock[0],
+            visibility_snapshot=visibility_snapshot,
+        ),
     )
 
     current, states = _m3_facts_by_stock(

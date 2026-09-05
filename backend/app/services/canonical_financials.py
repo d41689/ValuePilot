@@ -14,11 +14,16 @@ import re
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, exists, func, or_, select, text
 from sqlalchemy.orm import Session
 
-from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.models.facts import MetricFact, MetricFactCurrentnessRevision
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+    transaction_visible_in_snapshot_predicate,
+)
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 
 
 CANONICAL_SOURCE_TYPES = frozenset({"sec", "parsed", "manual", "calculated"})
@@ -45,16 +50,9 @@ ANALYSIS_BUSINESS_TIMEZONE = ZoneInfo("America/New_York")
 def database_evaluation_cutoff(
     session: Session, supplied: datetime | None = None
 ) -> datetime:
-    """Return one aware PIT boundary from PostgreSQL unless one was supplied."""
+    """Compatibility wrapper; current-truth code should retain the snapshot."""
 
-    if supplied is not None:
-        if supplied.tzinfo is None:
-            raise ValueError("knowledge cutoff must be timezone-aware")
-        return supplied.astimezone(timezone.utc)
-    cutoff = session.scalar(select(func.clock_timestamp()))
-    if cutoff is None or cutoff.tzinfo is None:
-        raise RuntimeError("database clock did not return an aware timestamp")
-    return cutoff.astimezone(timezone.utc)
+    return database_evaluation_snapshot(session, supplied).cutoff
 
 
 def evaluation_business_date(evaluated_at: datetime) -> date:
@@ -267,17 +265,24 @@ def reviewed_method_gate(
 
     if method_key not in SYSTEM_METHOD_KEYS:
         raise ValueError("unsupported method_key")
-    cutoff = database_evaluation_cutoff(session, knowledge_at)
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
+    cutoff = evaluation_snapshot.cutoff
+    visibility_snapshot = evaluation_snapshot.visibility_snapshot
     policy = session.execute(
         text(
             """
             SELECT id, policy_sha256
             FROM sec_method_policy_versions
             WHERE status='approved' AND effective_from<=:cutoff AND known_at<=:cutoff
+              AND (created_txid=txid_current() OR txid_visible_in_snapshot(
+                    created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
               AND NOT EXISTS (
                 SELECT 1 FROM sec_method_policy_versions later
                 WHERE later.status='approved' AND later.effective_from<=:cutoff
                   AND later.known_at<=:cutoff
+                  AND (later.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
                   AND (later.effective_from, later.known_at, later.id)>
                       (sec_method_policy_versions.effective_from,
                        sec_method_policy_versions.known_at,
@@ -286,7 +291,7 @@ def reviewed_method_gate(
             LIMIT 1
             """
         ),
-        {"cutoff": cutoff},
+        {"cutoff": cutoff, "visibility_snapshot": visibility_snapshot},
     ).mappings().first()
     if policy is None:
         return _method_decision(
@@ -313,6 +318,9 @@ def reviewed_method_gate(
                   AND root.effective_from<=:as_of
                   AND (root.effective_to IS NULL OR root.effective_to>=:as_of)
                   AND root.known_at<=:cutoff
+                  AND (root.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        root.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
                 UNION ALL
                 SELECT path.ancestor_id, later.id, later.effective_from,
                        later.effective_to
@@ -320,12 +328,17 @@ def reviewed_method_gate(
                 JOIN sec_economic_classification_reviews later
                   ON later.supersedes_review_id=path.descendant_id
                 WHERE later.stock_id=:stock_id AND later.known_at<=:cutoff
+                  AND (later.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
             )
             SELECT r.id, r.economic_class
             FROM sec_economic_classification_reviews r
             WHERE r.stock_id=:stock_id AND r.effective_from<=:as_of
               AND (r.effective_to IS NULL OR r.effective_to>=:as_of)
               AND r.known_at<=:cutoff
+              AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
               AND NOT EXISTS (
                 SELECT 1 FROM review_descendants later
                 WHERE later.ancestor_id=r.id AND later.descendant_id<>r.id
@@ -337,7 +350,12 @@ def reviewed_method_gate(
             LIMIT 2
             """
         ),
-        {"stock_id": stock_id, "as_of": effective_as_of, "cutoff": cutoff},
+        {
+            "stock_id": stock_id,
+            "as_of": effective_as_of,
+            "cutoff": cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
     ).mappings().all()
     if len(classifications) != 1:
         reason = "classification_unreviewed" if not classifications else "classification_conflict"
@@ -414,6 +432,9 @@ def reviewed_method_gate(
                   AND root.effective_from<=:as_of
                   AND (root.effective_to IS NULL OR root.effective_to>=:as_of)
                   AND root.known_at<=:cutoff
+                  AND (root.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        root.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
                 UNION ALL
                 SELECT path.ancestor_id, later.id, later.effective_from,
                        later.effective_to
@@ -421,12 +442,17 @@ def reviewed_method_gate(
                 JOIN sec_economic_risk_attribute_reviews later
                   ON later.supersedes_review_id=path.descendant_id
                 WHERE later.stock_id=:stock_id AND later.known_at<=:cutoff
+                  AND (later.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
             )
             SELECT r.id, r.risk_attribute, r.is_present
             FROM sec_economic_risk_attribute_reviews r
             WHERE r.stock_id=:stock_id AND r.effective_from<=:as_of
               AND (r.effective_to IS NULL OR r.effective_to>=:as_of)
               AND r.known_at<=:cutoff
+              AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
               AND NOT EXISTS (
                 SELECT 1 FROM review_descendants later
                 WHERE later.ancestor_id=r.id AND later.descendant_id<>r.id
@@ -437,7 +463,12 @@ def reviewed_method_gate(
             ORDER BY r.risk_attribute, r.known_at DESC, r.id DESC
             """
         ),
-        {"stock_id": stock_id, "as_of": effective_as_of, "cutoff": cutoff},
+        {
+            "stock_id": stock_id,
+            "as_of": effective_as_of,
+            "cutoff": cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
     ).mappings().all()
     by_risk: dict[str, list[Any]] = {attribute: [] for attribute in required_risk_reviews}
     for row in risk_rows:
@@ -935,7 +966,8 @@ def guard_piotroski_method_authority(
 ) -> tuple[list[MetricFact], list[dict[str, Any]]]:
     """Rebuild strict Piotroski manifests and quarantine unverifiable periods."""
 
-    cutoff = database_evaluation_cutoff(session, knowledge_at)
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
+    cutoff = evaluation_snapshot.cutoff
     materialized = list(facts)
     piotroski = [
         fact for fact in materialized if fact.metric_key.startswith(PIOTROSKI_PREFIX)
@@ -1061,7 +1093,16 @@ def guard_piotroski_method_authority(
                 or_(*period_clauses),
                 MetricFact.id.in_(
                     current_metric_fact_ids_at(
-                        session, knowledge_cutoff=cutoff
+                        session,
+                        knowledge_cutoff=cutoff,
+                        knowledge_txid_snapshot=(
+                            evaluation_snapshot.visibility_snapshot
+                        ),
+                        scope=CurrentnessScope(
+                            stock_ids=tuple(
+                                sorted({period[1] for period in query_periods})
+                            ),
+                        ),
                     )
                 ),
             )
@@ -1105,6 +1146,23 @@ def guard_piotroski_method_authority(
                 MetricFact.created_at > cutoff,
                 MetricFact.metric_key.like(f"{PIOTROSKI_PREFIX}%"),
                 or_(*period_clauses),
+                exists(
+                    select(MetricFactCurrentnessRevision.id).where(
+                        MetricFactCurrentnessRevision.fact_id == MetricFact.id,
+                        or_(
+                            MetricFactCurrentnessRevision.created_txid.is_(None),
+                            transaction_visible_in_snapshot_predicate(
+                                MetricFactCurrentnessRevision.created_txid,
+                                visibility_snapshot=(
+                                    evaluation_snapshot.visibility_snapshot
+                                ),
+                                bind_name=(
+                                    "piotroski_future_visibility_snapshot"
+                                ),
+                            ),
+                        ),
+                    )
+                ),
             )
             .subquery()
         )
@@ -1626,14 +1684,18 @@ def require_applicable_method_facts(
 def current_visible_facts(
     session: Session, *, stock_id: int, user_id: int
 ) -> list[MetricFact]:
-    knowledge_cutoff = database_evaluation_cutoff(session)
+    evaluation_snapshot = database_evaluation_snapshot(session)
+    knowledge_cutoff = evaluation_snapshot.cutoff
     return list(
         session.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.id.in_(
                     current_metric_fact_ids_at(
-                        session, knowledge_cutoff=knowledge_cutoff
+                        session,
+                        knowledge_cutoff=knowledge_cutoff,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(stock_id),
                     )
                 ),
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
@@ -1650,10 +1712,16 @@ def active_sec_run_unresolved_states(
 ) -> list[dict[str, Any]]:
     """Return unresolved amendment states bounded by filing-cycle authority."""
 
-    if knowledge_cutoff is not None and knowledge_cutoff.tzinfo is None:
-        raise ValueError("knowledge_cutoff must be timezone-aware")
-    if knowledge_cutoff is not None:
-        knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
+    supplied_cutoff = knowledge_cutoff
+    evaluation_snapshot = database_evaluation_snapshot(session, supplied_cutoff)
+    # Preserve the established current-mode contract: a publication that has
+    # finalized is current even when its requested source cutoff is slightly
+    # ahead of the wall clock. Historical callers still receive the exact,
+    # strict supplied cutoff. Transaction visibility is bounded in both modes.
+    knowledge_cutoff = (
+        evaluation_snapshot.cutoff if supplied_cutoff is not None else None
+    )
+    visibility_snapshot = evaluation_snapshot.visibility_snapshot
 
     rows = session.execute(
         text(
@@ -1688,6 +1756,18 @@ def active_sec_run_unresolved_states(
               AND audit.reason_code='unresolved_amendment_parse_failure'
               AND failed_parse.status='failed' AND failed_filing.is_amendment
               AND mapping.status='approved'
+              AND (mapping.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    mapping.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (availability.finalized_txid=txid_current() OR txid_visible_in_snapshot(
+                    availability.finalized_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (audit.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    audit.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (failed_source.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    failed_source.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (failed_parse.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    failed_parse.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
               AND (
                 (:knowledge_cutoff IS NULL AND mapping.retired_at IS NULL)
                 OR (
@@ -1728,6 +1808,16 @@ def active_sec_run_unresolved_states(
                   AND later_run.requested_cutoff>=r.requested_cutoff
                   AND later_available.available_at>=availability.available_at
                   AND later_mapping.status='approved'
+                  AND (later_mapping.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_mapping.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_run.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_run.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_available.finalized_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_available.finalized_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_source.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_source.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_parse.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_parse.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
                   AND (
                     (:knowledge_cutoff IS NULL AND later_mapping.retired_at IS NULL)
                     OR (
@@ -1750,7 +1840,11 @@ def active_sec_run_unresolved_states(
             ORDER BY failed_filing.id, availability.available_at DESC, audit.id DESC
             """
         ),
-        {"stock_id": stock_id, "knowledge_cutoff": knowledge_cutoff},
+        {
+            "stock_id": stock_id,
+            "knowledge_cutoff": knowledge_cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
     ).mappings().all()
     return [
         {
@@ -2167,7 +2261,9 @@ def current_sec_unresolved_states(
     stock_id: int,
     knowledge_cutoff: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    cutoff = database_evaluation_cutoff(session, knowledge_cutoff)
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_cutoff)
+    cutoff = evaluation_snapshot.cutoff
+    visibility_snapshot = evaluation_snapshot.visibility_snapshot
     rows = session.execute(
         text(
             """
@@ -2186,12 +2282,22 @@ def current_sec_unresolved_states(
               WHERE p.stock_id=:stock_id AND r.status='succeeded'
                 AND p.known_at <= :knowledge_cutoff
                 AND a.available_at <= :knowledge_cutoff
+                AND (p.created_txid=txid_current() OR txid_visible_in_snapshot(
+                      p.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                      r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                AND (a.finalized_txid=txid_current() OR txid_visible_in_snapshot(
+                      a.finalized_txid, CAST(:visibility_snapshot AS txid_snapshot)))
             ) ranked
             WHERE ranked.slot_rank=1 AND ranked.status IN ('unresolved','rejected')
             ORDER BY ranked.metric_key, ranked.period_end_date
             """
         ),
-        {"stock_id": stock_id, "knowledge_cutoff": cutoff},
+        {
+            "stock_id": stock_id,
+            "knowledge_cutoff": cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
     ).mappings().all()
     states = [
         {

@@ -23,7 +23,8 @@ from sqlalchemy.orm import Session
 from app.core.currencies import normalize_iso4217_currency
 from app.core.config import settings
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     guard_sec_run_availability,
@@ -129,6 +130,9 @@ def load_canonical_dcf_fact_universe(
 ) -> DcfFactUniverse:
     """Load and gate the complete bounded DCF fact universe before selection."""
 
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
+
     method_decisions = {
         method_key: reviewed_method_gate(
             session,
@@ -159,7 +163,15 @@ def load_canonical_dcf_fact_universe(
             MetricFact.stock_id == stock_id,
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    session, knowledge_cutoff=evaluated_at
+                    session,
+                    knowledge_cutoff=evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id,
+                        metric_keys=tuple(
+                            [*DCF_INPUT_FACT_KEYS.values(), "owners_earnings_per_share"]
+                        ),
+                    ),
                 )
             ),
             visible_metric_fact_predicate(MetricFact, user_id=user_id),

@@ -6,11 +6,16 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import event, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.models.facts import CalculatedRun, Formula, MetricFact
 from app.models.sec_publication import SecEconomicClassificationReview
 from app.models.stocks import Stock
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+)
 from app.services import formula_engine as formula_engine_service
 from app.services import screener_service as screener_service_module
 from app.services.canonical_financials import (
@@ -163,15 +168,22 @@ def test_formula_and_screener_use_new_york_business_date_from_same_database_cuto
         + timedelta(minutes=30)
     )
     clock = [early]
+    visibility_snapshot = database_evaluation_snapshot(db_session).visibility_snapshot
     monkeypatch.setattr(
         formula_engine_service,
-        "database_evaluation_cutoff",
-        lambda _session: clock[0],
+        "database_evaluation_snapshot",
+        lambda _session, supplied=None: EvaluationSnapshot(
+            cutoff=supplied or clock[0],
+            visibility_snapshot=visibility_snapshot,
+        ),
     )
     monkeypatch.setattr(
         screener_service_module,
-        "database_evaluation_cutoff",
-        lambda _session: clock[0],
+        "database_evaluation_snapshot",
+        lambda _session, supplied=None: EvaluationSnapshot(
+            cutoff=supplied or clock[0],
+            visibility_snapshot=visibility_snapshot,
+        ),
     )
     rule = {
         "type": "AND",
@@ -449,7 +461,7 @@ def test_screener_binds_predicate_to_fact_ids_verified_before_replacement(
     assert matched == []
 
 
-def test_screener_binds_predicate_to_numeric_verified_before_same_id_update(
+def test_screener_rejects_same_id_numeric_rewrite_after_guard(
     db_session, user_factory
 ) -> None:
     user = user_factory("screener-numeric-race@example.com", role="admin")
@@ -483,21 +495,20 @@ def test_screener_binds_predicate_to_numeric_verified_before_same_id_update(
 
     service._guard_screen_sources = mutate_after_guard
 
-    matched = service.execute_screen(
-        {
-            "type": "AND",
-            "conditions": [
-                {
-                    "metric": "returns.total_capital",
-                    "operator": ">",
-                    "value": 50,
-                }
-            ],
-        },
-        current_user_id=user.id,
-    )
-
-    assert matched == []
+    with pytest.raises(DBAPIError, match="content and provenance are immutable"):
+        service.execute_screen(
+            {
+                "type": "AND",
+                "conditions": [
+                    {
+                        "metric": "returns.total_capital",
+                        "operator": ">",
+                        "value": 50,
+                    }
+                ],
+            },
+            current_user_id=user.id,
+        )
 
 
 def test_screener_uses_one_cutoff_when_review_commits_after_initial_guard(

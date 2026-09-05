@@ -7,11 +7,11 @@ from decimal import Decimal, DecimalException
 from sqlalchemy import select, and_, false, or_, tuple_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
     CanonicalUnavailableError,
-    database_evaluation_cutoff,
     evaluation_business_date,
     guard_sec_run_availability,
     require_applicable_method_facts,
@@ -146,7 +146,8 @@ class ScreenerService:
     ) -> dict[int, dict[str, Any]]:
         if not stock_ids:
             return {}
-        evaluated_at = database_evaluation_cutoff(self.db, knowledge_cutoff)
+        evaluation_snapshot = database_evaluation_snapshot(self.db, knowledge_cutoff)
+        evaluated_at = evaluation_snapshot.cutoff
 
         fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
         stmt = select(MetricFact).where(
@@ -154,7 +155,13 @@ class ScreenerService:
             MetricFact.metric_key.in_(self.metric_keys()),
             MetricFact.id.in_(
                 current_metric_fact_ids_at(
-                    self.db, knowledge_cutoff=evaluated_at
+                    self.db,
+                    knowledge_cutoff=evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope(
+                        stock_ids=tuple(stock_ids),
+                        metric_keys=tuple(sorted(self.metric_keys())),
+                    ),
                 )
             ),
             visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
@@ -459,7 +466,8 @@ class ScreenerService:
         current_user_id: int,
         selected_source_type: str | None,
     ) -> _ScreenerSourceAuthority:
-        evaluated_at = database_evaluation_cutoff(self.db)
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        evaluated_at = evaluation_snapshot.cutoff
         metric_keys = {condition.metric_key for condition in conditions}
         condition_repetitions = max(
             sum(condition.metric_key == key for condition in conditions)
@@ -479,7 +487,12 @@ class ScreenerService:
                     MetricFact.metric_key.in_(metric_keys),
                     MetricFact.id.in_(
                         current_metric_fact_ids_at(
-                            self.db, knowledge_cutoff=evaluated_at
+                            self.db,
+                            knowledge_cutoff=evaluated_at,
+                            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                            scope=CurrentnessScope(
+                                metric_keys=tuple(sorted(metric_keys))
+                            ),
                         )
                     ),
                     visible_metric_fact_predicate(

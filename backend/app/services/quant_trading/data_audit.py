@@ -38,6 +38,10 @@ from app.models.artifacts import ValueLineDocumentReportIdentityRevision
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, ParseRun13F
 from app.models.stocks import StockPrice
+from app.services.evaluation_snapshot import (
+    database_evaluation_snapshot,
+    transaction_visible_in_snapshot_predicate,
+)
 from app.services.thirteenf_filing_detail import competition_pool
 from app.services.thirteenf_holdings_query import HR_FORM_TYPES
 
@@ -287,17 +291,38 @@ def _metric_fact_coverage(
     *,
     user_id: int,
     knowledge_cutoff: datetime,
+    knowledge_txid_snapshot: str | None = None,
 ) -> dict[str, Any]:
+    if knowledge_txid_snapshot is None:
+        knowledge_txid_snapshot = database_evaluation_snapshot(
+            session, knowledge_cutoff
+        ).visibility_snapshot
     identity = ValueLineDocumentReportIdentityRevision
     scope = (
         MetricFact.user_id == user_id,
         MetricFact.source_type == "parsed",
         MetricFact.source_document_id.is_not(None),
+        or_(
+            MetricFact.value_line_created_txid.is_(None),
+            transaction_visible_in_snapshot_predicate(
+                MetricFact.value_line_created_txid,
+                visibility_snapshot=knowledge_txid_snapshot,
+                bind_name="quant_fact_visibility_snapshot",
+            ),
+        ),
     )
     mismatch = or_(
         MetricFact.value_line_report_identity_revision_id.is_(None),
         MetricFact.value_line_fact_known_at.is_(None),
         identity.id.is_(None),
+        and_(
+            identity.id.is_not(None),
+            ~transaction_visible_in_snapshot_predicate(
+                identity.created_txid,
+                visibility_snapshot=knowledge_txid_snapshot,
+                bind_name="quant_identity_mismatch_visibility_snapshot",
+            ),
+        ),
         identity.document_id != MetricFact.source_document_id,
         identity.user_id != MetricFact.user_id,
         and_(identity.stock_id.is_not(None), identity.stock_id != MetricFact.stock_id),
@@ -348,6 +373,11 @@ def _metric_fact_coverage(
             identity.known_at <= knowledge_cutoff,
             identity.report_date.is_not(None),
             identity.report_date <= knowledge_cutoff.date(),
+            transaction_visible_in_snapshot_predicate(
+                identity.created_txid,
+                visibility_snapshot=knowledge_txid_snapshot,
+                bind_name="quant_identity_visibility_snapshot",
+            ),
             MetricFact.stock_id.is_not(None),
             or_(
                 MetricFact.value_line_created_txid.is_(None),
@@ -828,11 +858,13 @@ def collect_database_coverage(
         time.max,
         tzinfo=timezone.utc,
     )
+    evaluation_snapshot = database_evaluation_snapshot(session, cutoff)
     return {
         "metric_facts": _metric_fact_coverage(
             session,
             user_id=user_id,
-            knowledge_cutoff=cutoff,
+            knowledge_cutoff=evaluation_snapshot.cutoff,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
         ),
         "prices": _price_coverage(session, knowledge_cutoff=cutoff),
         "thirteenf": _thirteenf_coverage(session, knowledge_cutoff=cutoff),

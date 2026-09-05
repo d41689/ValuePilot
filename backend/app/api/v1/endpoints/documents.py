@@ -46,7 +46,7 @@ from app.services.active_report_resolver import (
     resolve_active_reports,
     transaction_visible_in_snapshot_predicate,
 )
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.document_dedupe_service import DocumentDedupeService
@@ -399,6 +399,9 @@ def list_documents(
                     session,
                     knowledge_cutoff=snapshot.snapshot_cutoff,
                     knowledge_txid_snapshot=snapshot.visibility_snapshot,
+                    scope=CurrentnessScope(
+                        source_document_ids=tuple(doc_ids)
+                    ),
                 )
             ),
             or_(

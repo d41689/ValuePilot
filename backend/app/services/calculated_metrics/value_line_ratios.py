@@ -9,9 +9,9 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.canonical_financials import (
-    database_evaluation_cutoff,
     guard_sec_run_availability,
     guard_source_selection,
 )
@@ -121,13 +121,19 @@ class ValueLineRatioCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
-        knowledge_cutoff = database_evaluation_cutoff(self.db)
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        knowledge_cutoff = evaluation_snapshot.cutoff
         source_facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.id.in_(
                     current_metric_fact_ids_at(
-                        self.db, knowledge_cutoff=knowledge_cutoff
+                        self.db,
+                        knowledge_cutoff=knowledge_cutoff,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(
+                            stock_id, metric_keys=tuple(RATIO_INPUT_KEYS)
+                        ),
                     )
                 ),
                 MetricFact.metric_key.in_(RATIO_INPUT_KEYS),

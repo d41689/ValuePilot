@@ -21,7 +21,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from app.models.artifacts import PdfDocument, ValueLineMappingPolicy
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import current_metric_fact_ids_at
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.mapping_spec import (
     MappingSpec,
     load_resolved_value_line_mapping_spec,
@@ -1375,6 +1376,9 @@ def _current_same_slot_competitors(
 ) -> tuple[list[MetricFact], bool]:
     """Find current visible competitors using canonical, source-backed slots."""
 
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_cutoff)
+    knowledge_cutoff = evaluation_snapshot.cutoff
+
     seed_candidates, _ = materialize_reconciliation_candidates(
         session,
         facts,
@@ -1402,7 +1406,14 @@ def _current_same_slot_competitors(
                     MetricFact.metric_key == metric_key,
                     MetricFact.id.in_(
                         current_metric_fact_ids_at(
-                            session, knowledge_cutoff=knowledge_cutoff
+                            session,
+                            knowledge_cutoff=knowledge_cutoff,
+                            knowledge_txid_snapshot=(
+                                evaluation_snapshot.visibility_snapshot
+                            ),
+                            scope=CurrentnessScope.one_stock(
+                                stock_id, metric_keys=(metric_key,)
+                            ),
                         )
                     ),
                     visible_metric_fact_predicate(MetricFact, user_id=user_id),
