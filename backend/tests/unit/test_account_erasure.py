@@ -1,5 +1,8 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+
+from sqlalchemy import text
 
 from app.models.auth_tokens import RefreshToken
 from app.models.facts import MetricFact
@@ -209,8 +212,47 @@ def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values
         period_end_date=date(2025, 12, 31),
         is_current=True,
     )
+    matching_prehashed_note = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.pretax_income",
+        value_numeric=Decimal("6"),
+        value_json={
+            "note": "prehashed private note",
+            "redaction_note_content_hash": hashlib.sha256(
+                b"prehashed private note"
+            ).hexdigest(),
+            "status": "available",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    mismatched_prehashed_reason = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.ebitda",
+        value_numeric=Decimal("5"),
+        value_json={
+            "reason": "private text whose retained hash is wrong",
+            "redaction_content_hash": "f" * 64,
+            "status": "available",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
     db_session.add_all(
-        [numeric, unavailable, no_reason, previously_redacted_reason]
+        [
+            numeric,
+            unavailable,
+            no_reason,
+            previously_redacted_reason,
+            matching_prehashed_note,
+            mismatched_prehashed_reason,
+        ]
     )
     db_session.commit()
 
@@ -243,3 +285,20 @@ def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values
     assert len(
         previously_redacted_reason.value_json["redaction_note_content_hash"]
     ) == 64
+    db_session.refresh(matching_prehashed_note)
+    db_session.refresh(mismatched_prehashed_reason)
+    assert matching_prehashed_note.value_json["note"] == "[redacted]"
+    assert matching_prehashed_note.value_json["redaction_note_content_hash"] == (
+        hashlib.sha256(b"prehashed private note").hexdigest()
+    )
+    assert mismatched_prehashed_reason.value_json["reason"] == "[redacted]"
+    assert mismatched_prehashed_reason.value_json["redaction_content_hash"] == "f" * 64
+    assert response.json()["manual_rationale_integrity_anomalies"] == 1
+    assert db_session.scalar(
+        text(
+            "SELECT count(*) FROM manual_rationale_erasure_anomalies "
+            "WHERE fact_id=:fact AND field_name='reason' "
+            "AND reason_code='retained_hash_mismatch'"
+        ),
+        {"fact": mismatched_prehashed_reason.id},
+    ) == 1

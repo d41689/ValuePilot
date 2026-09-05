@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.orm.attributes import set_committed_value
 
+from app.api.v1.endpoints import stocks as stocks_endpoint
 from app.models.artifacts import PdfDocument, ValueLineParseRun
 from app.models.facts import Formula, MetricFact
 from app.models.stocks import Stock
@@ -26,6 +27,9 @@ from app.services.source_reconciliation import (
     guard_reconciled_source_selection,
 )
 from app.services import source_reconciliation
+from app.services.metric_fact_currentness import (
+    HistoricalCurrentnessUnverifiableError,
+)
 from app.services.canonical_financials import CanonicalSourceConflictError
 from app.services.method_applicability import (
     RISK_ATTRIBUTES,
@@ -222,6 +226,32 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
         params=[("metric_key", "is.net_income;drop")],
     )
     assert invalid_key.status_code == 422
+
+
+def test_reconciliation_api_maps_historical_currentness_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+) -> None:
+    user = user_factory("r24-reconciliation-currentness@example.com")
+    stock = Stock(ticker="R24HTTP", exchange="NYSE", company_name="R24 HTTP")
+    db_session.add(stock)
+    db_session.commit()
+
+    def unavailable(*_args, **_kwargs):
+        raise HistoricalCurrentnessUnverifiableError()
+
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "build_source_reconciliation_report",
+        unavailable,
+    )
+    response = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(user),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "historical_currentness_unverifiable"
+    )
 
 
 def test_deployed_mapping_must_match_database_approved_policy(

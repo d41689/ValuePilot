@@ -938,3 +938,43 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   this final migration. No migration at or below revision 300 was edited after
   application. The exact backend full-suite gate remains the stable-clock CI
   requirement described immediately above; it is not recorded as green.
+- 2026-09-05: Terra R24 identified four remaining fail-open boundaries. The
+  remediation is tests-first and forward-only at revision `20260904320000`;
+  no applied revision at or below 310 was edited. Parsed ingestion now treats
+  the immutable report-identity revision as its current-slot uniqueness
+  boundary. Within one exact identity a reparse has one current append; equal
+  observations from separate identities collapse to one deterministic current
+  projection; materially different observations at the same highest report
+  date retain one current representative per canonical value so reconciliation
+  returns typed `ambiguous_current_duplicate` instead of inventing an ID-based
+  winner. Older report dates remain superseded.
+- 2026-09-05: Metric-fact candidate and keyset queries now prove fact creation
+  visibility before `LIMIT` using the database-owned initial currentness
+  revision `(known_at, created_txid)` and the caller's exact
+  `EvaluationSnapshot`. Caller-controlled `created_at` is never visibility
+  authority. Regressions cover direct 1,001-row post-cutoff inflation with
+  backdated timestamps, 1,001-stock keyset traversal, current-transaction
+  read-your-writes, and revision-history inflation.
+- 2026-09-05: Revision 320 adds a narrow account-erasure transition for legacy
+  manual rationale that already has a retained hash but still contains
+  plaintext. PostgreSQL keeps the hash immutable and verifies it against the
+  plaintext. A mismatch does not strand the user's deletion request: the text
+  is still tombstoned, the original hash is preserved, and a database-owned,
+  append-only `retained_hash_mismatch` anomaly is recorded. Hash replacement,
+  economic/provenance mutation, direct anomaly forgery, and plaintext recovery
+  remain forbidden. The real account endpoint reports the anomaly count and a
+  mixed matching/mismatching integration test proves one-transaction erasure.
+- 2026-09-05: `HistoricalCurrentnessUnverifiableError` now has one application
+  wide HTTP 409 contract and explicit precedence before generic `ValueError` or
+  `Exception` handling in source reconciliation, stock facts, screener,
+  Oracle's Lens, upload and reparse routes. The initial R24 focused set is
+  `9 passed`; the ingestion/currentness/reconciliation/account/migration
+  affected set is `89 passed`, plus the 1,001-stock keyset and migration
+  round-trip pair at `2 passed`. Shared development is forward-upgraded to the
+  sole revision-320 head.
+- 2026-09-05: The final R21-R24 migration combination is `23 passed`, and the
+  directly affected R24 currentness, ingestion, reconciliation, erasure and
+  migration suite is `72 passed`. The exact canonical closing gate is green:
+  container rebuild; upgrade to the sole revision-320 head; backend
+  `2707 passed`; frontend `233 passed`; frontend lint; and the production
+  frontend build. `git diff --check` is recorded at the final commit gate.

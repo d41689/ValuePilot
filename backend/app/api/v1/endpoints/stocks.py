@@ -1655,6 +1655,11 @@ def read_source_reconciliation(
             status_code=409,
             detail={"code": error.code, "message": str(error)},
         ) from error
+    except HistoricalCurrentnessUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except ValueError as error:
         raise HTTPException(
             status_code=422,
@@ -1689,7 +1694,7 @@ def read_stock_facts(
                 stock_id, user_ids=(current_user.id, None)
             ),
         )
-    except CurrentnessScopeError as error:
+    except (CurrentnessScopeError, HistoricalCurrentnessUnverifiableError) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": error.code, "message": str(error)},

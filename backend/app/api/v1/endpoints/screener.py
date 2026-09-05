@@ -9,6 +9,9 @@ from app.services.canonical_financials import (
     UnsupportedSystemMethodError,
 )
 from app.services.source_reconciliation import CanonicalReconciliationError
+from app.services.metric_fact_currentness import (
+    HistoricalCurrentnessUnverifiableError,
+)
 
 router = APIRouter()
 
@@ -66,6 +69,7 @@ def run_screen(
         CanonicalReconciliationError,
         PiotroskiMethodAuthorityError,
         UnsupportedSystemMethodError,
+        HistoricalCurrentnessUnverifiableError,
     ) as error:
         raise HTTPException(
             status_code=409,

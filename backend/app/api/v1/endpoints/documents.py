@@ -48,6 +48,7 @@ from app.services.active_report_resolver import (
 )
 from app.services.metric_fact_currentness import (
     CurrentnessScope,
+    HistoricalCurrentnessUnverifiableError,
     current_metric_fact_ids_at,
 )
 from app.services.evaluation_snapshot import database_evaluation_snapshot
@@ -474,6 +475,7 @@ def list_documents(
         ReportIdentityUnverifiableError,
         ActiveReportAuthorityBoundExceededError,
         ActualConflictAuthorityAmbiguousError,
+        HistoricalCurrentnessUnverifiableError,
         ValueLineSourceUnavailableError,
     ) as error:
         raise HTTPException(
@@ -617,6 +619,11 @@ def upload_document(
             "page_count": len(doc.pages),
             "page_reports": page_reports,
         }
+    except HistoricalCurrentnessUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
@@ -643,7 +650,10 @@ def reparse_document(
     try:
         doc = service.reparse_existing_document(user_id=user_id, document_id=document_id, reextract_pdf=reextract_pdf)
         return {"id": doc.id, "status": doc.parse_status}
-    except ReportIdentityUnverifiableError as error:
+    except (
+        ReportIdentityUnverifiableError,
+        HistoricalCurrentnessUnverifiableError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": error.code, "message": str(error)},

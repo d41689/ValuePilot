@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import event, select, text
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
@@ -21,6 +21,16 @@ from app.services.actual_conflict_service import (
     detect_actual_conflicts,
 )
 from app.services.canonical_financials import database_evaluation_cutoff
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.ingestion_service import IngestionService
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    current_metric_fact_ids_at,
+)
+from app.services.source_reconciliation import (
+    CanonicalReconciliationError,
+    guard_reconciled_source_selection,
+)
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 
@@ -69,6 +79,185 @@ def _actual_fact(
     db_session.add(fact)
     db_session.flush()
     return fact
+
+
+def test_ingestion_preserves_divergent_same_date_report_identities_as_ambiguity(
+    db_session,
+):
+    user = User(email="r24-ingestion-ambiguity@example.com")
+    stock = Stock(ticker="R24AMB", exchange="NYSE", company_name="R24 Ambiguity")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    documents = [
+        _document(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            name=f"r24-ambiguity-{ordinal}.pdf",
+            report_date=date(2026, 1, 9),
+        )
+        for ordinal in (1, 2)
+    ]
+    service = IngestionService(db_session)
+    for document, value in zip(documents, (100, 120), strict=True):
+        run = service._start_value_line_parse_run(
+            user_id=user.id,
+            document_id=document.id,
+        )
+        service._insert_metric_fact_from_mapping(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            value_numeric=value,
+            value_text=None,
+            value_json={"fact_nature": "actual"},
+            unit="currency",
+            currency="USD",
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_document_id=document.id,
+            value_line_parse_run_id=run.id,
+        )
+        service._finish_value_line_parse_run(run, status="succeeded")
+
+    snapshot = database_evaluation_snapshot(db_session)
+    current_ids = list(
+        db_session.scalars(
+            current_metric_fact_ids_at(
+                db_session,
+                knowledge_cutoff=snapshot.cutoff,
+                knowledge_txid_snapshot=snapshot.visibility_snapshot,
+                scope=CurrentnessScope.one_stock(
+                    stock.id,
+                    metric_keys=("is.net_income",),
+                    user_ids=(user.id,),
+                    source_types=("parsed",),
+                ),
+            )
+        )
+    )
+    assert len(current_ids) == 2
+    current_facts = list(
+        db_session.scalars(
+            select(MetricFact)
+            .where(MetricFact.id.in_(current_ids))
+            .order_by(MetricFact.id)
+        )
+    )
+    # Exercise the real consumer contract: divergent current parsed
+    # observations are an explicit typed block, never an ID-based winner.
+    with pytest.raises(CanonicalReconciliationError) as raised:
+        guard_reconciled_source_selection(
+            current_facts,
+            consumer="r24_ingestion_transaction",
+            evaluation_snapshot=snapshot,
+            session=db_session,
+            user_id=user.id,
+        )
+    assert raised.value.code == "unresolved_source_reconciliation"
+
+
+def test_ingestion_collapses_equal_same_date_observations_to_one_current_fact(
+    db_session,
+):
+    user = User(email="r24-ingestion-equal@example.com")
+    stock = Stock(ticker="R24EQ", exchange="NYSE", company_name="R24 Equal")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    documents = [
+        _document(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            name=f"r24-equal-{ordinal}.pdf",
+            report_date=date(2026, 1, 9),
+        )
+        for ordinal in (1, 2)
+    ]
+    service = IngestionService(db_session)
+    inserted: list[int] = []
+    for document in documents:
+        run = service._start_value_line_parse_run(
+            user_id=user.id,
+            document_id=document.id,
+        )
+        inserted.append(
+            service._insert_metric_fact_from_mapping(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.net_income",
+                value_numeric=100,
+                value_text=None,
+                value_json={"fact_nature": "actual"},
+                unit="currency",
+                currency="USD",
+                period_type="FY",
+                period_end_date=date(2025, 12, 31),
+                source_document_id=document.id,
+                value_line_parse_run_id=run.id,
+            )
+        )
+        service._finish_value_line_parse_run(run, status="succeeded")
+
+    current = db_session.execute(
+        text(
+            "SELECT id FROM metric_facts WHERE id = ANY(:ids) AND is_current=true "
+            "ORDER BY id"
+        ),
+        {"ids": inserted},
+    ).scalars().all()
+    assert current == [max(inserted)]
+
+
+def test_ingestion_reparse_within_exact_identity_has_one_current_fact(db_session):
+    user = User(email="r24-ingestion-reparse@example.com")
+    stock = Stock(ticker="R24REP", exchange="NYSE", company_name="R24 Reparse")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="r24-exact-identity.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    service = IngestionService(db_session)
+    inserted: list[int] = []
+    for value in (100, 120):
+        run = service._start_value_line_parse_run(
+            user_id=user.id,
+            document_id=document.id,
+        )
+        inserted.append(
+            service._insert_metric_fact_from_mapping(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="is.net_income",
+                value_numeric=value,
+                value_text=None,
+                value_json={"fact_nature": "actual"},
+                unit="currency",
+                currency="USD",
+                period_type="FY",
+                period_end_date=date(2025, 12, 31),
+                source_document_id=document.id,
+                value_line_parse_run_id=run.id,
+            )
+        )
+        service._finish_value_line_parse_run(run, status="succeeded")
+
+    rows = db_session.execute(
+        text(
+            "SELECT id,is_current,value_line_report_identity_revision_id "
+            "FROM metric_facts WHERE id = ANY(:ids) ORDER BY id"
+        ),
+        {"ids": inserted},
+    ).all()
+    assert len({row.value_line_report_identity_revision_id for row in rows}) == 1
+    assert [(row.id, row.is_current) for row in rows] == [
+        (min(inserted), False),
+        (max(inserted), True),
+    ]
 
 
 def test_actual_conflicts_reject_501_observations_without_orm_hydration(

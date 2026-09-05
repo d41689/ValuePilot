@@ -37,7 +37,10 @@ from app.services.canonical_financials import (
     database_evaluation_cutoff,
     reviewed_method_gate,
 )
-from app.services.value_line_report_identity import resolve_fact_report_identities
+from app.services.value_line_report_identity import (
+    resolve_document_report_identities,
+    resolve_fact_report_identities,
+)
 from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
@@ -1272,6 +1275,7 @@ class IngestionService:
         self.db.execute(insert_stmt)
         self.db.flush()
         self._reconcile_parsed_fact_current_slot(
+            user_id=user_id,
             stock_id=stock_id,
             metric_key=metric_key,
             period_type=period_type,
@@ -1349,6 +1353,7 @@ class IngestionService:
             )
         self.db.flush()
         self._reconcile_parsed_fact_current_slot(
+            user_id=user_id,
             stock_id=stock_id,
             metric_key=metric_key,
             period_type=period_type,
@@ -1387,6 +1392,14 @@ class IngestionService:
     ) -> None:
         if source_document_id is None:
             return
+        cutoff = database_evaluation_cutoff(self.db)
+        identity = resolve_document_report_identities(
+            self.db,
+            knowledge_cutoff=cutoff,
+            document_ids=(source_document_id,),
+        ).get(source_document_id)
+        if identity is None:
+            return
         self.db.execute(
             update(MetricFact)
             .where(
@@ -1395,6 +1408,8 @@ class IngestionService:
                 MetricFact.period_type == period_type,
                 MetricFact.period_end_date == period_end_date,
                 MetricFact.source_document_id == source_document_id,
+                MetricFact.value_line_report_identity_revision_id
+                == identity.revision_id,
                 MetricFact.source_type == "parsed",
                 MetricFact.is_current.is_(True),
             )
@@ -1405,20 +1420,22 @@ class IngestionService:
     def _reconcile_parsed_fact_current_slot(
         self,
         *,
+        user_id: int | None = None,
         stock_id: int,
         metric_key: str,
         period_type: Optional[str],
         period_end_date: Optional[date],
     ) -> None:
-        facts = self.db.scalars(
-            select(MetricFact).where(
+        facts_query = select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key == metric_key,
                 MetricFact.source_type == "parsed",
                 MetricFact.period_type == period_type,
                 MetricFact.period_end_date == period_end_date,
             )
-        ).all()
+        if user_id is not None:
+            facts_query = facts_query.where(MetricFact.user_id == user_id)
+        facts = self.db.scalars(facts_query.order_by(MetricFact.id)).all()
         if not facts:
             return
 
@@ -1428,16 +1445,85 @@ class IngestionService:
             knowledge_cutoff=database_evaluation_cutoff(self.db),
         )
 
-        winner = max(
-            facts,
-            key=lambda fact: (
-                identities[fact.id].report_date or date.min,
-                fact.source_document_id or -1,
-                fact.id or -1,
-            ),
+        latest_report_date = max(
+            identities[fact.id].report_date or date.min for fact in facts
         )
+        latest = [
+            fact
+            for fact in facts
+            if (identities[fact.id].report_date or date.min) == latest_report_date
+        ]
+        # A repeat within the exact immutable report identity is a reparse of
+        # the same evidence, not a second independent observation.  Its newest
+        # append replaces the earlier projection.  Different report identities
+        # at the same publication date remain independent.
+        latest_by_identity: dict[int, MetricFact] = {}
+        for fact in latest:
+            revision_id = identities[fact.id].revision_id
+            current = latest_by_identity.get(revision_id)
+            if current is None or (fact.id or -1) > (current.id or -1):
+                latest_by_identity[revision_id] = fact
+        identity_winners = list(latest_by_identity.values())
+        observations: dict[tuple[object, ...], list[MetricFact]] = {}
+        for fact in identity_winners:
+            observations.setdefault(
+                self._parsed_canonical_observation_key(fact), []
+            ).append(fact)
+        if len(observations) <= 1:
+            # Equal observations carry no decision-relevant disagreement.
+            # Keep one deterministic newest projection and preserve every
+            # other fact/currentness revision as audit history.
+            target_ids = {
+                max(
+                    identity_winners,
+                    key=lambda fact: (bool(fact.is_current), fact.id or -1),
+                ).id
+            }
+        else:
+            # No ID/document tie-breaker may manufacture truth from divergent
+            # reports.  Keeping one current row per exact identity makes every
+            # canonical consumer return its typed ambiguity state.
+            # One still-current representative per distinct canonical value is
+            # enough to preserve the disagreement.  This avoids reactivating a
+            # duplicate equal value that an earlier reconciliation correctly
+            # demoted, which append-only currentness intentionally forbids.
+            target_ids = {
+                max(
+                    candidates,
+                    key=lambda fact: (bool(fact.is_current), fact.id or -1),
+                ).id
+                for candidates in observations.values()
+            }
 
         for fact in facts:
-            fact.is_current = fact.id == winner.id
-            self.db.add(fact)
+            should_be_current = fact.id in target_ids
+            if should_be_current and not fact.is_current:
+                raise ValueError(
+                    "parsed_currentness_reactivation_required: retained ambiguity "
+                    "cannot be reconstructed by mutating history"
+                )
+            if fact.is_current and not should_be_current:
+                fact.is_current = False
+                self.db.add(fact)
         self.db.flush()
+
+    @staticmethod
+    def _parsed_canonical_observation_key(fact: MetricFact) -> tuple[object, ...]:
+        value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+        if fact.value_numeric is not None:
+            value = ("numeric", str(fact.value_numeric.normalize()))
+        elif fact.value_text is not None:
+            value = ("text", fact.value_text)
+        else:
+            value = ("unavailable", None)
+        return (
+            *value,
+            fact.unit,
+            fact.currency,
+            value_json.get("mapping_id"),
+            value_json.get("source_mapping_version"),
+            value_json.get("definition_basis"),
+            value_json.get("dimensions_identity"),
+            value_json.get("fact_nature"),
+            value_json.get("status"),
+        )

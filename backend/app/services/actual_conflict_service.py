@@ -75,9 +75,8 @@ def detect_actual_conflicts(
     # canonical projection. The returned ID query is used by simpler consumers;
     # conflicts need both true and false states and therefore join the complete
     # latest-state projection below.
-    visibility_snapshot = database_evaluation_snapshot(
-        session, knowledge_cutoff
-    ).visibility_snapshot
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_cutoff)
+    visibility_snapshot = evaluation_snapshot.visibility_snapshot
     currentness_scope = CurrentnessScope.one_stock(
         stock_id,
         source_types=("parsed",),
@@ -88,7 +87,9 @@ def detect_actual_conflicts(
         ),
     )
     currentness_scope = bounded_currentness_candidate_scope(
-        session, scope=currentness_scope
+        session,
+        scope=currentness_scope,
+        evaluation_snapshot=evaluation_snapshot,
     )
     require_currentness_authority(session, knowledge_cutoff=knowledge_cutoff)
     if not currentness_scope.fact_ids:

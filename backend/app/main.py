@@ -13,7 +13,10 @@ from app.rate_guard.routing import (
     reconcile_monitored_rate_guard_route,
     verify_live_rate_guard,
 )
-from app.services.metric_fact_currentness import CurrentnessScopeError
+from app.services.metric_fact_currentness import (
+    CurrentnessScopeError,
+    HistoricalCurrentnessUnverifiableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +151,18 @@ async def currentness_scope_error_handler(
     _request: Request, error: CurrentnessScopeError
 ) -> JSONResponse:
     """Never turn an explicitly bounded fact read into an opaque API 500."""
+
+    return JSONResponse(
+        status_code=409,
+        content={"detail": {"code": error.code, "message": str(error)}},
+    )
+
+
+@app.exception_handler(HistoricalCurrentnessUnverifiableError)
+async def historical_currentness_unverifiable_handler(
+    _request: Request, error: HistoricalCurrentnessUnverifiableError
+) -> JSONResponse:
+    """Every HTTP path exposes the same conservative PIT failure contract."""
 
     return JSONResponse(
         status_code=409,

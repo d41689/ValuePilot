@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
+from app.api.v1.endpoints import stocks as stocks_endpoint
 from app.services.metric_fact_currentness import (
     CurrentnessScope,
     CurrentnessScopeError,
@@ -102,6 +103,37 @@ def test_currentness_reconstructs_pre_supersession_winner(
 
     assert at_cutoff == [prior.id]
     assert at_after == [replacement.id]
+
+
+def test_candidate_visibility_keeps_current_transaction_read_your_writes(
+    db_session, user_factory
+) -> None:
+    user = user_factory("r24-currentness-ryw@example.com")
+    stock = Stock(ticker="R24RYW", exchange="NYSE", company_name="R24 RYW")
+    db_session.add(stock)
+    db_session.flush()
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="r24.ryw",
+        value_json={},
+        value_numeric=1,
+        source_type="fixture",
+        period_type="FY",
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.flush()
+    snapshot = database_evaluation_snapshot(db_session)
+
+    assert db_session.scalars(
+        current_metric_fact_ids_at(
+            db_session,
+            knowledge_cutoff=snapshot.cutoff,
+            knowledge_txid_snapshot=snapshot.visibility_snapshot,
+            scope=CurrentnessScope(fact_ids=(fact.id,)),
+        )
+    ).all() == [fact.id]
 
 
 def test_currentness_before_conservative_backfill_boundary_is_typed(
@@ -257,6 +289,165 @@ def test_snapshot_excludes_fact_committed_after_boundary(db_session) -> None:
             cleanup.execute(text("DELETE FROM stocks WHERE id=:id"), {"id": stock_id})
 
 
+def test_post_snapshot_facts_do_not_consume_candidate_scope_bound(db_session) -> None:
+    """The N+1 guard is applied to facts visible at T, not the live table."""
+
+    engine = db_session.get_bind().engine
+    with engine.begin() as setup:
+        user_id = setup.scalar(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) VALUES "
+                "('r24-candidate-visibility@example.com','x',true) RETURNING id"
+            )
+        )
+        stock_id = setup.scalar(
+            text(
+                "INSERT INTO stocks (ticker,exchange,company_name,is_active) VALUES "
+                "('R24VIS','NYSE','R24 Visibility',true) RETURNING id"
+            )
+        )
+        visible_id = setup.scalar(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+                "period_type,is_current) VALUES "
+                "(:user,:stock,'r24.visibility','{}',1,'fixture','FY',true) "
+                "RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        )
+
+    with Session(engine) as reader:
+        snapshot = database_evaluation_snapshot(reader)
+        with engine.begin() as writer:
+            writer.execute(
+                text(
+                    "INSERT INTO metric_facts "
+                    "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+                    "period_type,is_current,created_at) "
+                    "SELECT :user,:stock,'r24.visibility','{}',g,'fixture','FY',true,"
+                    "'2000-01-01T00:00:00Z'::timestamptz "
+                    "FROM generate_series(1,1001) AS g"
+                ),
+                {"user": user_id, "stock": stock_id},
+            )
+
+        selected = reader.scalars(
+            current_metric_fact_ids_at(
+                reader,
+                knowledge_cutoff=snapshot.cutoff,
+                knowledge_txid_snapshot=snapshot.visibility_snapshot,
+                scope=CurrentnessScope.one_stock(
+                    stock_id, metric_keys=("r24.visibility",)
+                ),
+            )
+        ).all()
+        assert selected == [visible_id]
+
+    with engine.begin() as cleanup:
+        document_id = cleanup.scalar(
+            text(
+                "INSERT INTO pdf_documents "
+                "(user_id,stock_id,file_name,file_storage_key,source,parse_status,"
+                "identity_needs_review) VALUES "
+                "(:user,:stock,'r24-cleanup.pdf','r24-cleanup.pdf','upload',"
+                "'pending',false) RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        )
+        cleanup.execute(
+            text(
+                "UPDATE metric_facts SET source_document_id=:document "
+                "WHERE user_id=:user AND metric_key='r24.visibility'"
+            ),
+            {"document": document_id, "user": user_id},
+        )
+        cleanup.execute(
+            text("DELETE FROM pdf_documents WHERE id=:document"),
+            {"document": document_id},
+        )
+        cleanup.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+        cleanup.execute(text("DELETE FROM stocks WHERE id=:id"), {"id": stock_id})
+
+
+def test_multi_stock_keyset_excludes_post_snapshot_backdated_facts(db_session) -> None:
+    engine = db_session.get_bind().engine
+    with engine.begin() as setup:
+        user_id = setup.scalar(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) VALUES "
+                "('r24-keyset-visibility@example.com','x',true) RETURNING id"
+            )
+        )
+        stock_ids = list(
+            setup.scalars(
+                text(
+                    "INSERT INTO stocks (ticker,exchange,company_name,is_active) "
+                    "SELECT 'R24KS' || g,'NYSE','R24 Keyset ' || g,true "
+                    "FROM generate_series(1,1001) AS g RETURNING id"
+                )
+            )
+        )
+        setup.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+                "period_type,is_current) "
+                "SELECT :user,id,'r24.keyset','{}',1,'fixture','FY',true "
+                "FROM stocks WHERE id = ANY(:stocks)"
+            ),
+            {"user": user_id, "stocks": stock_ids},
+        )
+
+    with Session(engine) as reader:
+        snapshot = database_evaluation_snapshot(reader)
+        with engine.begin() as writer:
+            writer.execute(
+                text(
+                    "INSERT INTO metric_facts "
+                    "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+                    "period_type,is_current,created_at) "
+                    "SELECT :user,id,'r24.keyset','{}',2,'fixture','FY',true,"
+                    "'2000-01-01T00:00:00Z'::timestamptz "
+                    "FROM stocks WHERE id = ANY(:stocks)"
+                ),
+                {"user": user_id, "stocks": stock_ids},
+            )
+        selected = [
+            fact_id
+            for chunk in iter_current_metric_fact_id_chunks_at(
+                reader,
+                evaluation_snapshot=snapshot,
+                scope=CurrentnessScope(
+                    stock_ids=tuple(stock_ids),
+                    metric_keys=("r24.keyset",),
+                    user_ids=(user_id,),
+                ),
+            )
+            for fact_id in chunk
+        ]
+        assert len(selected) == 1001
+        assert reader.scalar(
+            select(func.count()).select_from(MetricFact).where(
+                MetricFact.id.in_(selected), MetricFact.value_numeric == 1
+            )
+        ) == 1001
+
+    with engine.begin() as cleanup:
+        cleanup.execute(
+            text(
+                "DELETE FROM metric_facts WHERE user_id=:user "
+                "AND metric_key='r24.keyset'"
+            ),
+            {"user": user_id},
+        )
+        cleanup.execute(
+            text("DELETE FROM stocks WHERE id = ANY(:stocks)"),
+            {"stocks": stock_ids},
+        )
+        cleanup.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+
+
 def test_evaluation_snapshot_cache_never_crosses_transaction_boundary(
     db_session,
 ) -> None:
@@ -389,6 +580,28 @@ def test_stock_facts_api_returns_typed_currentness_overflow(
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == (
         "metric_fact_currentness_scope_bound_exceeded"
+    )
+
+
+def test_stock_facts_api_returns_typed_historical_currentness_failure(
+    client, db_session, user_factory, auth_headers, monkeypatch
+) -> None:
+    user = user_factory("r24-currentness-api@example.com")
+    stock = Stock(ticker="R24CUR", exchange="NYSE", company_name="R24 Current")
+    db_session.add(stock)
+    db_session.commit()
+
+    def unavailable(*_args, **_kwargs):
+        raise HistoricalCurrentnessUnverifiableError()
+
+    monkeypatch.setattr(stocks_endpoint, "current_metric_fact_ids_at", unavailable)
+    response = client.get(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "historical_currentness_unverifiable"
     )
 
 

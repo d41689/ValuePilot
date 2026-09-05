@@ -199,10 +199,43 @@ def _candidate_order_columns(scope: CurrentnessScope):
     return (MetricFact.id,) if anchor.key == "id" else (anchor, MetricFact.id)
 
 
+def _fact_creation_visible_predicate(
+    *, evaluation_snapshot: EvaluationSnapshot, bind_name: str
+):
+    """Prove that a fact itself existed in the caller's exact DB snapshot.
+
+    ``metric_facts.created_at`` is historical caller-controlled data for most
+    sources.  The currentness capture row is database-owned for every fact, so
+    its time plus creating transaction is the common creation authority.  This
+    predicate belongs on the compact candidate relation *before* LIMIT/keyset
+    traversal; otherwise post-cutoff rows can consume the bounded scope even
+    though timeline ranking later rejects them.
+    """
+
+    revision = MetricFactCurrentnessRevision
+    return (
+        select(revision.id)
+        .where(
+            revision.fact_id == MetricFact.id,
+            revision.known_at <= evaluation_snapshot.cutoff,
+            or_(
+                revision.created_txid.is_(None),
+                transaction_visible_in_snapshot_predicate(
+                    revision.created_txid,
+                    visibility_snapshot=evaluation_snapshot.visibility_snapshot,
+                    bind_name=bind_name,
+                ),
+            ),
+        )
+        .exists()
+    )
+
+
 def bounded_currentness_candidate_scope(
     session: Session,
     *,
     scope: CurrentnessScope | None,
+    evaluation_snapshot: EvaluationSnapshot,
 ) -> CurrentnessScope:
     """Return at most 1,000 exact fact IDs or fail with a typed overflow.
 
@@ -215,7 +248,13 @@ def bounded_currentness_candidate_scope(
     candidate_ids = tuple(
         session.scalars(
             select(MetricFact.id)
-            .where(*_fact_scope_predicates(validated))
+            .where(
+                *_fact_scope_predicates(validated),
+                _fact_creation_visible_predicate(
+                    evaluation_snapshot=evaluation_snapshot,
+                    bind_name="bounded_fact_creation_visibility_snapshot",
+                ),
+            )
             .order_by(*_candidate_order_columns(validated))
             .limit(MAX_CURRENTNESS_FACT_IDS + 1)
             .execution_options(autoflush=False)
@@ -273,16 +312,26 @@ def current_metric_fact_ids_at(
 
     if knowledge_cutoff.utcoffset() is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
-    scope = bounded_currentness_candidate_scope(session, scope=scope)
-    if knowledge_txid_snapshot is None:
-        knowledge_txid_snapshot = database_evaluation_snapshot(
-            session, knowledge_cutoff
-        ).visibility_snapshot
     if knowledge_txid_snapshot is not None and not isinstance(
         knowledge_txid_snapshot, str
     ):
         raise ValueError("knowledge_txid_snapshot must be a database snapshot")
+    if knowledge_txid_snapshot is None:
+        evaluation_snapshot = database_evaluation_snapshot(
+            session, knowledge_cutoff
+        )
+        knowledge_txid_snapshot = evaluation_snapshot.visibility_snapshot
+    else:
+        evaluation_snapshot = EvaluationSnapshot(
+            cutoff=knowledge_cutoff,
+            visibility_snapshot=knowledge_txid_snapshot,
+        )
     require_currentness_authority(session, knowledge_cutoff=knowledge_cutoff)
+    scope = bounded_currentness_candidate_scope(
+        session,
+        scope=scope,
+        evaluation_snapshot=evaluation_snapshot,
+    )
 
     revision = MetricFactCurrentnessRevision
     if not scope.fact_ids:
@@ -508,6 +557,10 @@ def iter_current_metric_fact_id_chunks_at(
                     .where(
                         *cursor_predicate,
                         *_fact_scope_predicates(segment),
+                        _fact_creation_visible_predicate(
+                            evaluation_snapshot=evaluation_snapshot,
+                            bind_name="keyset_fact_creation_visibility_snapshot",
+                        ),
                     )
                     .order_by(anchor, MetricFact.id)
                     .limit(MAX_CURRENTNESS_FACT_IDS)

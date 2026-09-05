@@ -257,12 +257,30 @@ def erase_account(
             content_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
             digest.update(value.encode("utf-8"))
             redacted[key] = "[redacted]"
-            redacted[
+            hash_key = (
                 "redaction_content_hash"
                 if key == "reason"
                 else "redaction_note_content_hash"
-            ] = content_hash
+            )
+            # A retained hash is immutable evidence.  PostgreSQL verifies it
+            # against the plaintext during this exact erasure transition.  A
+            # mismatch is tombstoned for privacy but recorded as a typed,
+            # append-only integrity anomaly instead of replacing the evidence
+            # or permanently blocking account deletion.
+            redacted.setdefault(hash_key, content_hash)
         fact.value_json = redacted
+
+    session.flush()
+    manual_rationale_integrity_anomalies = int(
+        session.scalar(
+            text(
+                "SELECT count(*) FROM manual_rationale_erasure_anomalies "
+                "WHERE user_id=:user_id AND created_txid=txid_current()"
+            ),
+            {"user_id": user.id},
+        )
+        or 0
+    )
 
     user.email = f"erased-{user.id}@deleted.invalid"
     user.hashed_password = hash_password(secrets.token_urlsafe(32))
@@ -274,6 +292,9 @@ def erase_account(
         "journal_events_tombstoned": journal_count,
         "destinations_revoked": len(destinations),
         "refresh_tokens_revoked": revoked_tokens,
+        "manual_rationale_integrity_anomalies": (
+            manual_rationale_integrity_anomalies
+        ),
     }
     audit = AccountErasureEvent(
         user_id=user.id,
