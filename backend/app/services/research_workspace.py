@@ -17,7 +17,10 @@ from app.services.market_data_service import (
     read_current_eod_price,
     serialize_canonical_eod_price,
 )
-from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+)
 from app.services.research_cases import (
     ResearchCaseError,
     serialize_case,
@@ -43,6 +46,7 @@ from app.services.value_line_report_identity import (
 )
 from app.services.metric_fact_currentness import (
     CurrentnessScope,
+    CurrentnessScopeError,
     HistoricalCurrentnessUnverifiableError,
     current_metric_fact_ids_at,
 )
@@ -99,7 +103,7 @@ def _reconciled_workspace_facts(
     *,
     facts: list[MetricFact],
     user_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
 ) -> tuple[list[MetricFact], list[dict[str, Any]]]:
     """Return only slot-safe facts, plus typed redactions for blocked slots.
 
@@ -120,7 +124,7 @@ def _reconciled_workspace_facts(
             session,
             facts=metric_facts,
             user_id=user_id,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         ):
             try:
                 for source_type in sorted({fact.source_type for fact in slot}):
@@ -128,7 +132,7 @@ def _reconciled_workspace_facts(
                         slot,
                         consumer="research_workspace",
                         selected_source_type=source_type,
-                        knowledge_cutoff=knowledge_cutoff,
+                        evaluation_snapshot=evaluation_snapshot,
                         session=session,
                         user_id=user_id,
                     )
@@ -206,9 +210,11 @@ def build_research_workspace(
             session,
             knowledge_cutoff=evaluated_at,
             knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-            scope=CurrentnessScope.one_stock(stock.id),
+            scope=CurrentnessScope.one_stock(
+                stock.id, user_ids=(user_id, None)
+            ),
         )
-    except HistoricalCurrentnessUnverifiableError as error:
+    except (HistoricalCurrentnessUnverifiableError, CurrentnessScopeError) as error:
         raise ResearchCaseError(error.code, str(error), status_code=409) from error
     facts = session.scalars(
         select(MetricFact)
@@ -272,6 +278,7 @@ def build_research_workspace(
             facts=facts,
             effective_as_of=as_of,
             knowledge_at=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
             precomputed_decisions=method_gate_decisions,
         )
     coverage_rows = (
@@ -319,6 +326,7 @@ def build_research_workspace(
         ActiveReportAuthorityBoundExceededError,
         ActualConflictAuthorityBoundExceededError,
         ActualConflictAuthorityAmbiguousError,
+        CurrentnessScopeError,
         HistoricalCurrentnessUnverifiableError,
         ValueLineSourceUnavailableError,
     ) as error:
@@ -341,7 +349,7 @@ def build_research_workspace(
                 facts=facts,
                 user_id=user_id,
                 stock_id=stock.id,
-                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
             )
     except ValueError as error:
         source_reconciliation = {
@@ -354,7 +362,7 @@ def build_research_workspace(
             session,
             facts=facts,
             user_id=user_id,
-            knowledge_cutoff=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
     try:
         report_identities_by_fact = resolve_fact_report_identities(

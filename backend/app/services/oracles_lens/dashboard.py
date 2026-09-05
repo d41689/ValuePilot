@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    iter_current_metric_fact_id_chunks_at,
+)
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
@@ -1213,32 +1216,29 @@ def _m3_facts_by_stock(
             {stock_id: {"status": "available"} for stock_id in unique_stock_ids},
         )
 
-    facts = (
-        session.query(MetricFact)
-        .filter(visible_metric_fact_predicate(MetricFact, user_id=user_id))
-        .filter(MetricFact.stock_id.in_(unique_stock_ids))
-        .filter(MetricFact.metric_key.in_(metric_keys))
-        .filter(
-            MetricFact.id.in_(
-                current_metric_fact_ids_at(
-                    session,
-                    knowledge_cutoff=evaluation_cutoff,
-                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                    scope=CurrentnessScope(
-                        stock_ids=tuple(unique_stock_ids),
-                        metric_keys=tuple(metric_keys),
-                    ),
-                )
-            )
+    facts: list[MetricFact] = []
+    for current_ids in iter_current_metric_fact_id_chunks_at(
+        session,
+        evaluation_snapshot=evaluation_snapshot,
+        scope=CurrentnessScope(
+            stock_ids=tuple(unique_stock_ids),
+            metric_keys=tuple(metric_keys),
+            user_ids=(user_id, None),
+        ),
+    ):
+        facts.extend(
+            session.query(MetricFact)
+            .filter(MetricFact.id.in_(current_ids))
+            .filter(visible_metric_fact_predicate(MetricFact, user_id=user_id))
+            .all()
         )
-        .order_by(
-            MetricFact.stock_id.asc(),
-            MetricFact.metric_key.asc(),
-            MetricFact.period_end_date.desc().nullslast(),
-            MetricFact.created_at.desc(),
-        )
-        .all()
+    facts.sort(key=lambda fact: fact.created_at, reverse=True)
+    facts.sort(
+        key=lambda fact: fact.period_end_date or date.min,
+        reverse=True,
     )
+    facts.sort(key=lambda fact: fact.metric_key)
+    facts.sort(key=lambda fact: fact.stock_id)
     candidates: dict[int, dict[str, list[MetricFact]]] = {
         stock_id: {} for stock_id in unique_stock_ids
     }
@@ -1258,6 +1258,7 @@ def _m3_facts_by_stock(
                 effective_as_of or evaluation_business_date(evaluation_cutoff)
             ),
             knowledge_at=evaluation_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             precomputed_decisions=(method_decisions_by_stock or {}).get(stock_id),
         )
         if method_blocked:
@@ -1281,7 +1282,7 @@ def _m3_facts_by_stock(
                 selected = guard_reconciled_source_selection(
                     rows,
                     consumer="oracles_lens_quality",
-                    knowledge_cutoff=evaluation_cutoff,
+                    evaluation_snapshot=evaluation_snapshot,
                     session=session,
                     user_id=user_id,
                 )
@@ -1290,6 +1291,7 @@ def _m3_facts_by_stock(
                     stock_id=stock_id,
                     facts=selected,
                     knowledge_cutoff=evaluation_cutoff,
+                    evaluation_snapshot=evaluation_snapshot,
                 )
             except CanonicalReconciliationError as error:
                 status = statuses[stock_id]

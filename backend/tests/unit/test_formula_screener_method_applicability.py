@@ -330,11 +330,12 @@ def test_formula_and_screener_allow_reviewed_ordinary_method_inputs(
     original_sec_guard = formula_engine_service.guard_sec_run_availability
 
     def capture_reconciliation(*args, **kwargs):
-        observed["reconciliation_cutoff"] = kwargs.get("knowledge_cutoff")
+        observed["reconciliation_snapshot"] = kwargs["evaluation_snapshot"]
         return original_reconciliation(*args, **kwargs)
 
     def capture_sec_guard(*args, **kwargs):
         observed["sec_cutoff"] = kwargs.get("knowledge_cutoff")
+        observed["sec_snapshot"] = kwargs.get("evaluation_snapshot")
         return original_sec_guard(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -349,7 +350,8 @@ def test_formula_and_screener_allow_reviewed_ordinary_method_inputs(
     run = FormulaEngine(db_session).run_formula(formula.id, stock.id, user.id)
     assert run is not None
     assert run.result_value_json["value"] == "101.000000000000"
-    assert observed["sec_cutoff"] == observed["reconciliation_cutoff"]
+    assert observed["sec_snapshot"] is observed["reconciliation_snapshot"]
+    assert observed["sec_cutoff"] == observed["reconciliation_snapshot"].cutoff
     matched = ScreenerService(db_session).execute_screen(
         {
             "type": "AND",

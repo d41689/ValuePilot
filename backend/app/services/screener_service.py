@@ -8,7 +8,11 @@ from sqlalchemy import select, and_, false, or_, tuple_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.evaluation_snapshot import database_evaluation_snapshot
-from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    current_metric_fact_ids_at,
+    iter_current_metric_fact_id_chunks_at,
+)
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
     CanonicalUnavailableError,
@@ -150,27 +154,30 @@ class ScreenerService:
         evaluated_at = evaluation_snapshot.cutoff
 
         fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
-        stmt = select(MetricFact).where(
-            MetricFact.stock_id.in_(stock_ids),
-            MetricFact.metric_key.in_(self.metric_keys()),
-            MetricFact.id.in_(
-                current_metric_fact_ids_at(
-                    self.db,
-                    knowledge_cutoff=evaluated_at,
-                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                    scope=CurrentnessScope(
-                        stock_ids=tuple(stock_ids),
-                        metric_keys=tuple(sorted(self.metric_keys())),
-                    ),
+        facts: list[MetricFact] = []
+        for current_ids in iter_current_metric_fact_id_chunks_at(
+            self.db,
+            evaluation_snapshot=evaluation_snapshot,
+            scope=CurrentnessScope(
+                stock_ids=tuple(stock_ids),
+                metric_keys=tuple(sorted(self.metric_keys())),
+                user_ids=(current_user_id, None),
+            ),
+        ):
+            facts.extend(
+                self.db.scalars(
+                    select(MetricFact).where(
+                        MetricFact.id.in_(current_ids),
+                        visible_metric_fact_predicate(
+                            MetricFact, user_id=current_user_id
+                        ),
+                        or_(
+                            fact_nature_expr.is_(None),
+                            fact_nature_expr != "estimate",
+                        ),
+                    )
                 )
-            ),
-            visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
-            or_(
-                fact_nature_expr.is_(None),
-                fact_nature_expr != "estimate",
-            ),
-        )
-        facts = self.db.scalars(stmt).all()
+            )
 
         facts_by_stock: dict[int, dict[str, list[MetricFact]]] = {}
         for fact in facts:
@@ -183,7 +190,7 @@ class ScreenerService:
             selected = guard_reconciled_source_selection(
                 [fact for rows in fact_map.values() for fact in rows],
                 consumer="screener_metrics",
-                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
                 selected_source_type=selected_source_type,
                 session=self.db,
                 user_id=current_user_id,
@@ -193,6 +200,7 @@ class ScreenerService:
                 stock_id=stock_id,
                 facts=selected,
                 knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
             )
             selected_ids = {fact.id for fact in selected}
             for output_key, spec in self.METRIC_OUTPUT_SPECS.items():
@@ -481,34 +489,33 @@ class ScreenerService:
             )
             // (SCREENER_ALLOWED_PAIR_BIND_COUNT * condition_repetitions),
         )
-        facts = list(
-            self.db.scalars(
-                select(MetricFact).where(
-                    MetricFact.metric_key.in_(metric_keys),
-                    MetricFact.id.in_(
-                        current_metric_fact_ids_at(
-                            self.db,
-                            knowledge_cutoff=evaluated_at,
-                            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                            scope=CurrentnessScope(
-                                metric_keys=tuple(sorted(metric_keys))
-                            ),
-                        )
-                    ),
-                    visible_metric_fact_predicate(
-                        MetricFact, user_id=current_user_id
-                    ),
-                )
-                .limit(candidate_fact_limit + 1)
-                .execution_options(populate_existing=True, autoflush=False)
-            ).all()
-        )
-        if len(facts) > candidate_fact_limit:
-            raise CanonicalUnavailableError(
-                {
-                    "reason_code": "screener_source_guard_bound_exceeded",
-                }
+        facts: list[MetricFact] = []
+        for current_ids in iter_current_metric_fact_id_chunks_at(
+            self.db,
+            evaluation_snapshot=evaluation_snapshot,
+            scope=CurrentnessScope(
+                metric_keys=tuple(sorted(metric_keys)),
+                user_ids=(current_user_id, None),
+            ),
+        ):
+            facts.extend(
+                self.db.scalars(
+                    select(MetricFact)
+                    .where(
+                        MetricFact.id.in_(current_ids),
+                        visible_metric_fact_predicate(
+                            MetricFact, user_id=current_user_id
+                        ),
+                    )
+                    .execution_options(populate_existing=True, autoflush=False)
+                ).all()
             )
+            if len(facts) > candidate_fact_limit:
+                raise CanonicalUnavailableError(
+                    {
+                        "reason_code": "screener_source_guard_bound_exceeded",
+                    }
+                )
         by_stock: dict[int, list[MetricFact]] = {}
         for fact in facts:
             by_stock.setdefault(fact.stock_id, []).append(fact)
@@ -517,7 +524,7 @@ class ScreenerService:
             stock_facts = guard_reconciled_source_selection(
                 stock_facts,
                 consumer="screener",
-                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
                 selected_source_type=selected_source_type,
                 session=self.db,
                 user_id=current_user_id,
@@ -527,6 +534,7 @@ class ScreenerService:
                 stock_id=stock_id,
                 facts=stock_facts,
                 knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
             )
             applicable = require_applicable_method_facts(
                 self.db,
@@ -534,6 +542,7 @@ class ScreenerService:
                 facts=stock_facts,
                 effective_as_of=evaluation_business_date(evaluated_at),
                 knowledge_at=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
             )
             for fact in applicable:
                 if (

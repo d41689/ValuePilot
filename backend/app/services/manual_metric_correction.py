@@ -12,6 +12,11 @@ from app.models.artifacts import ValueLineFactExtractionInput
 from app.models.facts import MetricFact
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    current_metric_fact_ids_at,
+)
 from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 
 
@@ -59,6 +64,24 @@ def create_manual_metric_correction(
         )
 
     acquire_metric_fact_stock_lock(session, stock_id=source_fact.stock_id)
+    evaluation_snapshot = database_evaluation_snapshot(session)
+    source_fact_id = _positive_id(source_fact.id)
+    if source_fact_id is None or session.scalar(
+        select(MetricFact.id).where(
+            MetricFact.id == source_fact_id,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=evaluation_snapshot.cutoff,
+                    knowledge_txid_snapshot=(
+                        evaluation_snapshot.visibility_snapshot
+                    ),
+                    scope=CurrentnessScope(fact_ids=(source_fact_id,)),
+                )
+            ),
+        )
+    ) is None:
+        raise _lineage_unavailable()
     source_metadata = _fact_metadata(source_fact)
     original_source = (
         _resolve_manual_original_parsed_fact(
@@ -204,7 +227,7 @@ def _resolve_manual_original_parsed_fact(
 ) -> MetricFact:
     """Follow explicit correction ancestry to one parsed source, boundedly."""
 
-    if manual_fact.user_id != user_id or not manual_fact.is_current:
+    if manual_fact.user_id != user_id:
         raise _lineage_unavailable()
     cursor = manual_fact
     visited: set[int] = set()

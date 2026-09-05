@@ -13,8 +13,10 @@ from app.services.metric_fact_currentness import (
     CurrentnessScopeError,
     HistoricalCurrentnessUnverifiableError,
     current_metric_fact_ids_at,
+    iter_current_metric_fact_id_chunks_at,
 )
 from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.valuation import read_valuation_contexts
 
 
 def _cascade_delete_manual_fact(connection, *, fact_id: int, user_id: int, stock_id: int):
@@ -283,3 +285,152 @@ def test_currentness_rejects_unbounded_and_oversized_scopes(db_session) -> None:
             knowledge_cutoff=snapshot.cutoff,
             scope=CurrentnessScope(fact_ids=tuple(range(1, 1002))),
         )
+
+
+def test_metric_scope_fails_at_n_plus_one_but_large_stock_consumer_chunks(
+    db_session, user_factory
+) -> None:
+    user = user_factory("currentness-1001-stocks@example.com")
+    stock_ids = tuple(
+        db_session.scalars(
+            text(
+                "INSERT INTO stocks (ticker,exchange,company_name,is_active) "
+                "SELECT 'R23S' || g::text,'NYSE','R23 Stock ' || g::text,true "
+                "FROM generate_series(1,1001) AS g RETURNING id"
+            )
+        )
+    )
+    db_session.execute(
+        text(
+            "INSERT INTO metric_facts "
+            "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,"
+            "period_type,period_end_date,is_current) "
+            "SELECT :user,id,'val.fair_value',id,'{}','manual','AS_OF','2025-12-31',true "
+            "FROM stocks WHERE id=ANY(:stocks)"
+        ),
+        {"user": user.id, "stocks": list(stock_ids)},
+    )
+    snapshot = database_evaluation_snapshot(db_session)
+
+    with pytest.raises(CurrentnessScopeError) as overflow:
+        current_metric_fact_ids_at(
+            db_session,
+            knowledge_cutoff=snapshot.cutoff,
+            knowledge_txid_snapshot=snapshot.visibility_snapshot,
+            scope=CurrentnessScope(metric_keys=("val.fair_value",)),
+        )
+    assert overflow.value.code == "metric_fact_currentness_scope_bound_exceeded"
+
+    # Tenant/source predicates constrain the compact candidate query itself;
+    # they are not applied only after an unrelated tenant could force overflow.
+    globally_visible_ids = db_session.scalars(
+        current_metric_fact_ids_at(
+            db_session,
+            knowledge_cutoff=snapshot.cutoff,
+            knowledge_txid_snapshot=snapshot.visibility_snapshot,
+            scope=CurrentnessScope(
+                metric_keys=("val.fair_value",),
+                user_ids=(None,),
+            ),
+        )
+    ).all()
+    assert globally_visible_ids == []
+
+    chunks = list(
+        iter_current_metric_fact_id_chunks_at(
+            db_session,
+            evaluation_snapshot=snapshot,
+            scope=CurrentnessScope(
+                stock_ids=stock_ids,
+                metric_keys=("val.fair_value",),
+                user_ids=(user.id,),
+            ),
+        )
+    )
+    assert sum(len(chunk) for chunk in chunks) == 1001
+    assert all(0 < len(chunk) <= 1000 for chunk in chunks)
+    contexts = read_valuation_contexts(
+        db_session,
+        user_id=user.id,
+        stock_ids=list(stock_ids),
+        knowledge_cutoff=snapshot.cutoff,
+    )
+    assert len(contexts) == 1001
+    assert all(
+        context.user_intrinsic_value_status == "available"
+        for context in contexts.values()
+    )
+
+
+def test_stock_facts_api_returns_typed_currentness_overflow(
+    client, db_session, user_factory, auth_headers
+) -> None:
+    user = user_factory("currentness-api-overflow@example.com")
+    stock = Stock(ticker="R23API", exchange="NYSE", company_name="R23 API Bound")
+    db_session.add(stock)
+    db_session.flush()
+    db_session.execute(
+        text(
+            "INSERT INTO metric_facts "
+            "(user_id,stock_id,metric_key,value_numeric,value_json,source_type,"
+            "period_type,is_current) "
+            "SELECT :user,:stock,'r23.api.bound',g,'{}','fixture','FY',true "
+            "FROM generate_series(1,1001) AS g"
+        ),
+        {"user": user.id, "stock": stock.id},
+    )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/stocks/{stock.id}/facts",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == (
+        "metric_fact_currentness_scope_bound_exceeded"
+    )
+
+
+def test_history_inflation_is_ranked_only_after_exact_fact_candidate_bound(
+    db_session, user_factory
+) -> None:
+    user = user_factory("currentness-history-inflation@example.com")
+    stock = Stock(ticker="R23HIST", exchange="NYSE", company_name="R23 History")
+    db_session.add(stock)
+    db_session.flush()
+    fact_id = db_session.scalar(
+        text(
+            "INSERT INTO metric_facts "
+            "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+            "period_type,is_current) VALUES "
+            "(:user,:stock,'r23.history','{}',1,'fixture','FY',true) RETURNING id"
+        ),
+        {"user": user.id, "stock": stock.id},
+    )
+    for ordinal in range(200):
+        db_session.execute(
+            text("UPDATE metric_facts SET is_current=:state WHERE id=:fact"),
+            {"state": ordinal % 2 == 1, "fact": fact_id},
+        )
+    snapshot = database_evaluation_snapshot(db_session)
+    statement = current_metric_fact_ids_at(
+        db_session,
+        knowledge_cutoff=snapshot.cutoff,
+        knowledge_txid_snapshot=snapshot.visibility_snapshot,
+        scope=CurrentnessScope.one_stock(
+            stock.id, metric_keys=("r23.history",)
+        ),
+    )
+    timeline_sql = str(statement)
+    assert "metric_fact_currentness_revisions.fact_id IN" in timeline_sql
+    assert "metric_fact_currentness_revisions.stock_id IN" not in timeline_sql
+    assert "metric_fact_currentness_revisions.metric_key IN" not in timeline_sql
+    assert db_session.scalars(statement).all() == [fact_id]
+    assert db_session.scalar(
+        text(
+            "SELECT count(*) FROM metric_fact_currentness_revisions "
+            "WHERE fact_id=:fact"
+        ),
+        {"fact": fact_id},
+    ) == 201

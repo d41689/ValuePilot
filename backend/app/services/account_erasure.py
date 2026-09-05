@@ -229,15 +229,40 @@ def erase_account(
         synchronize_session=False
     )
 
-    # Current manual unavailable reasons can duplicate user-authored text even
-    # when they were not linked to a revision. Tombstone the text only.
+    # Manual ``reason`` and ``note`` are user-authored rationale. Tombstone
+    # those fields and no others: ``raw``/``value_text`` and numeric values are
+    # the economic observation, while the remaining JSON is server provenance.
     manual_facts = session.query(MetricFact).filter(
         MetricFact.user_id == user.id,
         MetricFact.source_type == "manual",
     ).all()
     for fact in manual_facts:
-        if isinstance(fact.value_json, dict) and fact.value_json.get("reason"):
-            fact.value_json = {**fact.value_json, "reason": "[redacted]"}
+        if not isinstance(fact.value_json, dict):
+            continue
+        reason = fact.value_json.get("reason")
+        note = fact.value_json.get("note")
+        rationale = {
+            "reason": reason,
+            "note": note,
+        }
+        redactable = {
+            key: value
+            for key, value in rationale.items()
+            if isinstance(value, str) and value and value != "[redacted]"
+        }
+        if not redactable:
+            continue
+        redacted = dict(fact.value_json)
+        for key, value in redactable.items():
+            content_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            digest.update(value.encode("utf-8"))
+            redacted[key] = "[redacted]"
+            redacted[
+                "redaction_content_hash"
+                if key == "reason"
+                else "redaction_note_content_hash"
+            ] = content_hash
+        fact.value_json = redacted
 
     user.email = f"erased-{user.id}@deleted.invalid"
     user.hashed_password = hash_password(secrets.token_urlsafe(32))

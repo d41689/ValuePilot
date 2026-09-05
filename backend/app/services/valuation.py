@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
-from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    current_metric_fact_ids_at,
+    iter_current_metric_fact_id_chunks_at,
+)
 from app.models.research import ResearchCaseRevision
 from app.services.evaluation_snapshot import database_evaluation_snapshot
 
@@ -289,36 +293,33 @@ def read_valuation_facts_by_stock(
     knowledge_cutoff = evaluation_snapshot.cutoff
     if knowledge_cutoff.tzinfo is None:
         raise ValueError("knowledge cutoff must be timezone-aware")
-    fact_query = select(MetricFact).where(
-        MetricFact.user_id == user_id,
-        MetricFact.stock_id.in_(unique_stock_ids),
-        MetricFact.metric_key.in_(
-            [USER_INTRINSIC_VALUE_KEY, VALUE_LINE_TARGET_REFERENCE_KEY]
+    facts: list[MetricFact] = []
+    for current_ids in iter_current_metric_fact_id_chunks_at(
+        session,
+        evaluation_snapshot=evaluation_snapshot,
+        scope=CurrentnessScope(
+            stock_ids=tuple(unique_stock_ids),
+            metric_keys=(
+                USER_INTRINSIC_VALUE_KEY,
+                VALUE_LINE_TARGET_REFERENCE_KEY,
+            ),
+            user_ids=(user_id,),
         ),
-        MetricFact.id.in_(
-            current_metric_fact_ids_at(
-                session,
-                knowledge_cutoff=knowledge_cutoff,
-                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                scope=CurrentnessScope(
-                    stock_ids=tuple(unique_stock_ids),
-                    metric_keys=(
-                        USER_INTRINSIC_VALUE_KEY,
-                        VALUE_LINE_TARGET_REFERENCE_KEY,
-                    ),
-                ),
+    ):
+        facts.extend(
+            session.scalars(
+                select(MetricFact).where(MetricFact.id.in_(current_ids))
             )
-        ),
-    )
-    facts = session.scalars(
-        fact_query
-        .order_by(
-            MetricFact.stock_id.asc(),
-            MetricFact.period_end_date.desc().nullslast(),
-            MetricFact.created_at.desc(),
-            MetricFact.id.desc(),
         )
-    ).all()
+    facts.sort(
+        key=lambda fact: (
+            fact.stock_id,
+            fact.period_end_date or date.min,
+            fact.created_at,
+            fact.id,
+        ),
+        reverse=True,
+    )
     revision_ids = {
         int(fact.source_ref_id)
         for fact in facts
@@ -326,19 +327,28 @@ def read_valuation_facts_by_stock(
         and fact.source_ref_id is not None
     }
     if revision_ids:
-        revisions = session.execute(
-            select(
-                ResearchCaseRevision.id,
-                ResearchCaseRevision.created_by_user_id,
-                ResearchCaseRevision.snapshot_stock_id,
-                ResearchCaseRevision.assumptions_json,
-                ResearchCaseRevision.is_redacted,
-            ).where(
-                ResearchCaseRevision.id.in_(revision_ids),
-                ResearchCaseRevision.created_by_user_id == user_id,
-                ResearchCaseRevision.snapshot_stock_id.in_(unique_stock_ids),
+        revisions = []
+        ordered_revision_ids = sorted(revision_ids)
+        allowed_stock_ids = set(unique_stock_ids)
+        for index in range(0, len(ordered_revision_ids), 1_000):
+            revisions.extend(
+                row
+                for row in session.execute(
+                    select(
+                        ResearchCaseRevision.id,
+                        ResearchCaseRevision.created_by_user_id,
+                        ResearchCaseRevision.snapshot_stock_id,
+                        ResearchCaseRevision.assumptions_json,
+                        ResearchCaseRevision.is_redacted,
+                    ).where(
+                        ResearchCaseRevision.id.in_(
+                            ordered_revision_ids[index:index + 1_000]
+                        ),
+                        ResearchCaseRevision.created_by_user_id == user_id,
+                    )
+                )
+                if int(row.snapshot_stock_id) in allowed_stock_ids
             )
-        ).all()
         revisions_by_id = {int(revision.id): revision for revision in revisions}
     else:
         revisions_by_id = {}
@@ -386,7 +396,10 @@ def read_valuation_facts_by_stock(
                 period_end_date=fact.period_end_date,
                 source_type=fact.source_type,
                 source_ref_id=fact.source_ref_id,
-                is_current=fact.is_current,
+                # Membership was projected from the retained timeline at the
+                # evaluation snapshot; the mutable live column is not the
+                # state being serialized here.
+                is_current=True,
                 created_at=fact.created_at,
             )
         result[fact.stock_id].setdefault(fact.metric_key, selected)

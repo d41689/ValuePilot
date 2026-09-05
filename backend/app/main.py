@@ -5,6 +5,7 @@ from contextlib import suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.api.v1.api import api_router
@@ -12,6 +13,7 @@ from app.rate_guard.routing import (
     reconcile_monitored_rate_guard_route,
     verify_live_rate_guard,
 )
+from app.services.metric_fact_currentness import CurrentnessScopeError
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +141,18 @@ app = FastAPI(
         {"name": "users", "description": "Operations with users."},
     ],
 )
+
+
+@app.exception_handler(CurrentnessScopeError)
+async def currentness_scope_error_handler(
+    _request: Request, error: CurrentnessScopeError
+) -> JSONResponse:
+    """Never turn an explicitly bounded fact read into an opaque API 500."""
+
+    return JSONResponse(
+        status_code=409,
+        content={"detail": {"code": error.code, "message": str(error)}},
+    )
 
 origins = [
     "http://localhost:3000",

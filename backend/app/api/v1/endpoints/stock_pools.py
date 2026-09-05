@@ -10,8 +10,14 @@ from sqlalchemy import select, func, delete
 from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import StockPool, PoolMembership, Stock
 from app.models.facts import MetricFact
-from app.services.evaluation_snapshot import database_evaluation_snapshot
-from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+)
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    iter_current_metric_fact_id_chunks_at,
+)
 from app.services.market_data_service import (
     read_canonical_eod_prices,
     read_current_eod_prices,
@@ -59,6 +65,46 @@ def _is_displayable_historical_piotroski_total(
     return value_json.get("fact_nature") != "estimate"
 
 
+def _load_current_piotroski_facts(
+    session: SessionDep,
+    *,
+    user_id: int,
+    stock_ids: list[int],
+    evaluation_snapshot: EvaluationSnapshot,
+    descending_period: bool,
+) -> list[MetricFact]:
+    facts: list[MetricFact] = []
+    for current_ids in iter_current_metric_fact_id_chunks_at(
+        session,
+        evaluation_snapshot=evaluation_snapshot,
+        scope=CurrentnessScope(
+            stock_ids=tuple(stock_ids),
+            metric_keys=(PIOTROSKI_TOTAL_KEY,),
+            user_ids=(user_id,),
+            source_types=("calculated",),
+        ),
+    ):
+        facts.extend(
+            session.scalars(
+                select(MetricFact).where(
+                    MetricFact.id.in_(current_ids),
+                    MetricFact.period_type == "FY",
+                    MetricFact.period_end_date.is_not(None),
+                )
+            )
+        )
+    # Stable passes reproduce the former SQL ordering without negating
+    # datetimes: stock ASC, configurable period direction, newest revision
+    # first within an exact period.
+    facts.sort(key=lambda fact: (fact.created_at, fact.id), reverse=True)
+    facts.sort(
+        key=lambda fact: fact.period_end_date or date.min,
+        reverse=descending_period,
+    )
+    facts.sort(key=lambda fact: fact.stock_id)
+    return facts
+
+
 def _piotroski_scores_for_stocks(
     session: SessionDep,
     user_id: int,
@@ -76,29 +122,13 @@ def _piotroski_scores_for_stocks(
     scores_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in unique_stock_ids}
     states_by_stock_id: dict[int, dict[str, Any]] = {}
 
-    facts = session.scalars(
-        select(MetricFact)
-        .where(
-            MetricFact.user_id == user_id,
-            MetricFact.stock_id.in_(unique_stock_ids),
-            MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
-            MetricFact.source_type == "calculated",
-            MetricFact.id.in_(
-                current_metric_fact_ids_at(
-                    session,
-                    knowledge_cutoff=evaluated_at,
-                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                    scope=CurrentnessScope(
-                        stock_ids=tuple(unique_stock_ids),
-                        metric_keys=(PIOTROSKI_TOTAL_KEY,),
-                    ),
-                )
-            ),
-            MetricFact.period_type == "FY",
-            MetricFact.period_end_date.is_not(None),
-        )
-        .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
-    ).all()
+    facts = _load_current_piotroski_facts(
+        session,
+        user_id=user_id,
+        stock_ids=unique_stock_ids,
+        evaluation_snapshot=evaluation_snapshot,
+        descending_period=True,
+    )
 
     facts_by_stock_id: dict[int, list[MetricFact]] = {
         stock_id: [] for stock_id in unique_stock_ids
@@ -112,7 +142,7 @@ def _piotroski_scores_for_stocks(
             user_id=user_id,
             stock_id=stock_id,
             facts=stock_facts,
-            evaluated_at=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
         states_by_stock_id[stock_id] = state
         for fact in guarded:
@@ -133,8 +163,12 @@ def _guard_piotroski_display_facts(
     user_id: int,
     stock_id: int,
     facts: list[MetricFact],
-    evaluated_at: datetime,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
+    evaluated_at: datetime | None = None,
 ) -> tuple[list[MetricFact], dict[str, Any]]:
+    if evaluation_snapshot is None:
+        evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     if not facts:
         return [], {
             "status": "unavailable",
@@ -145,7 +179,7 @@ def _guard_piotroski_display_facts(
         guarded = guard_reconciled_source_selection(
             facts,
             consumer="stock_pool_piotroski_display",
-            knowledge_cutoff=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
             session=session,
             user_id=user_id,
         )
@@ -173,6 +207,7 @@ def _guard_piotroski_display_facts(
         facts=guarded,
         effective_as_of=evaluation_business_date(evaluated_at),
         knowledge_at=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
     )
     if method_blocked:
         return [], {
@@ -264,29 +299,13 @@ def _piotroski_compare_payload(
     stock_ids = [member.stock_id for member in unique_members]
     facts_by_stock_id: dict[int, list[MetricFact]] = {stock_id: [] for stock_id in stock_ids}
     if stock_ids:
-        facts = session.scalars(
-            select(MetricFact)
-            .where(
-                MetricFact.user_id == user_id,
-                MetricFact.stock_id.in_(stock_ids),
-                MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
-                MetricFact.source_type == "calculated",
-                MetricFact.id.in_(
-                    current_metric_fact_ids_at(
-                        session,
-                        knowledge_cutoff=evaluated_at,
-                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                        scope=CurrentnessScope(
-                            stock_ids=tuple(stock_ids),
-                            metric_keys=(PIOTROSKI_TOTAL_KEY,),
-                        ),
-                    )
-                ),
-                MetricFact.period_type == "FY",
-                MetricFact.period_end_date.is_not(None),
-            )
-            .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.asc(), MetricFact.created_at.desc())
-        ).all()
+        facts = _load_current_piotroski_facts(
+            session,
+            user_id=user_id,
+            stock_ids=stock_ids,
+            evaluation_snapshot=evaluation_snapshot,
+            descending_period=False,
+        )
         for fact in facts:
             facts_by_stock_id.setdefault(fact.stock_id, []).append(fact)
 
@@ -299,7 +318,7 @@ def _piotroski_compare_payload(
             user_id=user_id,
             stock_id=stock_id,
             facts=facts,
-            evaluated_at=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
         states_by_stock_id[stock_id] = state
         selected = {}

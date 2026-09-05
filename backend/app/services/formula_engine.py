@@ -155,6 +155,7 @@ class FormulaEngine:
                         scope=CurrentnessScope.one_stock(
                             stock_id,
                             metric_keys=tuple(formula.dependencies_json),
+                            user_ids=(user_id, None),
                         ),
                     )
                 ),
@@ -164,7 +165,7 @@ class FormulaEngine:
         facts = guard_reconciled_source_selection(
             facts,
             consumer="formula",
-            knowledge_cutoff=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
             selected_source_type=selected_source_type,
             session=self.db,
             user_id=user_id,
@@ -174,6 +175,7 @@ class FormulaEngine:
             stock_id=stock_id,
             facts=facts,
             knowledge_cutoff=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
         facts = require_applicable_method_facts(
             self.db,
@@ -181,6 +183,7 @@ class FormulaEngine:
             facts=facts,
             effective_as_of=evaluation_business_date(evaluated_at),
             knowledge_at=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
         facts_by_metric = {
             metric_key: [fact for fact in facts if fact.metric_key == metric_key]

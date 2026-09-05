@@ -18,6 +18,7 @@ from app.services.canonical_financials import (
     PiotroskiMethodAuthorityError,
     guard_piotroski_method_authority,
 )
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.screener_service import ScreenerService
 
 
@@ -351,9 +352,9 @@ def test_guard_batches_input_lookup_for_many_piotroski_facts(
 
     assert kept == facts
     assert blocked == []
-    # One bounded sibling expansion, one future-projection diagnostic, and one
-    # batched input lookup. The count does not grow with facts or periods.
-    assert len(statements) <= 3
+    # Sibling and input timelines each use one compact candidate probe and one
+    # bounded lookup. The count does not grow with facts or periods.
+    assert len(statements) <= 4
 
 
 def test_component_only_request_requires_and_uses_complete_current_siblings(
@@ -1090,12 +1091,11 @@ def test_guard_rebinds_identified_detached_caller_to_fresh_canonical_row(
     assert kept[0] is db_session.get(MetricFact, total.id)
 
 
-@pytest.mark.parametrize("tamper", ["numeric", "current", "timestamp"])
-def test_guard_rejects_detached_caller_that_differs_from_canonical_projection(
-    db_session, user_factory, tamper: str
+def test_guard_rejects_detached_caller_that_differs_from_immutable_projection(
+    db_session, user_factory
 ) -> None:
-    user = user_factory(f"piot-caller-{tamper}@example.com")
-    stock = _stock(db_session, f"PCALL{tamper[:3]}")
+    user = user_factory("piot-caller-numeric@example.com")
+    stock = _stock(db_session, "PCALLNUM")
     written = _generate_complete(db_session, user=user, stock=stock)
     db_session.commit()
     total = next(
@@ -1105,12 +1105,7 @@ def test_guard_rejects_detached_caller_that_differs_from_canonical_projection(
         and fact.period_end_date == PERIOD_1
     )
     caller = _identified_clone(total)
-    if tamper == "numeric":
-        caller.value_numeric = Decimal("8")
-    elif tamper == "current":
-        caller.is_current = False
-    else:
-        caller.updated_at = caller.updated_at + timedelta(microseconds=1)
+    caller.value_numeric = Decimal("8")
 
     kept, blocked = guard_piotroski_method_authority(
         db_session,
@@ -1123,6 +1118,36 @@ def test_guard_rejects_detached_caller_that_differs_from_canonical_projection(
         "piotroski_current_projection_unverifiable"
     )
     assert blocked[0]["value_numeric"] is None
+
+
+@pytest.mark.parametrize("tamper", ["current", "timestamp"])
+def test_guard_ignores_detached_live_projection_fields(
+    db_session, user_factory, tamper: str
+) -> None:
+    user = user_factory(f"piot-caller-live-{tamper}@example.com")
+    stock = _stock(db_session, f"PCALLL{tamper[:2]}")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    if tamper == "current":
+        caller.is_current = False
+    else:
+        caller.updated_at = caller.updated_at + timedelta(microseconds=1)
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+    )
+
+    assert [fact.id for fact in kept] == [total.id]
+    assert blocked == []
 
 
 def test_guard_rejects_missing_or_duplicate_caller_identity_before_numeric_use(
@@ -1242,7 +1267,7 @@ def test_guard_fails_closed_when_current_score_was_created_after_cutoff(
     )
 
 
-def test_guard_fails_closed_when_current_sibling_was_updated_after_cutoff(
+def test_guard_ignores_mutable_sibling_timestamp_after_cutoff(
     db_session, user_factory
 ) -> None:
     user = user_factory("piot-future-sibling-update@example.com")
@@ -1278,10 +1303,8 @@ def test_guard_fails_closed_when_current_sibling_was_updated_after_cutoff(
         knowledge_at=cutoff,
     )
 
-    assert kept == []
-    assert blocked[0]["reason_code"] == (
-        "historical_current_projection_unverifiable"
-    )
+    assert [fact.id for fact in kept] == [total.id]
+    assert blocked == []
 
 
 def test_database_rejects_manifest_input_timestamp_mutation(
@@ -1312,7 +1335,7 @@ def test_database_rejects_manifest_input_timestamp_mutation(
     db_session.rollback()
 
 
-def test_guard_does_not_reconstruct_historical_currentness_after_replacement(
+def test_guard_reconstructs_historical_currentness_after_replacement(
     db_session, user_factory
 ) -> None:
     user = user_factory("piot-toctou-replacement@example.com")
@@ -1350,9 +1373,63 @@ def test_guard_does_not_reconstruct_historical_currentness_after_replacement(
         knowledge_at=cutoff,
     )
 
+    assert [fact.id for fact in kept] == [total.id]
+    assert blocked == []
+
+
+def test_guard_reconstructs_lineage_input_currentness_from_same_snapshot(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-lineage-input-snapshot@example.com")
+    stock = _stock(db_session, "PINPSNAP")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    input_id = total.value_json["inputs"][0]["fact_id"]
+    evaluation_snapshot = database_evaluation_snapshot(db_session)
+
+    with Session(bind=db_session.get_bind(), autoflush=False) as concurrent:
+        source = concurrent.get(MetricFact, input_id)
+        assert source is not None
+        concurrent.execute(
+            update(MetricFact)
+            .where(MetricFact.id == input_id)
+            .values(is_current=False)
+        )
+        replacement = _clone(source)
+        replacement.id = None
+        concurrent.add(replacement)
+        concurrent.commit()
+
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+        knowledge_at=evaluation_snapshot.cutoff,
+        evaluation_snapshot=evaluation_snapshot,
+    )
+
+    assert [fact.id for fact in kept] == [total.id]
+    assert blocked == []
+
+    fresh_snapshot = database_evaluation_snapshot(db_session)
+    kept, blocked = guard_piotroski_method_authority(
+        db_session,
+        facts=[caller],
+        effective_as_of=date.today(),
+        knowledge_at=fresh_snapshot.cutoff,
+        evaluation_snapshot=fresh_snapshot,
+    )
+
     assert kept == []
     assert blocked[0]["reason_code"] == (
-        "historical_current_projection_unverifiable"
+        "piotroski_method_authority_manifest_invalid"
     )
 
 

@@ -290,7 +290,9 @@ def test_watchlist_rows_batch_101_members_with_fixed_query_count(
         event.remove(connection, "before_cursor_execute", capture)
 
     assert len(rows) == 101
-    assert len(statements) == 7
+    # Both empty fact families stop after their compact-candidate probes; no
+    # timeline query is issued for an empty candidate page.
+    assert len(statements) == 6
     assert {row["delta_today"] for row in rows} == {1}
     assert len({row["current_price"]["as_of_date"] for row in rows}) == 1
     assert len(
@@ -464,7 +466,10 @@ def test_stock_pool_piotroski_guard_uses_new_york_business_date(monkeypatch):
         user_id=7,
         stock_id=11,
         facts=[fact],
-        evaluated_at=evaluated_at,
+        evaluation_snapshot=stock_pools_endpoint.EvaluationSnapshot(
+            cutoff=evaluated_at,
+            visibility_snapshot="test-snapshot",
+        ),
     )
 
     assert guarded == [fact]

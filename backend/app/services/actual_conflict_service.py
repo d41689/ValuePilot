@@ -19,8 +19,9 @@ from app.services.active_report_resolver import (
 )
 from app.services.metric_fact_currentness import (
     CurrentnessScope,
-    current_metric_fact_ids_at,
+    bounded_currentness_candidate_scope,
     currentness_state_subquery,
+    require_currentness_authority,
 )
 from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
@@ -65,6 +66,11 @@ def detect_actual_conflicts(
     elif knowledge_cutoff.utcoffset() is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
     shared_ids = sorted(set(shared_parsed_user_ids or []))
+    if len(shared_ids) > MAX_ACTUAL_CONFLICT_OBSERVATIONS:
+        raise ActualConflictAuthorityBoundExceededError(
+            dimension="shared_parsed_user_ids",
+            limit=MAX_ACTUAL_CONFLICT_OBSERVATIONS,
+        )
     # Validate the conservative backfill boundary before using any historical
     # canonical projection. The returned ID query is used by simpler consumers;
     # conflicts need both true and false states and therefore join the complete
@@ -73,24 +79,25 @@ def detect_actual_conflicts(
         session, knowledge_cutoff
     ).visibility_snapshot
     currentness_scope = CurrentnessScope.one_stock(
-        stock_id, source_types=("parsed",)
+        stock_id,
+        source_types=("parsed",),
+        user_ids=(
+            tuple(dict.fromkeys((current_user_id, *shared_ids)))
+            if current_user_id is not None
+            else ()
+        ),
     )
-    current_metric_fact_ids_at(
-        session,
-        knowledge_cutoff=knowledge_cutoff,
-        knowledge_txid_snapshot=visibility_snapshot,
-        scope=currentness_scope,
+    currentness_scope = bounded_currentness_candidate_scope(
+        session, scope=currentness_scope
     )
+    require_currentness_authority(session, knowledge_cutoff=knowledge_cutoff)
+    if not currentness_scope.fact_ids:
+        return []
     currentness = currentness_state_subquery(
         knowledge_cutoff=knowledge_cutoff,
         knowledge_txid_snapshot=visibility_snapshot,
         scope=currentness_scope,
     )
-    if len(shared_ids) > MAX_ACTUAL_CONFLICT_OBSERVATIONS:
-        raise ActualConflictAuthorityBoundExceededError(
-            dimension="shared_parsed_user_ids",
-            limit=MAX_ACTUAL_CONFLICT_OBSERVATIONS,
-        )
     fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
     scope = [
         MetricFact.stock_id == stock_id,

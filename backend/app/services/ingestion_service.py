@@ -778,7 +778,10 @@ class IngestionService:
                     knowledge_cutoff=knowledge_cutoff,
                     knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
                     scope=CurrentnessScope.one_stock(
-                        stock_id, metric_keys=tuple(OE_INPUT_KEYS)
+                        stock_id,
+                        metric_keys=tuple(OE_INPUT_KEYS),
+                        user_ids=(user_id,),
+                        source_types=("parsed",),
                     ),
                 )
             ),

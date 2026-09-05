@@ -31,6 +31,7 @@ from app.services.value_line_report_identity import (
 )
 from app.services.metric_fact_currentness import (
     CurrentnessScope,
+    CurrentnessScopeError,
     HistoricalCurrentnessUnverifiableError,
     current_metric_fact_ids_at,
 )
@@ -411,7 +412,10 @@ def _build_piotroski_f_score_card(
                     knowledge_cutoff=evaluated_at,
                     knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
                     scope=CurrentnessScope.one_stock(
-                        stock_id, metric_keys=tuple(metric_keys)
+                        stock_id,
+                        metric_keys=tuple(metric_keys),
+                        user_ids=(current_user_id,),
+                        source_types=("calculated",),
                     ),
                 )
             ),
@@ -436,7 +440,7 @@ def _build_piotroski_f_score_card(
             guard_reconciled_source_selection(
                 facts,
                 consumer="stock_piotroski_card",
-                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
                 session=session,
                 user_id=current_user_id,
             )
@@ -473,6 +477,7 @@ def _build_piotroski_f_score_card(
         facts=facts,
         effective_as_of=evaluation_business_date(evaluated_at),
         knowledge_at=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
     )
     if method_blocked:
         return {
@@ -783,7 +788,9 @@ def _validated_dcf_save(
                     scope=(
                         CurrentnessScope(fact_ids=tuple(fact_ids))
                         if fact_ids
-                        else CurrentnessScope.one_stock(stock_id)
+                        else CurrentnessScope.one_stock(
+                            stock_id, user_ids=(current_user_id, None)
+                        )
                     ),
                 )
             ),
@@ -1009,7 +1016,14 @@ def _select_stock_for_ticker(
                         session,
                         knowledge_cutoff=knowledge_cutoff,
                         knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                        scope=CurrentnessScope(stock_ids=tuple(stock_ids)),
+                        scope=CurrentnessScope(
+                            stock_ids=tuple(stock_ids),
+                            user_ids=tuple(
+                                dict.fromkeys(
+                                    (current_user_id, *admin_user_ids, None)
+                                )
+                            ),
+                        ),
                     )
                 ),
                 _visible_fact_predicate(current_user_id, admin_user_ids),
@@ -1105,6 +1119,7 @@ def read_stock_by_ticker(
                         "val.pe",
                         "owners_earnings_per_share_normalized",
                     ),
+                    user_ids=(current_user.id, None),
                 ),
             )
         ),
@@ -1189,6 +1204,7 @@ def read_stock_by_ticker(
                         scope=CurrentnessScope.one_stock(
                             stock.id,
                             metric_keys=("owners_earnings_per_share",),
+                            user_ids=(current_user.id, None),
                         ),
                     )
                 ),
@@ -1203,6 +1219,7 @@ def read_stock_by_ticker(
             facts=owner_candidates,
             effective_as_of=dcf_clock.effective_as_of,
             knowledge_at=dcf_evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
             precomputed_decisions=method_gate_decisions,
         )
     if method_gate_decisions is None:
@@ -1239,7 +1256,9 @@ def read_stock_by_ticker(
                     knowledge_cutoff=dcf_evaluated_at,
                     knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
                     scope=CurrentnessScope.one_stock(
-                        stock.id, metric_keys=tuple(growth_metric_keys)
+                        stock.id,
+                        metric_keys=tuple(growth_metric_keys),
+                        user_ids=(current_user.id, None),
                     ),
                 )
             ),
@@ -1257,6 +1276,7 @@ def read_stock_by_ticker(
         facts=facts,
         effective_as_of=dcf_clock.effective_as_of,
         knowledge_at=dcf_evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
         precomputed_decisions=method_gate_decisions,
     )
     growth_facts, _, _ = apply_reviewed_method_gates(
@@ -1265,13 +1285,14 @@ def read_stock_by_ticker(
         facts=growth_facts,
         effective_as_of=dcf_clock.effective_as_of,
         knowledge_at=dcf_evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
         precomputed_decisions=method_gate_decisions,
     )
     try:
         summary_facts = guard_reconciled_source_selection(
             [*facts, *oeps_facts, *growth_facts],
             consumer="stock_summary",
-            knowledge_cutoff=dcf_evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
             session=session,
             user_id=current_user.id,
         )
@@ -1280,6 +1301,7 @@ def read_stock_by_ticker(
             stock_id=stock.id,
             facts=summary_facts,
             knowledge_cutoff=dcf_evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
     except (
         CanonicalSourceConflictError,
@@ -1608,9 +1630,13 @@ def read_source_reconciliation(
             status_code=422,
             detail={"code": "timezone_aware_knowledge_cutoff_required"},
         )
-    request_clock = database_evaluation_cutoff(session)
-    cutoff = database_evaluation_cutoff(session, knowledge_cutoff or request_clock)
-    if cutoff > request_clock:
+    request_snapshot = database_evaluation_snapshot(session)
+    evaluation_snapshot = (
+        database_evaluation_snapshot(session, knowledge_cutoff)
+        if knowledge_cutoff is not None
+        else request_snapshot
+    )
+    if evaluation_snapshot.cutoff > request_snapshot.cutoff:
         raise HTTPException(
             status_code=422,
             detail={"code": "future_knowledge_cutoff"},
@@ -1620,10 +1646,15 @@ def read_source_reconciliation(
             session,
             user_id=current_user.id,
             stock_id=stock_id,
-            knowledge_cutoff=cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             metric_keys=metric_key,
             historical_request=knowledge_cutoff is not None,
         )
+    except CurrentnessScopeError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except ValueError as error:
         raise HTTPException(
             status_code=422,
@@ -1649,16 +1680,23 @@ def read_stock_facts(
     evaluation_snapshot = database_evaluation_snapshot(session)
     evaluation_cutoff = evaluation_snapshot.cutoff
     # Get current facts
+    try:
+        current_fact_ids = current_metric_fact_ids_at(
+            session,
+            knowledge_cutoff=evaluation_cutoff,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope.one_stock(
+                stock_id, user_ids=(current_user.id, None)
+            ),
+        )
+    except CurrentnessScopeError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     stmt = select(MetricFact).where(
         MetricFact.stock_id == stock_id,
-        MetricFact.id.in_(
-            current_metric_fact_ids_at(
-                session,
-                knowledge_cutoff=evaluation_cutoff,
-                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                scope=CurrentnessScope.one_stock(stock_id),
-            )
-        ),
+        MetricFact.id.in_(current_fact_ids),
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
@@ -1668,6 +1706,7 @@ def read_stock_facts(
         facts=facts,
         effective_as_of=evaluation_business_date(evaluation_cutoff),
         knowledge_at=evaluation_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
     facts_by_metric: dict[str, list[MetricFact]] = {}
     for fact in facts:
@@ -1682,7 +1721,7 @@ def read_stock_facts(
             session,
             facts=facts_by_metric[metric_key],
             user_id=current_user.id,
-            knowledge_cutoff=evaluation_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
     ]
     for slot_facts in slot_groups:
@@ -1691,7 +1730,7 @@ def read_stock_facts(
                 guard_reconciled_source_selection(
                     slot_facts,
                     consumer="stock_facts",
-                    knowledge_cutoff=evaluation_cutoff,
+                    evaluation_snapshot=evaluation_snapshot,
                     session=session,
                     user_id=current_user.id,
                 )

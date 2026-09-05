@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.models.auth_tokens import RefreshToken
+from app.models.facts import MetricFact
 from app.models.notifications import NotificationDestination
 from app.models.portfolios import PositionJournalEvent
 from app.models.research import ResearchCase, ResearchCaseRevision
@@ -145,3 +146,100 @@ def test_account_erasure_requires_password_and_exact_confirmation(
     assert response.status_code == 403
     db_session.refresh(user)
     assert user.is_active is True
+
+
+def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(
+        "erase-manual-facts@example.com", password="ErasePass123!"
+    )
+    stock = Stock(ticker="ERFACT", exchange="NYSE", company_name="Erase Facts")
+    db_session.add(stock)
+    db_session.flush()
+    numeric = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.revenue",
+        value_numeric=Decimal("123.45"),
+        value_json={
+            "reason": "private numeric rationale",
+            "note": "private correction note",
+            "raw": "123.45",
+            "status": "available",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    unavailable = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.fair_value",
+        value_numeric=None,
+        value_json={"reason": "private unavailable rationale", "status": "unavailable"},
+        source_type="manual",
+        period_type="AS_OF",
+        is_current=True,
+    )
+    no_reason = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_numeric=Decimal("9"),
+        value_json={"status": "available"},
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    previously_redacted_reason = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.operating_income",
+        value_numeric=Decimal("7"),
+        value_json={
+            "reason": "[redacted]",
+            "redaction_content_hash": "a" * 64,
+            "note": "private note added before erasure",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    db_session.add_all(
+        [numeric, unavailable, no_reason, previously_redacted_reason]
+    )
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/users/me/erase",
+        headers=auth_headers(user),
+        json={"password": "ErasePass123!", "confirmation": "ERASE MY ACCOUNT"},
+    )
+
+    assert response.status_code == 200, response.text
+    db_session.refresh(numeric)
+    db_session.refresh(unavailable)
+    db_session.refresh(no_reason)
+    db_session.refresh(previously_redacted_reason)
+    assert numeric.value_numeric == Decimal("123.45")
+    assert numeric.value_json["reason"] == "[redacted]"
+    assert len(numeric.value_json["redaction_content_hash"]) == 64
+    assert numeric.value_json["note"] == "[redacted]"
+    assert len(numeric.value_json["redaction_note_content_hash"]) == 64
+    assert numeric.value_json["raw"] == "123.45"
+    assert unavailable.value_json["reason"] == "[redacted]"
+    assert len(unavailable.value_json["redaction_content_hash"]) == 64
+    assert no_reason.value_numeric == Decimal("9")
+    assert no_reason.value_json == {"status": "available"}
+    assert previously_redacted_reason.value_json["reason"] == "[redacted]"
+    assert previously_redacted_reason.value_json["redaction_content_hash"] == (
+        "a" * 64
+    )
+    assert previously_redacted_reason.value_json["note"] == "[redacted]"
+    assert len(
+        previously_redacted_reason.value_json["redaction_note_content_hash"]
+    ) == 64

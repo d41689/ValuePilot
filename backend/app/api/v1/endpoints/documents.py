@@ -46,7 +46,11 @@ from app.services.active_report_resolver import (
     resolve_active_reports,
     transaction_visible_in_snapshot_predicate,
 )
-from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    current_metric_fact_ids_at,
+)
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.document_dedupe_service import DocumentDedupeService
@@ -400,7 +404,9 @@ def list_documents(
                     knowledge_cutoff=snapshot.snapshot_cutoff,
                     knowledge_txid_snapshot=snapshot.visibility_snapshot,
                     scope=CurrentnessScope(
-                        source_document_ids=tuple(doc_ids)
+                        source_document_ids=tuple(doc_ids),
+                        user_ids=(user_id,),
+                        source_types=("parsed",),
                     ),
                 )
             ),
@@ -1058,11 +1064,25 @@ def _document_review_selected_facts(
     session: SessionDep,
     doc: PdfDocument,
 ) -> list[MetricFact]:
+    evaluation_snapshot = database_evaluation_snapshot(session)
     rows = session.scalars(
         select(MetricFact)
         .where(
             MetricFact.user_id == doc.user_id,
             MetricFact.source_document_id == doc.id,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=evaluation_snapshot.cutoff,
+                    knowledge_txid_snapshot=(
+                        evaluation_snapshot.visibility_snapshot
+                    ),
+                    scope=CurrentnessScope(
+                        source_document_ids=(doc.id,),
+                        user_ids=(doc.user_id,),
+                    ),
+                )
+            ),
         )
         .order_by(MetricFact.id.asc())
     ).all()
@@ -1087,10 +1107,9 @@ def _document_review_fact_identity(fact: MetricFact) -> tuple[Any, ...]:
     )
 
 
-def _document_review_fact_rank(fact: MetricFact) -> tuple[int, int, int]:
+def _document_review_fact_rank(fact: MetricFact) -> tuple[int, int]:
     manual_rank = 1 if fact.source_type == "manual" else 0
-    current_rank = 1 if fact.is_current else 0
-    return (manual_rank, current_rank, fact.id)
+    return (manual_rank, fact.id)
 
 
 def _document_review_lineage_by_fact_id(
@@ -1201,7 +1220,9 @@ def _document_review_item(
         "period_end_date": _iso_date(fact.period_end_date),
         "as_of_date": _iso_date(fact.as_of_date),
         "source_type": fact.source_type,
-        "is_current": fact.is_current,
+        # Every row was selected through the request's retained currentness
+        # timeline; never substitute the mutable live projection here.
+        "is_current": True,
         "lineage_available": lineage is not None,
         "lineage": _document_review_lineage(lineage),
         "editable": True,

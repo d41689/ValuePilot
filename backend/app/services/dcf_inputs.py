@@ -171,6 +171,7 @@ def load_canonical_dcf_fact_universe(
                         metric_keys=tuple(
                             [*DCF_INPUT_FACT_KEYS.values(), "owners_earnings_per_share"]
                         ),
+                        user_ids=(user_id, None),
                     ),
                 )
             ),
@@ -202,6 +203,7 @@ def load_canonical_dcf_fact_universe(
         facts=candidate_oeps,
         effective_as_of=effective_as_of,
         knowledge_at=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
         precomputed_decisions=method_decisions,
     )
     if blocked_oeps:
@@ -218,7 +220,7 @@ def load_canonical_dcf_fact_universe(
     facts = guard_reconciled_source_selection(
         facts,
         consumer="valuation_inputs",
-        knowledge_cutoff=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
         session=session,
         user_id=user_id,
     )
@@ -227,6 +229,7 @@ def load_canonical_dcf_fact_universe(
         stock_id=stock_id,
         facts=facts,
         knowledge_cutoff=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
     )
     dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
     oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]

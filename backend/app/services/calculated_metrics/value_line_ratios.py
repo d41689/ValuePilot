@@ -132,7 +132,10 @@ class ValueLineRatioCalculator:
                         knowledge_cutoff=knowledge_cutoff,
                         knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
                         scope=CurrentnessScope.one_stock(
-                            stock_id, metric_keys=tuple(RATIO_INPUT_KEYS)
+                            stock_id,
+                            metric_keys=tuple(RATIO_INPUT_KEYS),
+                            user_ids=(user_id, None),
+                            source_types=("parsed", "manual", "sec"),
                         ),
                     )
                 ),
@@ -146,7 +149,7 @@ class ValueLineRatioCalculator:
         source_facts = guard_reconciled_source_selection(
             source_facts,
             consumer="ratio",
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             session=self.db,
             user_id=user_id,
             selected_source_type="parsed",
@@ -156,6 +159,7 @@ class ValueLineRatioCalculator:
             stock_id=stock_id,
             facts=source_facts,
             knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
         derived = build_value_line_ratio_facts(source_facts)
         return [

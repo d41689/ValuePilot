@@ -203,7 +203,10 @@ class PiotroskiFScoreCalculator:
                         knowledge_cutoff=knowledge_cutoff,
                         knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
                         scope=CurrentnessScope.one_stock(
-                            stock_id, metric_keys=tuple(PIOTROSKI_INPUT_KEYS)
+                            stock_id,
+                            metric_keys=tuple(PIOTROSKI_INPUT_KEYS),
+                            user_ids=(user_id, None),
+                            source_types=("parsed", "manual", "sec"),
                         ),
                     )
                 ),
@@ -217,7 +220,7 @@ class PiotroskiFScoreCalculator:
         source_facts = guard_reconciled_source_selection(
             source_facts,
             consumer="piotroski",
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             session=self.db,
             user_id=user_id,
             selected_source_type="parsed",
@@ -227,6 +230,7 @@ class PiotroskiFScoreCalculator:
             stock_id=stock_id,
             facts=source_facts,
             knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
         roic_decisions = {
             period_end: reviewed_method_gate(

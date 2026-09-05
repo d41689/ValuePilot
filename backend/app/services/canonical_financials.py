@@ -14,14 +14,13 @@ import re
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, exists, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
-from app.models.facts import MetricFact, MetricFactCurrentnessRevision
+from app.models.facts import MetricFact
 from app.services.evaluation_snapshot import (
     EvaluationSnapshot,
     database_evaluation_snapshot,
-    transaction_visible_in_snapshot_predicate,
 )
 from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 
@@ -878,9 +877,7 @@ def _piotroski_projection_snapshot(fact: MetricFact) -> tuple[Any, ...]:
         fact.source_ref_id,
         fact.value_line_parse_run_id,
         fact.value_line_legacy_revision,
-        fact.is_current,
         fact.created_at,
-        fact.updated_at,
     )
 
 
@@ -892,11 +889,9 @@ def _piotroski_temporal_reason(
     if (
         fact.created_at is None
         or fact.created_at.tzinfo is None
-        or fact.updated_at is None
-        or fact.updated_at.tzinfo is None
     ):
         return "piotroski_method_authority_manifest_invalid"
-    if fact.created_at > cutoff or fact.updated_at > cutoff:
+    if fact.created_at > cutoff:
         return HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
     return None
 
@@ -963,10 +958,18 @@ def guard_piotroski_method_authority(
     facts: Iterable[MetricFact],
     effective_as_of: date,
     knowledge_at: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> tuple[list[MetricFact], list[dict[str, Any]]]:
     """Rebuild strict Piotroski manifests and quarantine unverifiable periods."""
 
-    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
+    if evaluation_snapshot is not None:
+        if (
+            knowledge_at is not None
+            and evaluation_snapshot.cutoff != knowledge_at
+        ):
+            raise ValueError("knowledge cutoff conflicts with evaluation snapshot")
+    else:
+        evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
     cutoff = evaluation_snapshot.cutoff
     materialized = list(facts)
     piotroski = [
@@ -1062,7 +1065,6 @@ def guard_piotroski_method_authority(
         and isinstance(period[3], date)
     ]
     sibling_rows: list[MetricFact] = []
-    future_projection_rows: list[MetricFact] = []
     if query_periods:
         period_clauses = [
             and_(
@@ -1102,6 +1104,10 @@ def guard_piotroski_method_authority(
                             stock_ids=tuple(
                                 sorted({period[1] for period in query_periods})
                             ),
+                            user_ids=tuple(
+                                sorted({period[0] for period in query_periods})
+                            ),
+                            source_types=("calculated",),
                         ),
                     )
                 ),
@@ -1126,73 +1132,6 @@ def guard_piotroski_method_authority(
                 .execution_options(populate_existing=True, autoflush=False)
             ).all()
         )
-        future_ranked = (
-            select(
-                MetricFact.id.label("fact_id"),
-                func.row_number()
-                .over(
-                    partition_by=(
-                        MetricFact.user_id,
-                        MetricFact.stock_id,
-                        MetricFact.period_type,
-                        MetricFact.period_end_date,
-                    ),
-                    order_by=MetricFact.id,
-                )
-                .label("projection_rank"),
-            )
-            .where(
-                MetricFact.is_current.is_(True),
-                MetricFact.created_at > cutoff,
-                MetricFact.metric_key.like(f"{PIOTROSKI_PREFIX}%"),
-                or_(*period_clauses),
-                exists(
-                    select(MetricFactCurrentnessRevision.id).where(
-                        MetricFactCurrentnessRevision.fact_id == MetricFact.id,
-                        or_(
-                            MetricFactCurrentnessRevision.created_txid.is_(None),
-                            transaction_visible_in_snapshot_predicate(
-                                MetricFactCurrentnessRevision.created_txid,
-                                visibility_snapshot=(
-                                    evaluation_snapshot.visibility_snapshot
-                                ),
-                                bind_name=(
-                                    "piotroski_future_visibility_snapshot"
-                                ),
-                            ),
-                        ),
-                    )
-                ),
-            )
-            .subquery()
-        )
-        future_projection_rows = list(
-            session.scalars(
-                select(MetricFact)
-                .join(
-                    future_ranked,
-                    future_ranked.c.fact_id == MetricFact.id,
-                )
-                .where(
-                    future_ranked.c.projection_rank
-                    <= MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1
-                )
-                .limit(
-                    len(query_periods)
-                    * (MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1)
-                )
-                .execution_options(populate_existing=True, autoflush=False)
-            ).all()
-        )
-
-    # These rows are diagnostic evidence only. They can never become the
-    # canonical sibling set for an earlier cutoff.
-    for fact in future_projection_rows:
-        mark_projection_error(
-            _piotroski_period_key(fact),
-            HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE,
-        )
-
     siblings_by_period: dict[
         tuple[int | None, int, str | None, date | None], list[MetricFact]
     ] = {}
@@ -1218,7 +1157,11 @@ def guard_piotroski_method_authority(
     canonical_request_rows: dict[int, MetricFact] = {}
     for ordinal, fact in enumerate(piotroski):
         period = caller_periods[ordinal]
-        if period in bounded_periods or fact.id in duplicate_caller_ids:
+        if (
+            period in bounded_periods
+            or ordinal in request_errors
+            or fact.id in duplicate_caller_ids
+        ):
             continue
         if (
             not isinstance(fact.id, int)
@@ -1293,11 +1236,24 @@ def guard_piotroski_method_authority(
             for ordinal in range(len(validation_facts))
         }
 
+    current_input_ids = (
+        current_metric_fact_ids_at(
+            session,
+            knowledge_cutoff=cutoff,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope(fact_ids=tuple(sorted(all_input_ids))),
+        )
+        if all_input_ids
+        else None
+    )
     referenced = (
         list(
             session.scalars(
                 select(MetricFact)
-                .where(MetricFact.id.in_(all_input_ids))
+                .where(
+                    MetricFact.id.in_(all_input_ids),
+                    MetricFact.id.in_(current_input_ids),
+                )
                 .execution_options(populate_existing=True, autoflush=False)
             ).all()
         )
@@ -1353,8 +1309,7 @@ def guard_piotroski_method_authority(
             evaluations.append((fact, input_temporal_reason, None))
             continue
         if any(
-            item.is_current is not True
-            or item.period_type != "FY"
+            item.period_type != "FY"
             or item.period_end_date is None
             or item.created_at is None
             or item.created_at.tzinfo is None
@@ -1556,7 +1511,10 @@ def guard_piotroski_method_authority(
                 blocked.append(
                     _piotroski_blocked_state(
                         fact,
-                        reason_code=PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+                        reason_code=(
+                            request_errors.get(ordinal)
+                            or PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE
+                        ),
                     )
                 )
                 continue
@@ -1590,6 +1548,7 @@ def apply_reviewed_method_gates(
     facts: Iterable[MetricFact],
     effective_as_of: date,
     knowledge_at: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
     precomputed_decisions: dict[str, MethodGateDecision] | None = None,
 ) -> tuple[list[MetricFact], list[dict[str, Any]], dict[str, MethodGateDecision]]:
     """Remove unsupported system outputs while preserving raw and user-authored facts."""
@@ -1599,6 +1558,7 @@ def apply_reviewed_method_gates(
         facts=list(facts),
         effective_as_of=effective_as_of,
         knowledge_at=knowledge_at,
+        evaluation_snapshot=evaluation_snapshot,
     )
     required_methods = {
         method for fact in materialized if (method := system_method_for_fact(fact))
@@ -1659,6 +1619,7 @@ def require_applicable_method_facts(
     facts: Iterable[MetricFact],
     effective_as_of: date,
     knowledge_at: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> list[MetricFact]:
     """Return facts only when every requested system method is authorized."""
 
@@ -1668,6 +1629,7 @@ def require_applicable_method_facts(
         facts=facts,
         effective_as_of=effective_as_of,
         knowledge_at=knowledge_at,
+        evaluation_snapshot=evaluation_snapshot,
     )
     if not blocked:
         return kept
@@ -1695,7 +1657,9 @@ def current_visible_facts(
                         session,
                         knowledge_cutoff=knowledge_cutoff,
                         knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                        scope=CurrentnessScope.one_stock(stock_id),
+                        scope=CurrentnessScope.one_stock(
+                            stock_id, user_ids=(user_id, None)
+                        ),
                     )
                 ),
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
@@ -1709,11 +1673,20 @@ def active_sec_run_unresolved_states(
     *,
     stock_id: int,
     knowledge_cutoff: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> list[dict[str, Any]]:
     """Return unresolved amendment states bounded by filing-cycle authority."""
 
-    supplied_cutoff = knowledge_cutoff
-    evaluation_snapshot = database_evaluation_snapshot(session, supplied_cutoff)
+    if evaluation_snapshot is not None:
+        if (
+            knowledge_cutoff is not None
+            and knowledge_cutoff != evaluation_snapshot.cutoff
+        ):
+            raise ValueError("knowledge cutoff conflicts with evaluation snapshot")
+        supplied_cutoff = evaluation_snapshot.cutoff
+    else:
+        supplied_cutoff = knowledge_cutoff
+        evaluation_snapshot = database_evaluation_snapshot(session, supplied_cutoff)
     # Preserve the established current-mode contract: a publication that has
     # finalized is current even when its requested source cutoff is slightly
     # ahead of the wall clock. Historical callers still receive the exact,
@@ -1891,12 +1864,14 @@ def guard_sec_run_availability(
     stock_id: int,
     facts: Iterable[Any],
     knowledge_cutoff: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> list[Any]:
     materialized, states = partition_sec_run_availability(
         session,
         stock_id=stock_id,
         facts=facts,
         knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
     if states:
         raise CanonicalUnavailableError(states[0])
@@ -1974,6 +1949,7 @@ def partition_sec_run_availability(
     stock_id: int,
     facts: Iterable[Any],
     knowledge_cutoff: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     """Exclude only SEC facts in filing cycles with unresolved amendments."""
 
@@ -1981,11 +1957,13 @@ def partition_sec_run_availability(
     sec_facts = [fact for fact in materialized if _fact_source_type(fact) == "sec"]
     if not sec_facts:
         return materialized, []
-    active_states = active_sec_run_unresolved_states(
-        session,
-        stock_id=stock_id,
-        knowledge_cutoff=knowledge_cutoff,
-    )
+    state_arguments: dict[str, Any] = {
+        "stock_id": stock_id,
+        "knowledge_cutoff": knowledge_cutoff,
+    }
+    if evaluation_snapshot is not None:
+        state_arguments["evaluation_snapshot"] = evaluation_snapshot
+    active_states = active_sec_run_unresolved_states(session, **state_arguments)
     if not active_states:
         return materialized, []
     state_by_cycle = {

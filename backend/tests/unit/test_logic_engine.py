@@ -214,11 +214,17 @@ def test_formula_selects_manual_before_checking_sec_amendment_state(
     db_session.add(formula)
     db_session.commit()
     def assert_selected_before_availability(
-        _session, *, stock_id, facts, knowledge_cutoff
+        _session,
+        *,
+        stock_id,
+        facts,
+        knowledge_cutoff,
+        evaluation_snapshot,
     ):
         selected = list(facts)
         assert [fact.source_type for fact in selected] == ["manual"]
         assert knowledge_cutoff.tzinfo is not None
+        assert evaluation_snapshot.cutoff == knowledge_cutoff
         return selected
 
     monkeypatch.setattr(
