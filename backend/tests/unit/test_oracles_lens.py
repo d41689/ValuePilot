@@ -716,6 +716,94 @@ def test_oracles_lens_adds_conservative_valuation_reference(
     assert response.json()["coverage"]["valuation_reference_coverage_count"] >= 1
 
 
+def test_oracles_lens_full_dashboard_excludes_price_and_valuation_after_one_cutoff(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+    from app.services.oracles_lens import dashboard as dashboard_service
+
+    target = _seed_oracles_lens_fixture(db_session)
+    db_session.add_all(
+        [
+            _metric_fact(
+                target,
+                "target.price_18m.mid",
+                150.0,
+                period_end=date(2032, 1, 1),
+            ),
+            StockPrice(
+                stock_id=target.id,
+                price_date=_current_price_date(),
+                open=89.0,
+                high=91.0,
+                low=88.0,
+                close=90.0,
+                adj_close=None,
+                volume=1000,
+                source="yfinance",
+                currency="USD",
+            ),
+        ]
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    future_timestamp = cutoff + timedelta(minutes=1)
+    valuation = _metric_fact(
+        target,
+        "val.fair_value",
+        175.0,
+        period_end=date(2032, 1, 2),
+        source_type="manual",
+    )
+    valuation.created_at = future_timestamp
+    valuation.updated_at = future_timestamp
+    db_session.add_all(
+        [
+            valuation,
+            StockPrice(
+                stock_id=target.id,
+                price_date=_current_price_date(),
+                open=99.0,
+                high=101.0,
+                low=98.0,
+                close=100.0,
+                adj_close=None,
+                volume=1000,
+                source="yfinance",
+                currency="USD",
+                created_at=future_timestamp,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    cutoff_calls: list[datetime | None] = []
+
+    def fixed_cutoff(_session, supplied=None):
+        cutoff_calls.append(supplied)
+        return supplied or cutoff
+
+    monkeypatch.setattr(
+        dashboard_service,
+        "database_evaluation_cutoff",
+        fixed_cutoff,
+    )
+
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
+
+    assert response.status_code == 200, response.text
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    assert item["current_price"] == 90.0
+    assert item["valuation_reference"] == 150.0
+    assert item["valuation_reference_type"] == "analyst_target_reference"
+    assert item["discount_to_reference"] == 0.4
+    assert cutoff_calls.count(None) == 1
+    assert all(value is None or value is cutoff for value in cutoff_calls)
+
+
 @pytest.mark.parametrize(
     (
         "scenario",
@@ -935,10 +1023,9 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
                 close=80.0,
                 adj_close=None,
                 volume=1000,
-                source="yfinance",
-                currency="USD",
-                created_at=datetime(2031, 9, 30, 22, tzinfo=timezone.utc),
-            ),
+                    source="yfinance",
+                    currency="USD",
+                ),
             StockPrice(
                 stock_id=target.id,
                 price_date=date(2032, 1, 2),

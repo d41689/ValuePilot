@@ -293,12 +293,14 @@ def build_research_workspace(
         session,
         stock_ids=[stock.id],
         current_user_id=user_id,
+        knowledge_cutoff=evaluated_at,
     ).get(stock.id)
     actual_conflicts = detect_actual_conflicts(
         session,
         stock_id=stock.id,
         active_report=active_report,
         current_user_id=user_id,
+        knowledge_cutoff=evaluated_at,
     )
     try:
         if reconciliation_bound_exceeded:

@@ -505,3 +505,39 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   superset is `835 passed` in 639.86 seconds. Only the pre-existing
   Starlette/httpx and anyio deprecation warnings remain. No migration,
   retained data, storage, or external source changed.
+- 2026-09-04: Strict Terra R14 found two remaining point-in-time splits. The
+  complete Oracle dashboard now captures one database-owned evaluation instant
+  before its first dashboard read and threads it through current or historical
+  price selection, quality/M3 facts and gates, and user/Value Line valuation
+  references. A historical `price_as_of_date` still controls the price business
+  date only; it does not replace the knowledge cutoff. `stock_prices` has no
+  update projection and is insert-only by database contract, so its applicable
+  PIT boundary is `created_at`; every selected `metric_facts` row is bounded by
+  both `created_at` and `updated_at`.
+- 2026-09-04: Active Value Line report selection and actual-conflict detection
+  now accept an optional aware knowledge cutoff and apply both fact timestamp
+  bounds. Stock-by-ticker captures T before duplicate ticker selection, uses T
+  for active-report evidence and candidate fact counts, and derives the DCF
+  clock from that exact T rather than querying a second clock. Research
+  Workspace passes its existing earliest T through active-report and conflict
+  reads. Callers that do not request PIT behavior remain source-compatible;
+  supplied historical/test cutoffs are preserved.
+- 2026-09-04: R14 tests-first reproduced a future manual valuation and price
+  replacing known Oracle values, post-T reports changing active-report and
+  duplicate-ticker selection, and a post-T restatement creating a Workspace
+  conflict. All four focused regressions are green; the four directly affected
+  files are `89 passed`, and a from-scratch serial 39-file R5-R14 affected
+  superset is `670 passed` in 339.19 seconds. A final focused clock/PIT set is
+  `9 passed`. Only the existing Starlette/httpx and anyio deprecation warnings
+  appeared.
+- 2026-09-04: An intentionally broader 49-file diagnostic run was not counted
+  as passing: it reached `1040 passed` before one unrelated Owner Earnings
+  lineage test failed closed. Instrumentation proved the immutable V2 policy
+  row was approved but had database `known_at=2026-09-05T04:26:28Z`, while the
+  same PostgreSQL server later returned an evaluation cutoff of
+  `2026-09-05T04:03:59Z` (a 22 minute 29 second external wall-clock reversal).
+  The gate correctly selected V1 and returned `method_unsupported`; all company
+  classification and four risk reviews were present. The test passed alone and
+  with each suspected prefix. No epsilon, policy rewrite, or fail-open behavior
+  was introduced for this environmental clock reversal, and all temporary
+  diagnostics were removed.

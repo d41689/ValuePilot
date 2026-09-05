@@ -183,6 +183,86 @@ def test_workspace_service_uses_supplied_cutoff_for_current_facts_and_gates(
     assert workspace["system_method_gates"]["roic"]["status"] == "approved"
 
 
+def test_workspace_actual_conflicts_exclude_reports_learned_after_cutoff(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    user = user_factory("research-workspace-report-pit@example.com")
+    stock = _stock(db_session, "RWSREPORT")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    old_doc = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-old.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-old.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add_all([case, old_doc])
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            value_json={"fact_nature": "actual"},
+            value_numeric=100,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=old_doc.id,
+            is_current=False,
+        )
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    new_doc = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-future.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-future.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 4, 9),
+    )
+    db_session.add(new_doc)
+    db_session.flush()
+    future_timestamp = cutoff + timedelta(minutes=1)
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            value_json={"fact_nature": "actual"},
+            value_numeric=120,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=new_doc.id,
+            is_current=True,
+            created_at=future_timestamp,
+            updated_at=future_timestamp,
+        )
+    )
+    db_session.commit()
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=evaluation_business_date(cutoff),
+        evaluated_at=cutoff,
+    )
+
+    assert workspace["actual_conflicts"] == []
+
+
 def _monitoring_revision(expected_head: int = 0) -> dict:
     return {
         "expected_head_revision_number": expected_head,

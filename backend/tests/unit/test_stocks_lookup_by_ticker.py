@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
@@ -1674,6 +1674,191 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
             ],
         }
     ]
+
+
+def test_lookup_stock_by_ticker_excludes_reports_and_conflicts_learned_after_cutoff(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = User(email="ticker-report-cutoff@example.com")
+    stock = Stock(
+        ticker="REPORT_PIT",
+        exchange="NYSE",
+        company_name="Report PIT Co",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    old_doc = PdfDocument(
+        user_id=user.id,
+        file_name="report-pit-old.pdf",
+        source="upload",
+        file_storage_key="/tmp/report-pit-old.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(old_doc)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            value_json={"fact_nature": "actual", "raw": "100"},
+            value_numeric=100.0,
+            unit="USD",
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=old_doc.id,
+            is_current=False,
+        )
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    future_timestamp = cutoff + timedelta(minutes=1)
+    new_doc = PdfDocument(
+        user_id=user.id,
+        file_name="report-pit-new.pdf",
+        source="upload",
+        file_storage_key="/tmp/report-pit-new.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 4, 9),
+    )
+    db_session.add(new_doc)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            value_json={"fact_nature": "actual", "raw": "120"},
+            value_numeric=120.0,
+            unit="USD",
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=new_doc.id,
+            is_current=True,
+            created_at=future_timestamp,
+            updated_at=future_timestamp,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: cutoff,
+    )
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/report_pit", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["active_report_document_id"] == old_doc.id
+    assert payload["active_report_date"] == "2026-01-09"
+    assert payload["actual_conflict_count"] == 0
+    assert payload["actual_conflicts"] == []
+
+
+def test_lookup_stock_by_ticker_duplicate_selection_ignores_future_report(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = User(email="ticker-selection-cutoff@example.com")
+    known_stock = Stock(
+        ticker="DUP_PIT",
+        exchange="NYSE",
+        company_name="Known at cutoff",
+        is_active=True,
+    )
+    future_stock = Stock(
+        ticker="DUP_PIT",
+        exchange="NASDAQ",
+        company_name="Only known later",
+        is_active=True,
+    )
+    db_session.add_all([user, known_stock, future_stock])
+    db_session.flush()
+    known_doc = PdfDocument(
+        user_id=user.id,
+        file_name="dup-pit-known.pdf",
+        source="upload",
+        file_storage_key="/tmp/dup-pit-known.pdf",
+        parse_status="parsed",
+        stock_id=known_stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(known_doc)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=known_stock.id,
+            metric_key="mkt.price",
+            value_json={"fact_nature": "snapshot", "raw": "100"},
+            value_numeric=100.0,
+            unit="USD",
+            period_type="AS_OF",
+            period_end_date=date(2026, 1, 9),
+            source_type="parsed",
+            source_document_id=known_doc.id,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    future_timestamp = cutoff + timedelta(minutes=1)
+    future_doc = PdfDocument(
+        user_id=user.id,
+        file_name="dup-pit-future.pdf",
+        source="upload",
+        file_storage_key="/tmp/dup-pit-future.pdf",
+        parse_status="parsed",
+        stock_id=future_stock.id,
+        report_date=date(2026, 4, 9),
+    )
+    db_session.add(future_doc)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=future_stock.id,
+            metric_key="mkt.price",
+            value_json={"fact_nature": "snapshot", "raw": "200"},
+            value_numeric=200.0,
+            unit="USD",
+            period_type="AS_OF",
+            period_end_date=date(2026, 4, 9),
+            source_type="parsed",
+            source_document_id=future_doc.id,
+            is_current=True,
+            created_at=future_timestamp,
+            updated_at=future_timestamp,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: cutoff,
+    )
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/dup_pit", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == known_stock.id
+    assert response.json()["active_report_document_id"] == known_doc.id
 
 
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(

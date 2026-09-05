@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import and_, or_, select
@@ -19,7 +19,10 @@ def detect_actual_conflicts(
     active_report: ActiveReportSelection | None,
     current_user_id: int | None = None,
     shared_parsed_user_ids: list[int] | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> list[dict[str, Any]]:
+    if knowledge_cutoff is not None and knowledge_cutoff.utcoffset() is None:
+        raise ValueError("knowledge_cutoff must be timezone-aware")
     fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
     stmt = (
         select(
@@ -39,6 +42,11 @@ def detect_actual_conflicts(
             fact_nature_expr == "actual",
         )
     )
+    if knowledge_cutoff is not None:
+        stmt = stmt.where(
+            MetricFact.created_at <= knowledge_cutoff,
+            MetricFact.updated_at <= knowledge_cutoff,
+        )
     if current_user_id is not None:
         stmt = stmt.where(
             or_(

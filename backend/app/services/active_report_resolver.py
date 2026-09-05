@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import and_, or_, select
@@ -25,7 +25,10 @@ def resolve_active_reports(
     stock_ids: Optional[list[int]] = None,
     current_user_id: Optional[int] = None,
     shared_parsed_user_ids: Optional[list[int]] = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[int, ActiveReportSelection]:
+    if knowledge_cutoff is not None and knowledge_cutoff.utcoffset() is None:
+        raise ValueError("knowledge_cutoff must be timezone-aware")
     stmt = (
         select(
             MetricFact.stock_id,
@@ -39,6 +42,12 @@ def resolve_active_reports(
         )
         .distinct()
     )
+
+    if knowledge_cutoff is not None:
+        stmt = stmt.where(
+            MetricFact.created_at <= knowledge_cutoff,
+            MetricFact.updated_at <= knowledge_cutoff,
+        )
 
     if document_ids is not None:
         if not document_ids:

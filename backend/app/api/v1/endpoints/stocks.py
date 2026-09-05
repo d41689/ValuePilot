@@ -920,6 +920,7 @@ def _select_stock_for_ticker(
     *,
     current_user_id: int,
     admin_user_ids: list[int],
+    knowledge_cutoff: datetime,
 ) -> Stock | None:
     stocks = session.scalars(
         select(Stock)
@@ -937,6 +938,7 @@ def _select_stock_for_ticker(
         stock_ids=stock_ids,
         current_user_id=current_user_id,
         shared_parsed_user_ids=admin_user_ids,
+        knowledge_cutoff=knowledge_cutoff,
     )
     fact_counts = dict(
         session.execute(
@@ -944,6 +946,8 @@ def _select_stock_for_ticker(
             .where(
                 MetricFact.stock_id.in_(stock_ids),
                 MetricFact.is_current.is_(True),
+                MetricFact.created_at <= knowledge_cutoff,
+                MetricFact.updated_at <= knowledge_cutoff,
                 _visible_fact_predicate(current_user_id, admin_user_ids),
             )
             .group_by(MetricFact.stock_id)
@@ -978,23 +982,24 @@ def read_stock_by_ticker(
     # shared through the canonical visibility predicate, not through an admin
     # uploader convention.
     admin_user_ids: list[int] = []
+    evaluation_cutoff = database_evaluation_cutoff(session)
     stock = _select_stock_for_ticker(
         session,
         ticker_normalized,
         current_user_id=current_user.id,
         admin_user_ids=admin_user_ids,
+        knowledge_cutoff=evaluation_cutoff,
     )
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-    dcf_clock = dcf_evaluation_clock(
-        evaluated_at=database_evaluation_cutoff(session)
-    )
+    dcf_clock = dcf_evaluation_clock(evaluated_at=evaluation_cutoff)
     dcf_evaluated_at = dcf_clock.evaluated_at
     active_report = resolve_active_reports(
         session,
         stock_ids=[stock.id],
         current_user_id=current_user.id,
         shared_parsed_user_ids=admin_user_ids,
+        knowledge_cutoff=dcf_evaluated_at,
     ).get(stock.id)
 
     facts_stmt = select(MetricFact).where(
@@ -1363,6 +1368,7 @@ def read_stock_by_ticker(
         active_report=active_report,
         current_user_id=current_user.id,
         shared_parsed_user_ids=admin_user_ids,
+        knowledge_cutoff=dcf_evaluated_at,
     )
 
     report_price_fact = facts_by_key.get("mkt.price")

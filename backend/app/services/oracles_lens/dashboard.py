@@ -129,6 +129,7 @@ def build_oracles_lens_dashboard(
     manager_id_allowlist: set[int] | None = None,
     universe_metadata: dict[str, Any] | None = None,
     user_id: int | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the Oracle's Lens dashboard payload.
 
@@ -151,6 +152,7 @@ def build_oracles_lens_dashboard(
     caller that omits this kwarg gets the legacy path — by design.
     Phase 4 will delete the parameter entirely.
     """
+    evaluated_at = database_evaluation_cutoff(session, knowledge_cutoff)
     periods = _periods(session, superinvestor_only=superinvestor_only)
     latest_complete = _latest_complete_period(periods, min_manager_coverage=min_holders)
 
@@ -277,6 +279,7 @@ def build_oracles_lens_dashboard(
         session,
         [item["stock_id"] for item in items],
         as_of_date=price_as_of_date,
+        knowledge_cutoff=evaluated_at,
     )
     quality_by_stock = _quality_overlay_by_stock(
         session,
@@ -285,6 +288,7 @@ def build_oracles_lens_dashboard(
         price_context=price_context,
         user_id=user_id,
         canonical_prices=canonical_prices,
+        knowledge_at=evaluated_at,
     )
     valuation_by_stock = _valuation_reference_by_stock(
         session,
@@ -299,6 +303,7 @@ def build_oracles_lens_dashboard(
         price_context=price_context,
         user_id=user_id,
         canonical_prices=canonical_prices,
+        knowledge_cutoff=evaluated_at,
     )
     for item in items:
         item["quality_overlay"] = quality_by_stock.get(item["stock_id"], _empty_quality_overlay())
@@ -1319,12 +1324,13 @@ def _quality_overlay_by_stock(
     price_context: str = "latest",
     user_id: int | None = None,
     canonical_prices: dict[int, CanonicalEodPrice] | None = None,
+    knowledge_at: datetime | None = None,
 ) -> dict[int, dict[str, Any]]:
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     if not unique_stock_ids:
         return {}
 
-    evaluated_at = database_evaluation_cutoff(session)
+    evaluated_at = database_evaluation_cutoff(session, knowledge_at)
     effective_as_of = price_as_of_date or evaluation_business_date(evaluated_at)
     gate_decisions = {
         stock_id: {
@@ -1360,6 +1366,7 @@ def _quality_overlay_by_stock(
         session,
         unique_stock_ids,
         as_of_date=price_as_of_date,
+        knowledge_cutoff=evaluated_at,
     )
     method_decisions: dict[int, MethodGateDecision | dict[str, Any]] = {}
     for stock_id in unique_stock_ids:
@@ -1407,8 +1414,10 @@ def _canonical_prices_by_stock(
     stock_ids: list[int],
     *,
     as_of_date: date | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[int, CanonicalEodPrice]:
     """Resolve display and calculation prices through the canonical contract."""
+    evaluated_at = database_evaluation_cutoff(session, knowledge_cutoff)
     stocks = session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
     if as_of_date is not None:
         return read_canonical_eod_prices(
@@ -1416,8 +1425,13 @@ def _canonical_prices_by_stock(
             stocks=stocks,
             as_of=as_of_date,
             include_as_of_session=True,
+            knowledge_cutoff=evaluated_at,
         )
-    return read_current_eod_prices(session, stocks=stocks)
+    return read_current_eod_prices(
+        session,
+        stocks=stocks,
+        evaluated_at=evaluated_at,
+    )
 
 
 def _quality_payload(
@@ -1636,6 +1650,7 @@ def _valuation_reference_by_stock(
     price_context: str = "latest",
     user_id: int | None = None,
     canonical_prices: dict[int, CanonicalEodPrice] | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[int, dict[str, Any]]:
     stock_ids = list(holder_ranges_by_stock)
     if not stock_ids:
@@ -1645,12 +1660,14 @@ def _valuation_reference_by_stock(
         session,
         user_id=user_id,
         stock_ids=stock_ids,
+        knowledge_cutoff=knowledge_cutoff,
     )
 
     prices = canonical_prices or _canonical_prices_by_stock(
         session,
         stock_ids,
         as_of_date=price_as_of_date,
+        knowledge_cutoff=knowledge_cutoff,
     )
     return {
         stock_id: _valuation_payload(
