@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal, DecimalException
 from typing import Any, Callable, Iterable, Optional
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
 from app.services.canonical_financials import (
+    database_evaluation_cutoff,
     MethodGateDecision,
     guard_sec_run_availability,
     guard_source_selection,
@@ -190,15 +191,14 @@ class PiotroskiFScoreCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
-        knowledge_cutoff = self.db.scalar(select(func.clock_timestamp()))
-        if knowledge_cutoff is None or knowledge_cutoff.tzinfo is None:
-            raise RuntimeError("database clock did not return an aware timestamp")
+        knowledge_cutoff = database_evaluation_cutoff(self.db)
         source_facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
                 MetricFact.metric_key.in_(PIOTROSKI_INPUT_KEYS),
                 MetricFact.created_at <= knowledge_cutoff,
+                MetricFact.updated_at <= knowledge_cutoff,
                 or_(
                     and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
                     and_(MetricFact.user_id.is_(None), MetricFact.source_type == "sec"),
@@ -214,7 +214,10 @@ class PiotroskiFScoreCalculator:
             selected_source_type="parsed",
         )
         source_facts = guard_sec_run_availability(
-            self.db, stock_id=stock_id, facts=source_facts
+            self.db,
+            stock_id=stock_id,
+            facts=source_facts,
+            knowledge_cutoff=knowledge_cutoff,
         )
         roic_decisions = {
             period_end: reviewed_method_gate(

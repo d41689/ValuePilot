@@ -12,6 +12,7 @@ from app.models.sec_publication import (
     SecEconomicRiskReview,
 )
 from app.models.stocks import Stock
+from app.services import canonical_financials
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     reviewed_method_gate,
@@ -59,6 +60,31 @@ def _review_ordinary_profile(db_session, *, reviewer, stock: Stock) -> None:
             review_reason=f"Reviewed {risk_attribute} against retained evidence.",
         )
     db_session.commit()
+
+
+def test_default_method_gate_cutoff_uses_database_clock_when_app_clock_lags(
+    db_session, user_factory, monkeypatch
+) -> None:
+    reviewer = user_factory("ft07-db-clock@example.com", role="admin")
+    stock = _stock(db_session, "FT07DBCLOCK")
+    _review_ordinary_profile(db_session, reviewer=reviewer, stock=stock)
+
+    class LaggingAppClock:
+        @classmethod
+        def now(cls, _timezone):
+            return datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(canonical_financials, "datetime", LaggingAppClock)
+
+    decision = reviewed_method_gate(
+        db_session,
+        stock_id=stock.id,
+        method_key="owner_earnings",
+        effective_as_of=date(2026, 1, 9),
+    )
+
+    assert decision.status == "approved"
+    assert decision.knowledge_at > datetime(2020, 1, 1, tzinfo=timezone.utc)
 
 
 def test_ft07_policy_schema_and_seed_are_explicit(db_session) -> None:

@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.models.facts import CalculatedRun, Formula, MetricFact
 from app.models.sec_publication import SecEconomicClassificationReview
 from app.models.stocks import Stock
+from app.services import formula_engine as formula_engine_service
+from app.services import screener_service as screener_service_module
 from app.services.canonical_financials import (
     CanonicalUnavailableError,
     UnsupportedSystemMethodError,
@@ -21,9 +23,11 @@ from app.services.method_applicability import (
     review_company_risk_attribute,
 )
 from app.services.screener_service import (
+    MAX_SCREENER_CONDITIONS,
     MAX_SCREENER_SQL_BIND_BUDGET,
     SCREENER_ALLOWED_PAIR_BIND_COUNT,
     SCREENER_CONDITION_BIND_OVERHEAD,
+    ScreenerRuleError,
     ScreenerService,
     _ScreenerSourceAuthority,
 )
@@ -199,7 +203,7 @@ def test_formula_and_screener_fail_closed_before_using_governed_numeric(
     ],
 )
 def test_formula_and_screener_allow_reviewed_ordinary_method_inputs(
-    db_session, user_factory, metric_key: str
+    db_session, user_factory, monkeypatch, metric_key: str
 ) -> None:
     user = user_factory(
         f"approved-{metric_key.replace('.', '-')}@example.com", role="admin"
@@ -223,10 +227,31 @@ def test_formula_and_screener_allow_reviewed_ordinary_method_inputs(
         metric_key=metric_key,
         suffix=f"approved{len(metric_key)}",
     )
+    observed: dict[str, object] = {}
+    original_reconciliation = formula_engine_service.guard_reconciled_source_selection
+    original_sec_guard = formula_engine_service.guard_sec_run_availability
+
+    def capture_reconciliation(*args, **kwargs):
+        observed["reconciliation_cutoff"] = kwargs.get("knowledge_cutoff")
+        return original_reconciliation(*args, **kwargs)
+
+    def capture_sec_guard(*args, **kwargs):
+        observed["sec_cutoff"] = kwargs.get("knowledge_cutoff")
+        return original_sec_guard(*args, **kwargs)
+
+    monkeypatch.setattr(
+        formula_engine_service,
+        "guard_reconciled_source_selection",
+        capture_reconciliation,
+    )
+    monkeypatch.setattr(
+        formula_engine_service, "guard_sec_run_availability", capture_sec_guard
+    )
 
     run = FormulaEngine(db_session).run_formula(formula.id, stock.id, user.id)
     assert run is not None
     assert run.result_value_json["value"] == "101.000000000000"
+    assert observed["sec_cutoff"] == observed["reconciliation_cutoff"]
     matched = ScreenerService(db_session).execute_screen(
         {
             "type": "AND",
@@ -592,3 +617,166 @@ def test_screener_empty_authority_remains_fail_closed(db_session) -> None:
         },
         current_user_id=1,
     ) == []
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {"type": "OR", "conditions": [{"metric": "revenue", "operator": ">", "value": 1}]},
+        {"type": "XOR", "conditions": [{"metric": "revenue", "operator": ">", "value": 1}]},
+        {"conditions": [{"metric": "revenue", "operator": ">", "value": 1}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "operator": ">", "value": 1}], "nested": {"ignored": [1]}},
+        {"type": "AND", "conditions": []},
+        {"type": "AND", "conditions": "not-a-list"},
+        {"type": "AND", "conditions": ["not-an-object"]},
+        {"type": "AND", "conditions": [{"operator": ">", "value": 1}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "value": 1}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "operator": ">"}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "operator": "!=", "value": 1}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "operator": ">", "value": True}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "operator": ">", "value": "1"}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "operator": ">", "value": float("nan")}]},
+        {"type": "AND", "conditions": [{"metric": "revenue", "operator": ">", "value": float("inf")}]},
+        {"type": "AND", "conditions": [{"metric": "bad metric", "operator": ">", "value": 1}]},
+        {"type": "AND", "conditions": [{"metric": "x" * 129, "operator": ">", "value": 1}]},
+    ],
+)
+def test_screener_rejects_invalid_rule_grammar_before_any_sql(
+    db_session, rule
+) -> None:
+    statements: list[str] = []
+
+    def before_cursor_execute(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", before_cursor_execute)
+    try:
+        with pytest.raises(ScreenerRuleError):
+            ScreenerService(db_session).execute_screen(rule, current_user_id=1)
+    finally:
+        event.remove(
+            db_session.get_bind(), "before_cursor_execute", before_cursor_execute
+        )
+
+    assert statements == []
+
+
+def test_screener_rejects_excess_conditions_before_guard_sql(db_session) -> None:
+    statements: list[str] = []
+
+    def before_cursor_execute(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", before_cursor_execute)
+    try:
+        with pytest.raises(CanonicalUnavailableError) as error:
+            ScreenerService(db_session).execute_screen(
+                {
+                    "type": "AND",
+                    "conditions": [
+                        {"metric": "absent.metric", "operator": ">", "value": 0}
+                        for _ in range(MAX_SCREENER_CONDITIONS + 1)
+                    ],
+                },
+                current_user_id=1,
+            )
+    finally:
+        event.remove(
+            db_session.get_bind(), "before_cursor_execute", before_cursor_execute
+        )
+
+    assert error.value.code == "screener_source_guard_bound_exceeded"
+    assert statements == []
+
+
+def test_screener_candidate_guard_uses_repeated_metric_bind_budget_before_gates(
+    db_session, user_factory, monkeypatch
+) -> None:
+    user = user_factory("screener-candidate-bound@example.com")
+    stock = _stock(db_session, "SCRBOUND")
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="revenue",
+                value_numeric=value,
+                period_type="FY",
+                period_end_date=date(year, 12, 31),
+                source_type="manual",
+                is_current=True,
+            )
+            for value, year in ((1, 2023), (2, 2024))
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        screener_service_module, "MAX_SCREENER_SQL_BIND_BUDGET", 20
+    )
+    monkeypatch.setattr(
+        screener_service_module,
+        "guard_reconciled_source_selection",
+        lambda *_args, **_kwargs: pytest.fail("expensive guard must not run"),
+    )
+
+    with pytest.raises(CanonicalUnavailableError) as error:
+        ScreenerService(db_session).execute_screen(
+            {
+                "type": "AND",
+                "conditions": [
+                    {"metric": "revenue", "operator": ">", "value": 0},
+                    {"metric": "revenue", "operator": "<", "value": 3},
+                ],
+            },
+            current_user_id=user.id,
+        )
+
+    assert error.value.code == "screener_source_guard_bound_exceeded"
+
+
+def test_screener_accepts_condition_count_boundary_with_empty_authority(
+    db_session,
+) -> None:
+    assert ScreenerService(db_session).execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {"metric": "absent.metric", "operator": ">", "value": 0}
+                for _ in range(MAX_SCREENER_CONDITIONS)
+            ],
+        },
+        current_user_id=1,
+    ) == []
+
+
+def test_screener_api_returns_typed_error_for_unsupported_rule_type(
+    client, user_factory, auth_headers
+) -> None:
+    user = user_factory("screener-invalid-rule@example.com")
+
+    response = client.post(
+        "/api/v1/screener/run",
+        headers=auth_headers(user),
+        json={
+            "type": "OR",
+            "conditions": [{"metric": "revenue", "operator": ">", "value": 1}],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "screener_rule_type_unsupported"
+
+
+def test_screener_api_returns_typed_error_for_non_object_rule(
+    client, user_factory, auth_headers
+) -> None:
+    user = user_factory("screener-invalid-root@example.com")
+
+    response = client.post(
+        "/api/v1/screener/run",
+        headers=auth_headers(user),
+        json=[{"type": "AND"}],
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "screener_rule_invalid"

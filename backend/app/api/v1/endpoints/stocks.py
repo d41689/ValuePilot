@@ -20,6 +20,7 @@ from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
+    database_evaluation_cutoff,
     guard_piotroski_method_authority,
     guard_sec_run_availability,
     resolve_sec_publication_evidence,
@@ -429,7 +430,7 @@ def _build_piotroski_f_score_card(
     facts, method_blocked = guard_piotroski_method_authority(
         session,
         facts=facts,
-        effective_as_of=date.today(),
+        effective_as_of=evaluated_at.date(),
         knowledge_at=evaluated_at,
     )
     if method_blocked:
@@ -982,7 +983,9 @@ def read_stock_by_ticker(
     )
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-    dcf_clock = dcf_evaluation_clock()
+    dcf_clock = dcf_evaluation_clock(
+        evaluated_at=database_evaluation_cutoff(session)
+    )
     dcf_evaluated_at = dcf_clock.evaluated_at
     active_report = resolve_active_reports(
         session,
@@ -994,6 +997,8 @@ def read_stock_by_ticker(
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
         MetricFact.is_current.is_(True),
+        MetricFact.created_at <= dcf_evaluated_at,
+        MetricFact.updated_at <= dcf_evaluated_at,
         _visible_fact_predicate(current_user.id, admin_user_ids),
         MetricFact.metric_key.in_(
             ["mkt.price", "val.pe", "owners_earnings_per_share_normalized"]
@@ -1111,6 +1116,8 @@ def read_stock_by_ticker(
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
+            MetricFact.created_at <= dcf_evaluated_at,
+            MetricFact.updated_at <= dcf_evaluated_at,
             _visible_fact_predicate(current_user.id, admin_user_ids),
             MetricFact.metric_key.in_(growth_metric_keys),
         )
@@ -1147,6 +1154,7 @@ def read_stock_by_ticker(
             session,
             stock_id=stock.id,
             facts=summary_facts,
+            knowledge_cutoff=dcf_evaluated_at,
         )
     except (
         CanonicalSourceConflictError,
@@ -1463,13 +1471,13 @@ def read_source_reconciliation(
             status_code=422,
             detail={"code": "reconciliation_filter_limit_exceeded"},
         )
-    cutoff = knowledge_cutoff or datetime.now(timezone.utc)
-    if cutoff.tzinfo is None:
+    if knowledge_cutoff is not None and knowledge_cutoff.tzinfo is None:
         raise HTTPException(
             status_code=422,
             detail={"code": "timezone_aware_knowledge_cutoff_required"},
         )
-    request_clock = datetime.now(timezone.utc)
+    request_clock = database_evaluation_cutoff(session)
+    cutoff = database_evaluation_cutoff(session, knowledge_cutoff or request_clock)
     if cutoff > request_clock:
         raise HTTPException(
             status_code=422,
@@ -1506,14 +1514,16 @@ def read_stock_facts(
 
     admin_user_ids: list[int] = []
 
+    evaluation_cutoff = database_evaluation_cutoff(session)
     # Get current facts
     stmt = select(MetricFact).where(
         MetricFact.stock_id == stock_id,
         MetricFact.is_current.is_(True),
+        MetricFact.created_at <= evaluation_cutoff,
+        MetricFact.updated_at <= evaluation_cutoff,
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
-    evaluation_cutoff = datetime.now(timezone.utc)
     facts, unsupported, method_decisions = apply_reviewed_method_gates(
         session,
         stock_id=stock_id,
@@ -1659,7 +1669,9 @@ def upsert_stock_fact(
     if payload.metric_key != USER_INTRINSIC_VALUE_KEY:
         raise HTTPException(status_code=400, detail="Unsupported metric_key")
 
-    save_clock = dcf_evaluation_clock()
+    save_clock = dcf_evaluation_clock(
+        evaluated_at=database_evaluation_cutoff(session)
+    )
     now_et = save_clock.evaluated_at.astimezone(ET)
     try:
         valuation_currency = payload.valuation_currency or "USD"

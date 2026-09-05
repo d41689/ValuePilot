@@ -714,7 +714,18 @@ def test_put_dcf_rejects_manifest_across_new_york_calendar_day(
         datetime(2026, 9, 10, 1, 30, tzinfo=timezone.utc),
         date(2026, 9, 9),
     )
-    monkeypatch.setattr(stocks_endpoint, "dcf_evaluation_clock", lambda: clock)
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: clock.evaluated_at,
+    )
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "dcf_evaluation_clock",
+        lambda *, evaluated_at: DcfEvaluationClock(
+            evaluated_at, clock.effective_as_of
+        ),
+    )
     assumption = _dcf_assumption(
         client, user=user, stock=stock, auth_headers=auth_headers
     )

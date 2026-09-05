@@ -3,13 +3,33 @@ from app.models.facts import MetricFact
 from datetime import date
 
 
-def test_screener_api_returns_metrics_payload(client, db_session, user_factory, auth_headers):
+def test_screener_api_returns_metrics_payload(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
     user = user_factory("screener_metrics@example.com")
 
     stock_ok = Stock(ticker="AOS", exchange="NYSE", company_name="SMITH (A.O.)", is_active=True)
     stock_fail = Stock(ticker="FAIL", exchange="NYSE", company_name="Fail Co", is_active=True)
     db_session.add_all([stock_ok, stock_fail])
     db_session.commit()
+
+    from app.services.screener_service import ScreenerService
+
+    original_evaluate = ScreenerService.evaluate_screen
+    original_fetch = ScreenerService.fetch_metrics_for_stocks
+    observed: dict[str, object] = {}
+
+    def capture_evaluate(self, *args, **kwargs):
+        evaluation = original_evaluate(self, *args, **kwargs)
+        observed["screen_cutoff"] = evaluation.evaluated_at
+        return evaluation
+
+    def capture_fetch(self, *args, **kwargs):
+        observed["hydration_cutoff"] = kwargs.get("knowledge_cutoff")
+        return original_fetch(self, *args, **kwargs)
+
+    monkeypatch.setattr(ScreenerService, "evaluate_screen", capture_evaluate)
+    monkeypatch.setattr(ScreenerService, "fetch_metrics_for_stocks", capture_fetch)
 
     # Passing stock metrics for screen conditions
     db_session.add_all(
@@ -238,6 +258,7 @@ def test_screener_api_returns_metrics_payload(client, db_session, user_factory, 
 
     assert resp.status_code == 200, resp.text
     data = resp.json()
+    assert observed["hydration_cutoff"] == observed["screen_cutoff"]
     result = next((row for row in data if row.get("id") == stock_ok.id), None)
     assert result is not None
     assert all(row.get("ticker") != "FAIL" for row in data)

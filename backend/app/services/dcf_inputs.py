@@ -99,8 +99,8 @@ class DcfFactUniverseError(ValueError):
         super().__init__(message)
 
 
-def dcf_evaluation_clock(evaluated_at: datetime | None = None) -> DcfEvaluationClock:
-    instant = _aware_utc(evaluated_at or datetime.now(timezone.utc))
+def dcf_evaluation_clock(evaluated_at: datetime) -> DcfEvaluationClock:
+    instant = _aware_utc(evaluated_at)
     return DcfEvaluationClock(
         evaluated_at=instant,
         effective_as_of=instant.astimezone(ET).date(),
@@ -158,6 +158,7 @@ def load_canonical_dcf_fact_universe(
             MetricFact.stock_id == stock_id,
             MetricFact.is_current.is_(True),
             MetricFact.created_at <= evaluated_at,
+            MetricFact.updated_at <= evaluated_at,
             visible_metric_fact_predicate(MetricFact, user_id=user_id),
             MetricFact.period_type == "FY",
             MetricFact.metric_key.in_(
@@ -206,7 +207,12 @@ def load_canonical_dcf_fact_universe(
         session=session,
         user_id=user_id,
     )
-    facts = guard_sec_run_availability(session, stock_id=stock_id, facts=facts)
+    facts = guard_sec_run_availability(
+        session,
+        stock_id=stock_id,
+        facts=facts,
+        knowledge_cutoff=evaluated_at,
+    )
     dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
     oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]
     return DcfFactUniverse(

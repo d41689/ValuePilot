@@ -67,18 +67,32 @@ def test_lookup_uses_one_et_effective_clock_for_all_method_gates(
     evaluated_at = datetime(2026, 9, 4, 1, 30, tzinfo=timezone.utc)
     effective_as_of = date(2026, 9, 3)
     calls = []
+    availability_cutoffs = []
     original_gate = dcf_inputs.reviewed_method_gate
+    original_availability_guard = stocks_endpoint.guard_sec_run_availability
 
     def capture_gate(session, **kwargs):
         calls.append(kwargs)
         return original_gate(session, **kwargs)
 
+    def capture_availability(session, **kwargs):
+        availability_cutoffs.append(kwargs.get("knowledge_cutoff"))
+        return original_availability_guard(session, **kwargs)
+
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: evaluated_at,
+    )
     monkeypatch.setattr(
         stocks_endpoint,
         "dcf_evaluation_clock",
-        lambda: DcfEvaluationClock(evaluated_at, effective_as_of),
+        lambda *, evaluated_at: DcfEvaluationClock(evaluated_at, effective_as_of),
     )
     monkeypatch.setattr(dcf_inputs, "reviewed_method_gate", capture_gate)
+    monkeypatch.setattr(
+        stocks_endpoint, "guard_sec_run_availability", capture_availability
+    )
 
     response = client.get(
         "/api/v1/stocks/by_ticker/CLOCK", headers=auth_headers(user)
@@ -88,6 +102,7 @@ def test_lookup_uses_one_et_effective_clock_for_all_method_gates(
     assert len(calls) == 4
     assert {call["effective_as_of"] for call in calls} == {effective_as_of}
     assert {call["knowledge_at"] for call in calls} == {evaluated_at}
+    assert availability_cutoffs == [evaluated_at]
     for gate in response.json()["system_method_gates"].values():
         assert gate["effective_as_of"] == "2026-09-03"
         assert gate["knowledge_at"] == "2026-09-04T01:30:00+00:00"
@@ -1925,11 +1940,17 @@ def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_c
         )
     )
     db_session.commit()
+    evaluated_at = datetime(2099, 9, 4, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: evaluated_at,
+    )
     monkeypatch.setattr(
         stocks_endpoint,
         "dcf_evaluation_clock",
-        lambda: DcfEvaluationClock(
-            datetime(2099, 9, 4, 12, tzinfo=timezone.utc),
+        lambda *, evaluated_at: DcfEvaluationClock(
+            evaluated_at,
             date(2099, 9, 4),
         ),
     )

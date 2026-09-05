@@ -26,6 +26,7 @@ from app.services.canonical_financials import (
     CanonicalUnavailableError,
     MethodGateDecision,
     apply_reviewed_method_gates,
+    database_evaluation_cutoff,
     guard_sec_run_availability,
     reviewed_method_gate,
     visible_metric_fact_predicate,
@@ -1196,6 +1197,7 @@ def _m3_facts_by_stock(
     collapsed by ordering.
     """
     unique_stock_ids = list(dict.fromkeys(stock_ids))
+    evaluation_cutoff = database_evaluation_cutoff(session, knowledge_at)
     if user_id is None or not unique_stock_ids or not metric_keys:
         return (
             {stock_id: {} for stock_id in unique_stock_ids},
@@ -1208,6 +1210,8 @@ def _m3_facts_by_stock(
         .filter(MetricFact.stock_id.in_(unique_stock_ids))
         .filter(MetricFact.metric_key.in_(metric_keys))
         .filter(MetricFact.is_current.is_(True))
+        .filter(MetricFact.created_at <= evaluation_cutoff)
+        .filter(MetricFact.updated_at <= evaluation_cutoff)
         .order_by(
             MetricFact.stock_id.asc(),
             MetricFact.metric_key.asc(),
@@ -1231,8 +1235,8 @@ def _m3_facts_by_stock(
             session,
             stock_id=stock_id,
             facts=all_facts,
-            effective_as_of=effective_as_of or date.today(),
-            knowledge_at=knowledge_at,
+            effective_as_of=effective_as_of or evaluation_cutoff.date(),
+            knowledge_at=evaluation_cutoff,
             precomputed_decisions=(method_decisions_by_stock or {}).get(stock_id),
         )
         if method_blocked:
@@ -1256,7 +1260,7 @@ def _m3_facts_by_stock(
                 selected = guard_reconciled_source_selection(
                     rows,
                     consumer="oracles_lens_quality",
-                    knowledge_cutoff=knowledge_at or datetime.now(timezone.utc),
+                    knowledge_cutoff=evaluation_cutoff,
                     session=session,
                     user_id=user_id,
                 )
@@ -1264,6 +1268,7 @@ def _m3_facts_by_stock(
                     session,
                     stock_id=stock_id,
                     facts=selected,
+                    knowledge_cutoff=evaluation_cutoff,
                 )
             except CanonicalReconciliationError as error:
                 status = statuses[stock_id]
@@ -1316,8 +1321,8 @@ def _quality_overlay_by_stock(
     if not unique_stock_ids:
         return {}
 
-    effective_as_of = price_as_of_date or date.today()
-    evaluated_at = datetime.now(timezone.utc)
+    evaluated_at = database_evaluation_cutoff(session)
+    effective_as_of = price_as_of_date or evaluated_at.date()
     gate_decisions = {
         stock_id: {
             method_key: reviewed_method_gate(

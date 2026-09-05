@@ -39,6 +39,21 @@ HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE = (
 )
 
 
+def database_evaluation_cutoff(
+    session: Session, supplied: datetime | None = None
+) -> datetime:
+    """Return one aware PIT boundary from PostgreSQL unless one was supplied."""
+
+    if supplied is not None:
+        if supplied.tzinfo is None:
+            raise ValueError("knowledge cutoff must be timezone-aware")
+        return supplied.astimezone(timezone.utc)
+    cutoff = session.scalar(select(func.clock_timestamp()))
+    if cutoff is None or cutoff.tzinfo is None:
+        raise RuntimeError("database clock did not return an aware timestamp")
+    return cutoff.astimezone(timezone.utc)
+
+
 class CanonicalSourceConflictError(ValueError):
     code = "source_conflict"
 
@@ -241,9 +256,7 @@ def reviewed_method_gate(
 
     if method_key not in SYSTEM_METHOD_KEYS:
         raise ValueError("unsupported method_key")
-    cutoff = knowledge_at or datetime.now(timezone.utc)
-    if cutoff.tzinfo is None:
-        raise ValueError("knowledge_at must be timezone-aware")
+    cutoff = database_evaluation_cutoff(session, knowledge_at)
     policy = session.execute(
         text(
             """
@@ -911,9 +924,7 @@ def guard_piotroski_method_authority(
 ) -> tuple[list[MetricFact], list[dict[str, Any]]]:
     """Rebuild strict Piotroski manifests and quarantine unverifiable periods."""
 
-    cutoff = knowledge_at or datetime.now(timezone.utc)
-    if cutoff.tzinfo is None:
-        raise ValueError("knowledge_at must be timezone-aware")
+    cutoff = database_evaluation_cutoff(session, knowledge_at)
     materialized = list(facts)
     piotroski = [
         fact for fact in materialized if fact.metric_key.startswith(PIOTROSKI_PREFIX)

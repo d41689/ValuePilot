@@ -446,3 +446,31 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   from-scratch rerun is `771 passed` with only the pre-existing Starlette/httpx
   and anyio deprecation warnings. No migration, retained data, or storage
   changed.
+- 2026-09-04: Strict Terra R12 found that the screener rule boundary accepted
+  unsupported grammar and applied its resource limits only after authority
+  queries. Rules are now normalized entirely in memory before the first SQL:
+  only a non-empty `AND` of bounded, well-formed numeric conditions and known
+  operators is accepted. `OR`, unknown rule/operator forms, booleans,
+  non-finite/non-numeric values, malformed conditions, and excessive
+  complexity return a stable typed 422. Candidate and bind budgets are derived
+  from the normalized condition set before source, SEC, or method guards run;
+  empty authority remains fail-closed.
+- 2026-09-04: R12 also exposed a real point-in-time clock split: application
+  time could precede PostgreSQL trigger/default timestamps by roughly 0.1 ms,
+  so a just-committed valid fact could appear to be from the future during a
+  long shared-suite run. Governed entry points now capture one database-owned
+  `clock_timestamp()` cutoff per operation, after pure in-memory request
+  validation, and pass that exact instant through fact selection, source
+  reconciliation, SEC availability, applicability, calculation, screener SQL,
+  and screener hydration. Explicit caller-supplied historical cutoffs remain
+  authoritative and incur no replacement clock query. No epsilon or look-ahead
+  tolerance was introduced.
+- 2026-09-04: R12 tests-first covers invalid grammar and API errors, zero-SQL
+  rejection, empty-authority and maximum-bound behavior, exact cutoff identity,
+  later SEC amendment/retirement state, and a deterministic database-ahead-of-
+  application-clock regression. Focused verification is `146 passed`; the
+  governed consumer compatibility set is `204 passed`. The final from-scratch
+  serial 30-file R5-R12 affected superset (including both 13F panel and product
+  holdings source-guard suites) is `799 passed` in 584.64 seconds. Only the
+  pre-existing Starlette/httpx and anyio deprecation warnings remain. No
+  migration, retained data, storage, or external source was changed.

@@ -1,6 +1,5 @@
 import ast
 import operator
-from datetime import date, datetime, timezone
 from decimal import Decimal, localcontext
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -8,6 +7,7 @@ from sqlalchemy import select
 from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
+    database_evaluation_cutoff,
     guard_sec_run_availability,
     is_reserved_system_output_key,
     require_applicable_method_facts,
@@ -139,15 +139,17 @@ class FormulaEngine:
         # TODO: Handle period matching (e.g. Sales 2023 vs EPS 2023)
         # For now, we take the `is_current=True` fact.
         
+        evaluated_at = database_evaluation_cutoff(self.db)
         facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key.in_(formula.dependencies_json),
                 MetricFact.is_current.is_(True),
+                MetricFact.created_at <= evaluated_at,
+                MetricFact.updated_at <= evaluated_at,
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()
-        evaluated_at = datetime.now(timezone.utc)
         facts = guard_reconciled_source_selection(
             facts,
             consumer="formula",
@@ -156,12 +158,17 @@ class FormulaEngine:
             session=self.db,
             user_id=user_id,
         )
-        facts = guard_sec_run_availability(self.db, stock_id=stock_id, facts=facts)
+        facts = guard_sec_run_availability(
+            self.db,
+            stock_id=stock_id,
+            facts=facts,
+            knowledge_cutoff=evaluated_at,
+        )
         facts = require_applicable_method_facts(
             self.db,
             stock_id=stock_id,
             facts=facts,
-            effective_as_of=date.today(),
+            effective_as_of=evaluated_at.date(),
             knowledge_at=evaluated_at,
         )
         facts_by_metric = {

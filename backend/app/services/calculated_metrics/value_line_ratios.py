@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from typing import Any, Iterable, Optional
 
@@ -9,7 +9,11 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
-from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
+from app.services.canonical_financials import (
+    database_evaluation_cutoff,
+    guard_sec_run_availability,
+    guard_source_selection,
+)
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.source_reconciliation import guard_reconciled_source_selection
 
@@ -116,10 +120,13 @@ class ValueLineRatioCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
+        knowledge_cutoff = database_evaluation_cutoff(self.db)
         source_facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.is_current.is_(True),
+                MetricFact.created_at <= knowledge_cutoff,
+                MetricFact.updated_at <= knowledge_cutoff,
                 MetricFact.metric_key.in_(RATIO_INPUT_KEYS),
                 or_(
                     and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
@@ -130,13 +137,16 @@ class ValueLineRatioCalculator:
         source_facts = guard_reconciled_source_selection(
             source_facts,
             consumer="ratio",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            knowledge_cutoff=knowledge_cutoff,
             session=self.db,
             user_id=user_id,
             selected_source_type="parsed",
         )
         source_facts = guard_sec_run_availability(
-            self.db, stock_id=stock_id, facts=source_facts
+            self.db,
+            stock_id=stock_id,
+            facts=source_facts,
+            knowledge_cutoff=knowledge_cutoff,
         )
         derived = build_value_line_ratio_facts(source_facts)
         return [
