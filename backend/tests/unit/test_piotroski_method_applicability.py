@@ -25,6 +25,7 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
 )
 from app.services.formula_engine import FormulaEngine
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.method_applicability import (
     RISK_ATTRIBUTES,
     review_company_classification,
@@ -357,12 +358,12 @@ def test_generation_persists_exact_roic_authority_on_proxy_components_and_total(
         ).value_json["inputs"]
     }
     assert total_inputs == {fact.id for fact in source_facts}
+    post_publication_snapshot = database_evaluation_snapshot(db_session)
     kept, blocked = guard_piotroski_method_authority(
         db_session,
         facts=affected,
         effective_as_of=date.today(),
-        knowledge_at=max(fact.created_at for fact in affected)
-        + timedelta(seconds=1),
+        evaluation_snapshot=post_publication_snapshot,
     )
     assert kept == affected
     assert blocked == []
@@ -582,12 +583,13 @@ def test_retained_total_capital_proxy_requires_exact_origin_authority(
         db_session, original=original, replacement=fact
     )
 
+    post_publication_snapshot = database_evaluation_snapshot(db_session)
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,
         stock_id=stock.id,
         facts=[fact],
         effective_as_of=date.today(),
-        knowledge_at=fact.created_at + timedelta(seconds=1),
+        evaluation_snapshot=post_publication_snapshot,
     )
 
     assert kept == []
@@ -764,12 +766,13 @@ def test_retained_proxy_requires_current_roic_gate_to_remain_approved(
         and item.period_end_date == PERIOD_1
     )
 
+    post_publication_snapshot = database_evaluation_snapshot(db_session)
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,
         stock_id=stock.id,
         facts=[fact],
         effective_as_of=date.today(),
-        knowledge_at=fact.created_at + timedelta(seconds=1),
+        evaluation_snapshot=post_publication_snapshot,
     )
     assert kept == [fact]
     assert blocked == []
@@ -788,12 +791,13 @@ def test_retained_proxy_requires_current_roic_gate_to_remain_approved(
     )
     db_session.commit()
 
+    post_reclassification_snapshot = database_evaluation_snapshot(db_session)
     kept, blocked, _ = apply_reviewed_method_gates(
         db_session,
         stock_id=stock.id,
         facts=[fact],
         effective_as_of=date.today(),
-        knowledge_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+        evaluation_snapshot=post_reclassification_snapshot,
     )
     assert kept == []
     assert blocked[0]["reason_code"] == "roic_unsupported_for_bank"
@@ -843,7 +847,7 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
     )
     db_session.add_all([research_case, formula])
     db_session.commit()
-    evaluated_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+    evaluated_at = database_evaluation_snapshot(db_session).cutoff
 
     card = _build_piotroski_f_score_card(
         db_session,

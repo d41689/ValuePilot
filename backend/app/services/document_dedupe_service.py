@@ -16,6 +16,7 @@ from app.services.calculated_metrics.piotroski_f_score import (
     PiotroskiFScoreCalculator,
 )
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
+from app.services.privacy_erasure import lock_user_privacy_write
 
 
 VALUE_LINE_RATIO_KEYS = {
@@ -129,6 +130,8 @@ class DocumentDedupeService:
             return summary
 
         try:
+            for affected_user_id in sorted({group.user_id for group in groups}):
+                lock_user_privacy_write(self.db, user_id=affected_user_id)
             deleted_document_ids = [
                 document.id
                 for group in groups
@@ -199,6 +202,7 @@ class DocumentDedupeService:
         user_id: int,
         document_id: int,
     ) -> Optional[dict[str, Any]]:
+        lock_user_privacy_write(self.db, user_id=user_id)
         document = self.db.scalar(
             select(PdfDocument).where(
                 PdfDocument.id == document_id,

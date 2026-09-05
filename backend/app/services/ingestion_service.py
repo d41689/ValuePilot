@@ -44,6 +44,7 @@ from app.services.value_line_report_identity import (
 from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
+from app.services.privacy_erasure import lock_user_privacy_write
 
 
 LOGGER = logging.getLogger(__name__)
@@ -131,6 +132,8 @@ class IngestionService:
         5. Parse pages independently (multi-page supported).
         6. Run Normalization & Fact Creation per page-resolved stock.
         """
+        lock_user_privacy_write(self.db, user_id=user_id)
+
         # 1. Save file
         file_ext = Path(file.filename).suffix if file.filename else ".pdf"
         unique_filename = f"{uuid.uuid4()}{file_ext}"
@@ -468,6 +471,7 @@ class IngestionService:
         currentness changes back together, leaving the prior current facts
         untouched.
         """
+        lock_user_privacy_write(self.db, user_id=user_id)
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
             raise ValueError("Document not found for user")

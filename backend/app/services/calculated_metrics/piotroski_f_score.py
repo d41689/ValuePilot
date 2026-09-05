@@ -18,6 +18,7 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
 )
 from app.services.numeric_persistence import persist_numeric_38_12
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
@@ -192,6 +193,7 @@ class PiotroskiFScoreCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
+        lock_user_privacy_write(self.db, user_id=user_id)
         evaluation_snapshot = database_evaluation_snapshot(self.db)
         knowledge_cutoff = evaluation_snapshot.cutoff
         source_facts = self.db.scalars(

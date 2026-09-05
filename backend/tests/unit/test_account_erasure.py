@@ -8,7 +8,7 @@ from app.models.auth_tokens import RefreshToken
 from app.models.facts import MetricFact
 from app.models.notifications import NotificationDestination
 from app.models.portfolios import PositionJournalEvent
-from app.models.research import ResearchCase, ResearchCaseRevision
+from app.models.research import ResearchCase, ResearchCaseEvent, ResearchCaseRevision
 from app.models.stocks import Stock
 from app.models.users import AccountErasureEvent
 from app.schemas.portfolios import ManualPortfolioCreate, ManualPositionCreate
@@ -22,6 +22,8 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
         "erase-me@example.com",
         password="ErasePass123!",
     )
+    admin = user_factory("erase-admin@example.com", role="admin")
+    old_access_headers = auth_headers(user)
     stock = Stock(ticker="ERASE", exchange="NYSE", company_name="Erase Corp")
     db_session.add(stock)
     db_session.flush()
@@ -59,6 +61,15 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
         created_by_user_id=user.id,
     )
     db_session.add(revision)
+    voided_case = ResearchCase(
+        user_id=user.id,
+        stock_id=stock.id,
+        state="voided",
+        void_reason="Private reason for abandoning this cycle",
+        head_revision_number=0,
+        closed_at=datetime.now(timezone.utc),
+    )
+    db_session.add(voided_case)
     portfolio = create_portfolio(
         db_session,
         user_id=user.id,
@@ -101,7 +112,7 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
 
     response = client.post(
         "/api/v1/users/me/erase",
-        headers=auth_headers(user),
+        headers=old_access_headers,
         json={
             "password": "ErasePass123!",
             "confirmation": "ERASE MY ACCOUNT",
@@ -113,6 +124,7 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
     assert payload["status"] == "erased"
     db_session.refresh(user)
     db_session.refresh(revision)
+    db_session.refresh(voided_case)
     db_session.refresh(position)
     db_session.refresh(destination)
     db_session.refresh(token)
@@ -121,6 +133,14 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
     assert revision.is_redacted is True
     assert revision.thesis == "[redacted]"
     assert revision.assumptions_json == []
+    assert revision.redaction_reason == "[redacted]"
+    assert revision.redaction_reason_content_hash == hashlib.sha256(
+        b"account_erasure"
+    ).hexdigest()
+    assert voided_case.void_reason == "[redacted]"
+    assert voided_case.void_reason_content_hash == hashlib.sha256(
+        b"Private reason for abandoning this cycle"
+    ).hexdigest()
     assert position.state == "closed"
     assert position.quantity == 0
     assert position.average_unit_cost is None
@@ -134,7 +154,22 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
     assert token.revoked_reason == "account_erasure"
     audit = db_session.query(AccountErasureEvent).filter_by(user_id=user.id).one()
     assert audit.content_hash
-    assert client.get("/api/v1/research/cases", headers=auth_headers(user)).status_code == 403
+    assert audit.privacy_erasure_operation_id
+    assert audit.created_txid
+    assert {
+        event.payload_json.get("reason")
+        for event in db_session.query(ResearchCaseEvent)
+        .filter_by(event_type="revision_redacted")
+        .all()
+    } == {"[redacted]"}
+    assert client.get(
+        "/api/v1/research/cases", headers=old_access_headers
+    ).status_code == 403
+    assert client.patch(
+        f"/api/v1/admin/users/{user.id}",
+        headers=auth_headers(admin),
+        json={"is_active": True},
+    ).status_code == 409
 
 
 def test_account_erasure_requires_password_and_exact_confirmation(

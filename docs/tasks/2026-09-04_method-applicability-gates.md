@@ -1032,3 +1032,68 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   `233 passed`; frontend lint; production frontend build; and
   `git diff --check`. Only the pre-existing Starlette/httpx and anyio
   deprecation warnings remain in backend pytest.
+- 2026-09-05: Terra R26's permanent-erasure race is confirmed as a real
+  compatibility regression at the privacy/freeze boundary introduced on this
+  branch. Forward-only revision `20260904340000` leaves every applied revision
+  through 330 unchanged. Account erasure now takes the exclusive form of one
+  schema-namespaced per-user transaction lock, creates an immutable barrier,
+  and disables the user before scanning child rows. Participating application
+  writers take the shared form as their first lock; database triggers reject
+  later manual/derived/calculated facts and research case/origin/revision/event
+  mutations. A writer that locked first completes before the erasure scan; a
+  later writer sees the permanent barrier. Different users do not share a
+  table-level or advisory lock.
+- 2026-09-05: The R26 barrier coverage is deliberately narrow and does not
+  claim FT-02/#137 completion. The closed matrix is: manual, derived and
+  calculated `metric_facts` (service first lock plus DB trigger); research
+  cases, origins, revisions and events (research service first lock plus DB
+  trigger); Value Line upload/reparse and document dedupe paths that can emit
+  governed facts, document traversal snapshots, user formulas, calculated
+  ratios/Piotroski and published user valuations (service first lock); DCF
+  publication now takes the user lock before its stock/fact lock; admin user
+  mutation uses the service first lock plus permanent user-row trigger; and the
+  final account-erasure event requires the exact
+  target/kind/current-transaction operation plus barrier, with DB-stamped time
+  and transaction identity. `account_erasure_events` finalizes that operation,
+  so no further privileged tombstone mutation is authorized in the same
+  transaction.
+- 2026-09-05: R26 also removes the three confirmed plaintext remnants in this
+  slice: `research_cases.void_reason`, an already-redacted revision's
+  `redaction_reason`, and an existing `revision_redacted` event's
+  `payload_json.reason`. Each legal account-erasure transition stores the
+  `[redacted]` sentinel and a one-way SHA-256 content hash; the corresponding
+  narrow trigger permits that transition only in the exact active erasure
+  operation and makes the tombstone immutable. Existing revision content and
+  manual-fact `reason`/`note` erasure remain intact. The broader user-owned
+  field and writer inventory is explicitly deferred to FT-02/#137.
+- 2026-09-05: R26 regressions cover second-transaction late writes across all
+  protected fact/research tables, user reactivation and an old JWT, exact
+  event authority, same-user ordering, and different-user parallel erasure.
+  The applicability test no longer fabricates a cutoff from
+  `fact.created_at + 1 second`; it captures the real database
+  `EvaluationSnapshot` after publication/reclassification. The isolated
+  migration/account suite is `9 passed`; the migration-only suite, including
+  the expanded direct-DML matrix, is `6 passed`; and the affected
+  research/document/fact suite is `173 passed`. Final canonical gates are
+  recorded below after completion.
+- 2026-09-05: The first exact R26 backend run completed with `2713 passed, 3
+  failed`. All three failures were independently reproduced as obsolete test
+  setup: two mocks/old-revision tests did not provide or own revision 340's new
+  lock function, and the generic reversible migration fixture directly forged
+  an account-erasure event that the new contract must reject. The fixes declare
+  the mock result, isolate the revision-180 test from later application
+  behavior, and remove the forged permanent event from the reversible fixture;
+  a dedicated R26 regression instead proves authorized insertion and downgrade
+  refusal. The focused retry is `9 passed`.
+- 2026-09-05: A second exact backend run cannot be recorded as a valid gate:
+  it reached roughly 50 percent green and then returned `2465 passed, 251
+  failed` after the host/API/PostgreSQL wall clock moved behind the test
+  schema's currentness-authority marker. The first traceback is the intended
+  `HistoricalCurrentnessUnverifiableError` for
+  `knowledge_cutoff < authority_started_at`; adjacent PIT/currentness tests
+  fail closed in the same way. The clocks were read-only checked and were
+  mutually aligned again after the run. Production PIT authority was not
+  weakened. A stable-clock GitHub CI backend run remains required before this
+  remediation is green. The other exact gates pass: container rebuild,
+  migration at the sole revision-340 head, `233` frontend unit tests, frontend
+  lint, production frontend build, and `git diff --check`.

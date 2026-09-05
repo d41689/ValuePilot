@@ -17,6 +17,7 @@ from app.services.metric_fact_currentness import (
     CurrentnessScopeError,
     HistoricalCurrentnessUnverifiableError,
 )
+from app.services.privacy_erasure import PrivacyErasureBarrierError
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,23 @@ async def historical_currentness_unverifiable_handler(
     return JSONResponse(
         status_code=409,
         content={"detail": {"code": error.code, "message": str(error)}},
+    )
+
+
+@app.exception_handler(PrivacyErasureBarrierError)
+async def privacy_erasure_barrier_error_handler(
+    _request: Request, error: PrivacyErasureBarrierError
+) -> JSONResponse:
+    """A stale authenticated request fails closed after permanent erasure."""
+
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": {
+                "code": "account_permanently_erased",
+                "message": str(error),
+            }
+        },
     )
 
 origins = [

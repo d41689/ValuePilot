@@ -6,6 +6,10 @@ from sqlalchemy.exc import DBAPIError
 
 from app.api.deps import SessionDep, AdminUser
 from app.models.users import User
+from app.services.privacy_erasure import (
+    PrivacyErasureBarrierError,
+    lock_user_privacy_write,
+)
 from app.schemas.users import UserRead, UserUpdate
 from app.schemas.method_applicability import (
     ClassificationReviewCreate,
@@ -154,6 +158,13 @@ def patch_user(
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    try:
+        lock_user_privacy_write(session, user_id=user.id)
+    except PrivacyErasureBarrierError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Permanently erased accounts cannot be modified or reactivated.",
+        ) from error
 
     changed = False
     if payload.role is not None and payload.role != user.role:
@@ -186,6 +197,14 @@ def disable_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if user.id == current_user.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot disable current admin user")
+
+    try:
+        lock_user_privacy_write(session, user_id=user.id)
+    except PrivacyErasureBarrierError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Permanently erased accounts cannot be modified.",
+        ) from error
 
     user.is_active = False
     session.add(user)

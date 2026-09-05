@@ -15,6 +15,10 @@ _CAPABILITY_DOMAIN = b"valuepilot:privacy-erasure-db-capability:v1"
 PRIVACY_ERASURE_KINDS = frozenset({"account_erasure", "revision_redaction"})
 
 
+class PrivacyErasureBarrierError(ValueError):
+    """The target user's permanent erasure barrier rejects new private work."""
+
+
 def privacy_erasure_db_capability() -> str:
     """Derive a DB-only capability without sending the JWT signing key itself."""
 
@@ -46,3 +50,17 @@ def begin_privacy_erasure_operation(
             },
         )
     )
+
+
+def lock_user_privacy_write(session: Session, *, user_id: int) -> None:
+    """Take the canonical first lock for a user-owned write.
+
+    Database triggers remain the final boundary. Calling this before any child
+    stock/case/fact lock also prevents lock-order inversion with account erase.
+    """
+
+    allowed = session.scalar(
+        text("SELECT lock_user_privacy_write(:user_id)"), {"user_id": user_id}
+    )
+    if allowed is not True:
+        raise PrivacyErasureBarrierError("Account is permanently erased.")

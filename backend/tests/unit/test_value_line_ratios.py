@@ -123,6 +123,7 @@ def test_value_line_ratio_calculator_explicitly_selects_parsed_source():
         cutoff=datetime(2026, 9, 5, tzinfo=timezone.utc),
         visibility_snapshot="1:1:",
     )
+    db.scalar.return_value = True
     db.scalars.return_value.all.return_value = []
 
     with patch(

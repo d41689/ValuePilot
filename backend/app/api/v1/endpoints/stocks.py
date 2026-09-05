@@ -72,6 +72,7 @@ from app.services.dcf_inputs import (
     load_canonical_dcf_fact_universe,
 )
 from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.services.market_data_service import (
     MarketDataService,
     read_current_eod_price,
@@ -1845,6 +1846,8 @@ def upsert_stock_fact(
 ) -> Any:
     user_id = current_user.id
 
+    # Canonical user lock must precede the DCF stock/fact child lock.
+    lock_user_privacy_write(session, user_id=user_id)
     if payload.source == "dcf":
         acquire_metric_fact_stock_lock(session, stock_id=stock_id)
     stock = session.get(Stock, stock_id)

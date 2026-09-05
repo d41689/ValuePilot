@@ -21,6 +21,7 @@ from app.models.artifacts import (
     DocumentListSnapshotMember,
     PdfDocument,
 )
+from app.services.privacy_erasure import lock_user_privacy_write
 
 
 CURSOR_VERSION = 2
@@ -107,6 +108,7 @@ def create_document_snapshot(
 ) -> DocumentSnapshot:
     """Capture exact membership and immutable sort keys in one SQL statement."""
 
+    lock_user_privacy_write(session, user_id=user_id)
     # Serialize capacity/reuse decisions for this tenant in PostgreSQL.  The
     # key namespace is stable and deliberately distinct from other advisory
     # lock users in the application.
@@ -235,6 +237,7 @@ def load_document_snapshot(
     *,
     cursor: DocumentCursor,
 ) -> DocumentSnapshot:
+    lock_user_privacy_write(session, user_id=cursor.user_id)
     row = session.scalar(
         select(DocumentListSnapshot).where(
             DocumentListSnapshot.id == cursor.snapshot_id,

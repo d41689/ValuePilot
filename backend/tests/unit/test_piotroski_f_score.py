@@ -401,6 +401,7 @@ def test_piotroski_calculator_explicitly_selects_parsed_source():
     db.execute.return_value.one.return_value = SimpleNamespace(
         cutoff=now, visibility_snapshot="1:1:"
     )
+    db.scalar.return_value = True
     db.scalars.return_value.all.return_value = []
 
     with patch(

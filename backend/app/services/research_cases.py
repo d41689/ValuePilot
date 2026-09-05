@@ -34,7 +34,10 @@ from app.services.valuation import (
     quantize_valuation_value,
     redact_published_unavailable_reason,
 )
-from app.services.privacy_erasure import begin_privacy_erasure_operation
+from app.services.privacy_erasure import (
+    begin_privacy_erasure_operation,
+    lock_user_privacy_write,
+)
 from app.services.screener_service import ScreenerService
 
 
@@ -63,6 +66,7 @@ def _owned_case(
     case_id: int,
     for_update: bool = False,
 ) -> ResearchCase:
+    lock_user_privacy_write(session, user_id=user_id)
     query = session.query(ResearchCase).filter(
         ResearchCase.id == case_id,
         ResearchCase.user_id == user_id,
@@ -219,6 +223,7 @@ def create_or_open_case(
     origin: ResearchOriginInput,
     commit: bool = True,
 ) -> tuple[ResearchCase, bool, bool]:
+    lock_user_privacy_write(session, user_id=user_id)
     stock = session.get(Stock, stock_id)
     if stock is None:
         raise ResearchCaseError("stock_not_found", "Stock not found.", status_code=404)
@@ -359,6 +364,7 @@ def save_revision(
     commit: bool = True,
     valuation_origin: str = "manual",
 ) -> tuple[ResearchCase, ResearchCaseRevision]:
+    lock_user_privacy_write(session, user_id=user_id)
     case_stock_id = session.scalar(
         select(ResearchCase.stock_id).where(
             ResearchCase.id == case_id,
@@ -595,6 +601,7 @@ def save_product_valuation_revision(
     valuation_currency: str,
 ) -> tuple[ResearchCase, ResearchCaseRevision, MetricFact]:
     """Atomically save a UI valuation as revision, projection, and fact."""
+    lock_user_privacy_write(session, user_id=user_id)
     if valuation_currency != "USD":
         raise ResearchCaseError(
             "valuation_currency_not_supported",
@@ -715,6 +722,7 @@ def redact_revision(
     revision_number: int,
     reason: str,
 ) -> ResearchCaseRevision:
+    lock_user_privacy_write(session, user_id=user_id)
     case = _owned_case(session, user_id=user_id, case_id=case_id, for_update=True)
     revision = (
         session.query(ResearchCaseRevision)

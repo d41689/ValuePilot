@@ -8,6 +8,7 @@ from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.numeric_persistence import persist_numeric_38_12
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.services.canonical_financials import (
     evaluation_business_date,
     guard_sec_run_availability,
@@ -129,6 +130,7 @@ class FormulaEngine:
         3. Evaluate
         4. Save CalculatedRun & MetricFact
         """
+        lock_user_privacy_write(self.db, user_id=user_id)
         formula = self.db.get(Formula, formula_id)
         if not formula or formula.user_id != user_id:
             raise ValueError("Formula not found")

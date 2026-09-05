@@ -18,6 +18,7 @@ from app.services.metric_fact_currentness import (
     current_metric_fact_ids_at,
 )
 from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
+from app.services.privacy_erasure import lock_user_privacy_write
 
 
 MAX_MANUAL_CORRECTION_ANCESTRY = 32
@@ -39,6 +40,8 @@ def create_manual_metric_correction(
     note: Optional[str] = None,
 ) -> MetricFact:
     """Append a correction and demote only the prior manual fact in its slot."""
+
+    lock_user_privacy_write(session, user_id=user_id)
 
     if source_fact.user_id != user_id:
         raise ManualMetricCorrectionError(

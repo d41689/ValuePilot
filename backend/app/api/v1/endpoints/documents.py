@@ -74,6 +74,7 @@ from app.services.manual_metric_correction import (
     ManualMetricCorrectionError,
     create_manual_metric_correction,
 )
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.models.artifacts import PdfDocument
 
 router = APIRouter()
@@ -592,6 +593,8 @@ def upload_document(
         )
 
     user_id = current_user.id
+    # This must precede the rate-limit event and every document/fact child write.
+    lock_user_privacy_write(session, user_id=user_id)
     try:
         consume_user_operation(
             session,

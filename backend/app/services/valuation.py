@@ -18,6 +18,7 @@ from app.services.metric_fact_currentness import (
 )
 from app.models.research import ResearchCaseRevision
 from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.privacy_erasure import lock_user_privacy_write
 
 
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
@@ -418,6 +419,7 @@ def publish_user_intrinsic_value(
     source_ref_id: int | None = None,
     valuation_origin: str | None = None,
 ) -> MetricFact:
+    lock_user_privacy_write(session, user_id=user_id)
     persisted_value = (
         quantize_valuation_value(value_numeric) if value_numeric is not None else None
     )

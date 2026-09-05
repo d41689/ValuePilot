@@ -38,17 +38,10 @@ def erase_account(
 ) -> dict[str, int | str]:
     if not verify_password(password, user.hashed_password):
         raise AccountErasureError("Password verification failed.")
-    session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"account-erasure:{user.id}"},
-    )
-    if session.query(AccountErasureEvent).filter_by(user_id=user.id).first():
-        raise AccountErasureError("Account erasure was already completed.")
-
-    # The database records the exact target user and transaction after checking
-    # a capability derived from the application secret. A caller with only the
-    # database credential cannot manufacture this authority with SET or DML.
-    begin_privacy_erasure_operation(
+    # This is the first lock. The database takes the exclusive form of the
+    # canonical per-user advisory lock, creates the permanent barrier, and
+    # disables the account before any child table is scanned.
+    privacy_operation_id = begin_privacy_erasure_operation(
         session,
         user_id=user.id,
         operation_kind="account_erasure",
@@ -59,6 +52,34 @@ def erase_account(
 
     cases = session.query(ResearchCase).filter_by(user_id=user.id).all()
     case_ids = [case.id for case in cases]
+    for case in cases:
+        if case.void_reason and case.void_reason != "[redacted]":
+            digest.update(case.void_reason.encode("utf-8"))
+            case.void_reason_content_hash = hashlib.sha256(
+                case.void_reason.encode("utf-8")
+            ).hexdigest()
+            case.void_reason = "[redacted]"
+
+    redaction_events = (
+        session.query(ResearchCaseEvent)
+        .filter(
+            ResearchCaseEvent.case_id.in_(case_ids or [-1]),
+            ResearchCaseEvent.event_type == "revision_redacted",
+        )
+        .order_by(ResearchCaseEvent.id)
+        .all()
+    )
+    for event in redaction_events:
+        payload = dict(event.payload_json or {})
+        reason = payload.get("reason")
+        if isinstance(reason, str) and reason and reason != "[redacted]":
+            digest.update(reason.encode("utf-8"))
+            payload["reason"] = "[redacted]"
+            payload["redaction_reason_content_hash"] = hashlib.sha256(
+                reason.encode("utf-8")
+            ).hexdigest()
+            event.payload_json = payload
+
     revisions = (
         session.query(ResearchCaseRevision)
         .filter(ResearchCaseRevision.case_id.in_(case_ids or [-1]))
@@ -80,6 +101,13 @@ def erase_account(
             json.dumps(authored, sort_keys=True, default=str).encode("utf-8")
         )
         if revision.is_redacted:
+            reason = revision.redaction_reason
+            if isinstance(reason, str) and reason and reason != "[redacted]":
+                digest.update(reason.encode("utf-8"))
+                revision.redaction_reason_content_hash = hashlib.sha256(
+                    reason.encode("utf-8")
+                ).hexdigest()
+                revision.redaction_reason = "[redacted]"
             continue
         content_hash = hashlib.sha256(
             json.dumps(authored, sort_keys=True, default=str).encode("utf-8")
@@ -95,7 +123,10 @@ def erase_account(
         )
         revision.is_redacted = True
         revision.redaction_content_hash = content_hash
-        revision.redaction_reason = "account_erasure"
+        revision.redaction_reason = "[redacted]"
+        revision.redaction_reason_content_hash = hashlib.sha256(
+            b"account_erasure"
+        ).hexdigest()
         revision.redacted_by_user_id = user.id
         revision.redacted_at = now
         session.add(
@@ -108,7 +139,10 @@ def erase_account(
                     "revision_id": revision.id,
                     "revision_number": revision.revision_number,
                     "content_hash": content_hash,
-                    "reason": "account_erasure",
+                    "reason": "[redacted]",
+                    "redaction_reason_content_hash": hashlib.sha256(
+                        b"account_erasure"
+                    ).hexdigest(),
                 },
             )
         )
@@ -294,8 +328,12 @@ def erase_account(
             manual_rationale_integrity_anomalies
         ),
     }
+    # Finalize every authorized tombstone and the disabled user row before the
+    # append-only audit event closes this transaction's erasure capability.
+    session.flush()
     audit = AccountErasureEvent(
         user_id=user.id,
+        privacy_erasure_operation_id=privacy_operation_id,
         content_hash=digest.hexdigest(),
         summary_json=summary,
     )
