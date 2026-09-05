@@ -978,3 +978,57 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   container rebuild; upgrade to the sole revision-320 head; backend
   `2707 passed`; frontend `233 passed`; frontend lint; and the production
   frontend build. `git diff --check` is recorded at the final commit gate.
+- 2026-09-05: Terra R25 found that the R24 transaction-local GUC was a
+  caller-controlled privacy bypass, that FT-07's valuation guard blocked the
+  legitimate account-erasure transition, and that the actual-conflict reader
+  did not carry its captured candidate universe into every later statement.
+  Forward-only revision `20260904330000` leaves all applied revisions through
+  320 untouched. It records one database-stamped privacy operation per
+  transaction, bound to one target user and one purpose. The live FT-07,
+  governed-fact, pre-hash, anomaly and append-only guards authorize from that
+  row; none reads `valuepilot.account_erasure`. Numeric and unavailable manual
+  `val.fair_value` rows may tombstone only plaintext `reason` and `note`, each
+  with its one-way hash. Numeric/text values, raw observation, valuation origin,
+  source linkage, slot identity and all remaining JSON stay byte-for-byte
+  unchanged; recovery, hash replacement and other fact mutations are rejected.
+- 2026-09-05: The database authorization boundary reflects today's deployment
+  topology rather than claiming a role split that does not exist. Local/shared
+  infrastructure supplies one non-superuser `valuepilot` role which is both
+  migration/table owner and runtime role and cannot create roles. The
+  application therefore proves possession of an HMAC capability derived from
+  `SECRET_KEY`; PostgreSQL retains only its SHA-256 verifier, then creates the
+  target/kind/current-transaction operation under a locked, guarded
+  `SECURITY DEFINER` function. A session with only the database credential
+  cannot authorize via `SET`, direct operation-row DML or a direct function
+  call without that application capability, and an authorized transaction
+  cannot retarget another tenant or purpose. A principal with the shared DB
+  owner's DDL authority can replace functions or disable triggers and is
+  explicitly outside this repository-enforceable boundary. Defending against
+  that principal requires infrastructure administrators to provision separate
+  owner/migrator and runtime login roles, change deployment database URLs, and
+  grant the runtime only normal application DML plus EXECUTE on the erasure
+  function; no external infra or production secret was changed in this PR.
+  `SECRET_KEY` rotation must coordinate a forward verifier rotation before the
+  application cutover, or privacy erasure will fail closed.
+- 2026-09-05: Actual-conflict identity, unverifiable-authority, source-document,
+  availability and observation queries now all share the exact
+  `MetricFact.id IN (captured fact_ids)` predicate. The empty candidate set
+  returns immediately. A real two-connection READ COMMITTED regression proves
+  a pre-cutoff write committed after snapshot T cannot enter later statements,
+  while a fresh snapshot and same-transaction read-your-writes see the expected
+  conflicts. The initial R25 migration/account/research/conflict affected suite
+  is `138 passed`.
+- 2026-09-05: The first exact R25 backend closing run found two compatibility
+  failures after `2708 passed`: the shared append-only trigger referenced
+  `OLD.user_id` when invoked for a 13F representativeness row whose table has no
+  such column. The function now projects generic trigger records through
+  `to_jsonb` and reads journal-only fields solely in the exact
+  `position_journal_events` erasure predicate. Other append-only tables again
+  fail with the intended typed append-only rejection. The focused retry is
+  `5 passed`; shared development completed `330 -> 320 -> 330`, and remains at
+  the sole revision-330 head.
+- 2026-09-05: The final exact canonical closing gate is green: container
+  rebuild; forward migration to revision 330; backend `2710 passed`; frontend
+  `233 passed`; frontend lint; production frontend build; and
+  `git diff --check`. Only the pre-existing Starlette/httpx and anyio
+  deprecation warnings remain in backend pytest.

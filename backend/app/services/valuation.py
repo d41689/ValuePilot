@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_EVEN
@@ -480,7 +481,6 @@ def redact_published_unavailable_reason(
     user_id: int,
     stock_id: int,
     revision_id: int,
-    content_hash: str,
 ) -> None:
     """Apply the narrow privacy redaction to duplicated user-authored text.
 
@@ -499,16 +499,20 @@ def redact_published_unavailable_reason(
     ).all()
     for fact in facts:
         metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
-        fact.value_json = {
-            "status": "unavailable",
-            "reason": "[redacted]",
-            "redaction_content_hash": content_hash,
-            **(
-                {"valuation_origin": metadata["valuation_origin"]}
-                if "valuation_origin" in metadata
-                else {}
-            ),
-        }
+        redacted = dict(metadata)
+        for field_name, hash_name in (
+            ("reason", "redaction_content_hash"),
+            ("note", "redaction_note_content_hash"),
+        ):
+            value = redacted.get(field_name)
+            if not isinstance(value, str) or not value or value == "[redacted]":
+                continue
+            redacted[field_name] = "[redacted]"
+            redacted.setdefault(
+                hash_name,
+                hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            )
+        fact.value_json = redacted
 
 
 def relative_discount(price: float | None, reference: float | None) -> float | None:

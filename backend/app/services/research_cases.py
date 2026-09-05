@@ -34,6 +34,7 @@ from app.services.valuation import (
     quantize_valuation_value,
     redact_published_unavailable_reason,
 )
+from app.services.privacy_erasure import begin_privacy_erasure_operation
 from app.services.screener_service import ScreenerService
 
 
@@ -750,12 +751,16 @@ def redact_revision(
     revision.redaction_reason = reason
     revision.redacted_by_user_id = user_id
     revision.redacted_at = datetime.now(timezone.utc)
+    begin_privacy_erasure_operation(
+        session,
+        user_id=user_id,
+        operation_kind="revision_redaction",
+    )
     redact_published_unavailable_reason(
         session,
         user_id=user_id,
         stock_id=case.stock_id,
         revision_id=revision.id,
-        content_hash=revision.redaction_content_hash,
     )
     _append_event(
         session,

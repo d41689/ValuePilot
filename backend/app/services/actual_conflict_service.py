@@ -101,6 +101,7 @@ def detect_actual_conflicts(
     )
     fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
     scope = [
+        MetricFact.id.in_(currentness_scope.fact_ids),
         MetricFact.stock_id == stock_id,
         MetricFact.source_type == "parsed",
         MetricFact.source_document_id.is_not(None),

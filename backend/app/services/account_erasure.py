@@ -23,7 +23,7 @@ from app.models.notifications import (
 from app.models.portfolios import ManualPortfolio, ManualPosition, PositionJournalEvent
 from app.models.research import ResearchCase, ResearchCaseEvent, ResearchCaseRevision
 from app.models.users import AccountErasureEvent, NotificationSettings, User
-from app.services.valuation import redact_published_unavailable_reason
+from app.services.privacy_erasure import begin_privacy_erasure_operation
 
 
 class AccountErasureError(ValueError):
@@ -45,9 +45,14 @@ def erase_account(
     if session.query(AccountErasureEvent).filter_by(user_id=user.id).first():
         raise AccountErasureError("Account erasure was already completed.")
 
-    # This transaction-local setting permits UPDATE (never DELETE) through the
-    # append-only journal trigger solely for the audited privacy tombstone.
-    session.execute(text("SELECT set_config('valuepilot.account_erasure', 'on', true)"))
+    # The database records the exact target user and transaction after checking
+    # a capability derived from the application secret. A caller with only the
+    # database credential cannot manufacture this authority with SET or DML.
+    begin_privacy_erasure_operation(
+        session,
+        user_id=user.id,
+        operation_kind="account_erasure",
+    )
     now = datetime.now(timezone.utc)
     today = now.date()
     digest = hashlib.sha256()
@@ -93,13 +98,6 @@ def erase_account(
         revision.redaction_reason = "account_erasure"
         revision.redacted_by_user_id = user.id
         revision.redacted_at = now
-        redact_published_unavailable_reason(
-            session,
-            user_id=user.id,
-            stock_id=revision.snapshot_stock_id,
-            revision_id=revision.id,
-            content_hash=content_hash,
-        )
         session.add(
             ResearchCaseEvent(
                 case_id=revision.case_id,

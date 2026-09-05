@@ -176,14 +176,54 @@ def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values
         period_end_date=date(2025, 12, 31),
         is_current=True,
     )
+    numeric_valuation = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.fair_value",
+        value_numeric=Decimal("111.25"),
+        value_text="retained numeric valuation",
+        value_json={
+            "reason": "private numeric valuation rationale",
+            "note": "private numeric valuation note",
+            "raw": "111.25",
+            "status": "available",
+            "valuation_origin": {
+                "version": "research-valuation-origin-v1",
+                "source": "manual",
+                "research_revision_id": 91,
+            },
+        },
+        unit="USD",
+        currency="USD",
+        source_type="manual",
+        source_ref_id=91,
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 31),
+        is_current=True,
+    )
     unavailable = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
         metric_key="val.fair_value",
         value_numeric=None,
-        value_json={"reason": "private unavailable rationale", "status": "unavailable"},
+        value_text="retained unavailable marker",
+        value_json={
+            "reason": "private unavailable rationale",
+            "note": "private unavailable valuation note",
+            "raw": "not valued",
+            "status": "unavailable",
+            "valuation_origin": {
+                "version": "research-valuation-origin-v1",
+                "source": "manual",
+                "research_revision_id": 92,
+            },
+        },
+        unit="USD",
+        currency="USD",
         source_type="manual",
+        source_ref_id=92,
         period_type="AS_OF",
+        period_end_date=date(2026, 2, 28),
         is_current=True,
     )
     no_reason = MetricFact(
@@ -247,6 +287,7 @@ def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values
     db_session.add_all(
         [
             numeric,
+            numeric_valuation,
             unavailable,
             no_reason,
             previously_redacted_reason,
@@ -264,6 +305,7 @@ def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values
 
     assert response.status_code == 200, response.text
     db_session.refresh(numeric)
+    db_session.refresh(numeric_valuation)
     db_session.refresh(unavailable)
     db_session.refresh(no_reason)
     db_session.refresh(previously_redacted_reason)
@@ -273,8 +315,49 @@ def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values
     assert numeric.value_json["note"] == "[redacted]"
     assert len(numeric.value_json["redaction_note_content_hash"]) == 64
     assert numeric.value_json["raw"] == "123.45"
+    assert numeric_valuation.value_numeric == Decimal("111.25")
+    assert numeric_valuation.value_text == "retained numeric valuation"
+    assert numeric_valuation.value_json["reason"] == "[redacted]"
+    assert numeric_valuation.value_json["note"] == "[redacted]"
+    assert numeric_valuation.value_json["redaction_content_hash"] == (
+        hashlib.sha256(b"private numeric valuation rationale").hexdigest()
+    )
+    assert numeric_valuation.value_json["redaction_note_content_hash"] == (
+        hashlib.sha256(b"private numeric valuation note").hexdigest()
+    )
+    assert numeric_valuation.value_json["raw"] == "111.25"
+    assert numeric_valuation.value_json["valuation_origin"] == {
+        "version": "research-valuation-origin-v1",
+        "source": "manual",
+        "research_revision_id": 91,
+    }
+    assert numeric_valuation.source_type == "manual"
+    assert numeric_valuation.source_ref_id == 91
+    assert numeric_valuation.unit == "USD"
+    assert numeric_valuation.currency == "USD"
+    assert numeric_valuation.period_type == "AS_OF"
+    assert numeric_valuation.period_end_date == date(2026, 1, 31)
     assert unavailable.value_json["reason"] == "[redacted]"
-    assert len(unavailable.value_json["redaction_content_hash"]) == 64
+    assert unavailable.value_json["note"] == "[redacted]"
+    assert unavailable.value_json["redaction_content_hash"] == (
+        hashlib.sha256(b"private unavailable rationale").hexdigest()
+    )
+    assert unavailable.value_json["redaction_note_content_hash"] == (
+        hashlib.sha256(b"private unavailable valuation note").hexdigest()
+    )
+    assert unavailable.value_json["raw"] == "not valued"
+    assert unavailable.value_text == "retained unavailable marker"
+    assert unavailable.value_json["valuation_origin"] == {
+        "version": "research-valuation-origin-v1",
+        "source": "manual",
+        "research_revision_id": 92,
+    }
+    assert unavailable.source_type == "manual"
+    assert unavailable.source_ref_id == 92
+    assert unavailable.unit == "USD"
+    assert unavailable.currency == "USD"
+    assert unavailable.period_type == "AS_OF"
+    assert unavailable.period_end_date == date(2026, 2, 28)
     assert no_reason.value_numeric == Decimal("9")
     assert no_reason.value_json == {"status": "available"}
     assert previously_redacted_reason.value_json["reason"] == "[redacted]"

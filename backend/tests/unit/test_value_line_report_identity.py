@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import event, select, text
+from sqlalchemy.orm import sessionmaker
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
@@ -413,6 +414,157 @@ def test_actual_conflict_bound_counts_duplicate_multi_revision_observations_and_
             current_user_id=owner.id,
             knowledge_cutoff=database_evaluation_cutoff(db_session),
         )
+
+
+def test_actual_conflicts_keep_all_queries_inside_the_captured_fact_universe(
+    db_session, monkeypatch
+):
+    """A pre-cutoff write committed after T is not visible in that replay.
+
+    PostgreSQL READ COMMITTED starts a fresh statement snapshot for each query.
+    The currentness snapshot therefore has to bind every later identity,
+    source, and observation query to the exact fact IDs it admitted.
+    """
+
+    engine = db_session.get_bind().engine
+    with engine.begin() as setup:
+        user_id = int(
+            setup.scalar(
+                text(
+                    "INSERT INTO users (email,hashed_password,is_active) VALUES "
+                    "('actual-conflict-snapshot@example.com','x',true) RETURNING id"
+                )
+            )
+        )
+        stock_id = int(
+            setup.scalar(
+                text(
+                    "INSERT INTO stocks (ticker,exchange,company_name,is_active) VALUES "
+                    "('ACSNAP','NYSE','AC Snapshot',true) RETURNING id"
+                )
+            )
+        )
+
+    SessionLocal = sessionmaker(bind=engine)
+    with SessionLocal() as setup_session:
+        base_document = _document(
+            setup_session,
+            user_id=user_id,
+            stock_id=stock_id,
+            name="actual-conflict-snapshot-base.pdf",
+            report_date=date(2026, 1, 9),
+        )
+        _actual_fact(
+            setup_session,
+            user_id=user_id,
+            stock_id=stock_id,
+            document_id=base_document.id,
+            value=100,
+            is_current=True,
+        )
+        setup_session.commit()
+
+    WriterSession = sessionmaker(bind=engine)
+    writer = WriterSession()
+    reader = SessionLocal()
+    try:
+        late_document = _document(
+            writer,
+            user_id=user_id,
+            stock_id=stock_id,
+            name="actual-conflict-snapshot-late.pdf",
+            report_date=date(2026, 4, 9),
+        )
+        _actual_fact(
+            writer,
+            user_id=user_id,
+            stock_id=stock_id,
+            document_id=late_document.id,
+            value=120,
+            is_current=True,
+        )
+        # The fact and its database-owned timestamps exist before T, but this
+        # transaction is deliberately absent from T's visibility snapshot.
+        writer.flush()
+
+        original_require = actual_conflict_service.require_currentness_authority
+        committed = False
+
+        def commit_after_scope(*args, **kwargs):
+            nonlocal committed
+            if not committed:
+                writer.commit()
+                committed = True
+            return original_require(*args, **kwargs)
+
+        monkeypatch.setattr(
+            actual_conflict_service,
+            "require_currentness_authority",
+            commit_after_scope,
+        )
+        cutoff = database_evaluation_cutoff(reader)
+        historical = detect_actual_conflicts(
+            reader,
+            stock_id=stock_id,
+            active_report=None,
+            current_user_id=user_id,
+            knowledge_cutoff=cutoff,
+        )
+        assert historical == []
+        assert committed is True
+
+        # A new evaluation snapshot after the writer commits sees both facts.
+        reader.commit()
+        fresh = detect_actual_conflicts(
+            reader,
+            stock_id=stock_id,
+            active_report=None,
+            current_user_id=user_id,
+        )
+        assert len(fresh) == 1
+        assert fresh[0]["current_value_numeric"] == 120.0
+        assert fresh[0]["previous_value_numeric"] == 100.0
+
+        read_your_writes_document = _document(
+            reader,
+            user_id=user_id,
+            stock_id=stock_id,
+            name="actual-conflict-snapshot-read-your-writes.pdf",
+            report_date=date(2026, 7, 9),
+        )
+        _actual_fact(
+            reader,
+            user_id=user_id,
+            stock_id=stock_id,
+            document_id=read_your_writes_document.id,
+            value=140,
+            is_current=True,
+        )
+        reader.flush()
+        read_your_writes = detect_actual_conflicts(
+            reader,
+            stock_id=stock_id,
+            active_report=None,
+            current_user_id=user_id,
+        )
+        assert len(read_your_writes) == 1
+        assert read_your_writes[0]["current_value_numeric"] == 140.0
+    finally:
+        writer.rollback()
+        writer.close()
+        reader.rollback()
+        reader.close()
+        with engine.begin() as cleanup:
+            cleanup.execute(
+                text("DELETE FROM pdf_documents WHERE user_id=:user"),
+                {"user": user_id},
+            )
+            cleanup.execute(
+                text("DELETE FROM users WHERE id=:user"), {"user": user_id}
+            )
+            cleanup.execute(
+                text("DELETE FROM stocks WHERE id=:stock"), {"stock": stock_id}
+            )
 
 
 def test_active_report_binds_fact_to_identity_known_when_fact_was_created(
