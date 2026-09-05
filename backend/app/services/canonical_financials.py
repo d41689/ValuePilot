@@ -1132,27 +1132,6 @@ def guard_piotroski_method_authority(
             )
 
     canonical_by_id = {fact.id: fact for fact in sibling_rows}
-    eligible_caller_ids = {
-        fact.id
-        for ordinal, fact in enumerate(piotroski)
-        if isinstance(fact.id, int)
-        and not isinstance(fact.id, bool)
-        and fact.id > 0
-        and caller_periods[ordinal] not in bounded_periods
-    }
-    missing_caller_ids = eligible_caller_ids - set(canonical_by_id)
-    diagnostic_rows = (
-        list(
-            session.scalars(
-                select(MetricFact)
-                .where(MetricFact.id.in_(missing_caller_ids))
-                .execution_options(populate_existing=True, autoflush=False)
-            ).all()
-        )
-        if missing_caller_ids
-        else []
-    )
-    diagnostics_by_id = {fact.id: fact for fact in diagnostic_rows}
     canonical_request_rows: dict[int, MetricFact] = {}
     for ordinal, fact in enumerate(piotroski):
         period = caller_periods[ordinal]
@@ -1166,22 +1145,18 @@ def guard_piotroski_method_authority(
             continue
         canonical = canonical_by_id.get(fact.id)
         if canonical is None:
-            diagnostic = diagnostics_by_id.get(fact.id)
-            diagnostic_reason: str | None = None
-            if diagnostic is not None:
-                if diagnostic.is_current is not True:
-                    diagnostic_reason = (
-                        HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
-                    )
-                else:
-                    diagnostic_reason = _piotroski_temporal_reason(
-                        diagnostic,
-                        cutoff=cutoff,
-                    )
+            caller_temporal_reason = _piotroski_temporal_reason(
+                fact,
+                cutoff=cutoff,
+            )
             mark_projection_error(
                 period,
-                diagnostic_reason
-                or PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+                (
+                    HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+                    if caller_temporal_reason
+                    == HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+                    else PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE
+                ),
             )
             continue
         temporal_reason = _piotroski_temporal_reason(canonical, cutoff=cutoff)
@@ -1787,10 +1762,17 @@ def active_sec_run_unresolved_state(
 
 
 def guard_sec_run_availability(
-    session: Session, *, stock_id: int, facts: Iterable[Any]
+    session: Session,
+    *,
+    stock_id: int,
+    facts: Iterable[Any],
+    knowledge_cutoff: datetime | None = None,
 ) -> list[Any]:
     materialized, states = partition_sec_run_availability(
-        session, stock_id=stock_id, facts=facts
+        session,
+        stock_id=stock_id,
+        facts=facts,
+        knowledge_cutoff=knowledge_cutoff,
     )
     if states:
         raise CanonicalUnavailableError(states[0])

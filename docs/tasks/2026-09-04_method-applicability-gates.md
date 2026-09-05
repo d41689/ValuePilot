@@ -377,12 +377,12 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
 - 2026-09-04: Piotroski point-in-time reads remain deliberately conservative.
   Freshly reloaded scores and inputs must be current, created no later than the
   read cutoff, and unchanged by that cutoff; inputs must also predate their
-  score. A bounded diagnostic for a current replacement created after the
-  cutoff, or direct proof that the requested row has since been demoted,
-  returns `historical_current_projection_unverifiable` rather than inventing a
-  historical currentness timeline. The calculator's bulk demotion does not
-  advance the old row's `updated_at`, so this diagnostic is necessary and its
-  future rows never become canonical read authority.
+  score. A bounded, tenant/stock/period-scoped diagnostic for a current
+  replacement created after the cutoff, or future timestamps present on the
+  caller itself, returns `historical_current_projection_unverifiable` rather
+  than inventing a historical currentness timeline. The calculator's bulk
+  demotion does not advance the old row's `updated_at`, so the future-current
+  diagnostic is necessary and its rows never become canonical read authority.
 - 2026-09-04: R9 tests-first started with `10 failed / 29 passed`. Detached
   tampering, missing/duplicate IDs, future score/sibling/input timestamps,
   demotion and concurrent replacement, current happy-path rebinding, and
@@ -392,3 +392,38 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   additional mistakenly selected but related two-file set contributed 25
   passing tests before the exact superset was rerun. No migration or retained
   data changed.
+- 2026-09-04: Strict Terra R10 found that screener SQL predicates were not
+  bound to the facts approved by the pre-query source and applicability guard.
+  The guard now captures one evaluation instant `T` for the entire screen,
+  limits the candidate universe to 10,000 rows, and runs reconciliation, SEC
+  availability, and complete method applicability for every relevant stock at
+  that same cutoff. It records only the canonical rows actually returned by
+  those guards, keyed by stock and canonical metric key.
+- 2026-09-04: Every screener fact alias now requires an approved
+  `(fact_id, value_numeric)` pair in addition to its existing stock, metric,
+  tenant visibility, selected-source, and current-row predicates, and requires
+  both fact timestamps to be no later than `T`. Empty authority sets never
+  match. A replacement inserted after the guard cannot enter the predicate, a
+  demoted approved row is conservatively excluded, and a same-ID numeric
+  mutation cannot change the result. Review knowledge committed after `T` is
+  intentionally not allowed to flow backward into the captured decision; all
+  stocks share the same point-in-time authority rather than chasing an
+  unbounded sequence of later reviews.
+- 2026-09-04: The Piotroski guard no longer issues an unconstrained lookup for
+  a caller ID absent from its tenant/stock/period canonical sibling query.
+  Missing, demoted, foreign-tenant, wrong-stock, and wrong-period callers now
+  share the stable typed
+  `piotroski_current_projection_unverifiable` result unless the caller's own
+  timestamps prove it is after the requested cutoff. Current replacement
+  detection remains bounded by tenant, stock, fiscal period, and cutoff.
+- 2026-09-04: R10 tests-first reproduced seven initial failures covering
+  post-guard Owner Earnings and forged Piotroski replacement, review timing,
+  and foreign identity diagnostics; same-ID numeric mutation and reviewed
+  multi-stock/multi-condition controls were added before the implementation.
+  Final focused verification is `115 passed`; the exact from-scratch serial
+  29-file R5-R10 affected superset is `768 passed`, with only the pre-existing
+  Starlette/httpx and anyio deprecation warnings. A pre-existing DCF regression
+  fixture was made deterministic by deriving its cutoff from database-stamped
+  input creation and using the contract's explicit America/New_York date,
+  removing its one-second and container-timezone flake. No migration, retained
+  data, or storage changed.

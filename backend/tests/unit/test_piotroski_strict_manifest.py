@@ -421,6 +421,69 @@ def test_component_only_screener_requires_complete_current_sibling_period(
     assert error.value.code == "piotroski_method_authority_manifest_invalid"
 
 
+def test_component_screener_never_admits_forged_replacement_after_guard(
+    db_session, user_factory
+) -> None:
+    user = user_factory("piot-screener-race@example.com")
+    stock = _stock(db_session, "PSCRRACE")
+    written = _generate_complete(db_session, user=user, stock=stock)
+    db_session.commit()
+    period_facts = [
+        fact for fact in written if fact.period_end_date == PERIOD_1
+    ]
+    component = next(
+        fact
+        for fact in period_facts
+        if fact.metric_key == "score.piotroski.roa_positive"
+    )
+    total = next(
+        fact
+        for fact in period_facts
+        if fact.metric_key == "score.piotroski.total"
+    )
+    service = ScreenerService(db_session)
+    original_guard = service._guard_screen_sources
+
+    def replace_after_guard(*args, **kwargs):
+        authority = original_guard(*args, **kwargs)
+        with Session(bind=db_session.get_bind(), autoflush=False) as concurrent:
+            concurrent.execute(
+                update(MetricFact)
+                .where(
+                    MetricFact.user_id == user.id,
+                    MetricFact.stock_id == stock.id,
+                    MetricFact.metric_key.like("score.piotroski.%"),
+                    MetricFact.is_current.is_(True),
+                )
+                .values(is_current=False)
+            )
+            forged_component = _clone(component)
+            forged_total = _clone(total)
+            forged_component.value_json.pop("manifest_version")
+            forged_total.value_json.pop("manifest_version")
+            concurrent.add_all([forged_component, forged_total])
+            concurrent.commit()
+        return authority
+
+    service._guard_screen_sources = replace_after_guard
+
+    matched = service.execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {
+                    "metric": "score.piotroski.roa_positive",
+                    "operator": ">=",
+                    "value": 0,
+                }
+            ],
+        },
+        current_user_id=user.id,
+    )
+
+    assert matched == []
+
+
 def test_component_only_request_is_quarantined_when_current_total_is_demoted(
     db_session, user_factory
 ) -> None:
@@ -1100,6 +1163,55 @@ def test_guard_rejects_missing_or_duplicate_caller_identity_before_numeric_use(
     }
 
 
+@pytest.mark.parametrize("mismatch", ["foreign_user", "wrong_stock", "wrong_period"])
+def test_missing_caller_projection_never_triggers_a_bare_id_diagnostic_query(
+    db_session, user_factory, mismatch: str
+) -> None:
+    owner = user_factory(f"piot-projection-owner-{mismatch}@example.com")
+    other = user_factory(f"piot-projection-other-{mismatch}@example.com")
+    stock = _stock(db_session, f"PPROJ{mismatch[:3]}")
+    other_stock = _stock(db_session, f"POTHER{mismatch[:3]}")
+    written = _generate_complete(db_session, user=owner, stock=stock)
+    db_session.commit()
+    total = next(
+        fact
+        for fact in written
+        if fact.metric_key == "score.piotroski.total"
+        and fact.period_end_date == PERIOD_1
+    )
+    caller = _identified_clone(total)
+    if mismatch == "foreign_user":
+        caller.user_id = other.id
+    elif mismatch == "wrong_stock":
+        caller.stock_id = other_stock.id
+    else:
+        caller.period_end_date = date(2030, 12, 31)
+    statements: list[str] = []
+
+    def before_cursor_execute(_conn, _cursor, statement, *_args):
+        statements.append(" ".join(statement.split()))
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", before_cursor_execute)
+    try:
+        kept, blocked = guard_piotroski_method_authority(
+            db_session,
+            facts=[caller],
+            effective_as_of=date.today(),
+        )
+    finally:
+        event.remove(
+            db_session.get_bind(), "before_cursor_execute", before_cursor_execute
+        )
+
+    assert kept == []
+    assert blocked[0]["reason_code"] == (
+        "piotroski_current_projection_unverifiable"
+    )
+    assert not any(
+        "WHERE metric_facts.id IN" in statement for statement in statements
+    )
+
+
 def test_guard_fails_closed_when_current_score_was_created_after_cutoff(
     db_session, user_factory
 ) -> None:
@@ -1293,7 +1405,7 @@ def test_guard_does_not_reconstruct_currentness_for_a_demoted_caller(
 
     assert kept == []
     assert blocked[0]["reason_code"] == (
-        "historical_current_projection_unverifiable"
+        "piotroski_current_projection_unverifiable"
     )
 
 

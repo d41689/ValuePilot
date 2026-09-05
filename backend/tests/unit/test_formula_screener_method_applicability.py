@@ -3,8 +3,11 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from sqlalchemy import update
+from sqlalchemy.orm import Session
 
 from app.models.facts import CalculatedRun, Formula, MetricFact
+from app.models.sec_publication import SecEconomicClassificationReview
 from app.models.stocks import Stock
 from app.services.canonical_financials import UnsupportedSystemMethodError
 from app.services.formula_engine import FormulaEngine
@@ -258,3 +261,233 @@ def test_formula_and_screener_ignore_unrelated_blocked_fact(
         },
         current_user_id=user.id,
     ) == [stock]
+
+
+def test_screener_binds_predicate_to_fact_ids_verified_before_replacement(
+    db_session, user_factory
+) -> None:
+    user = user_factory("screener-fact-race@example.com", role="admin")
+    stock = _stock(db_session, "SCRRACE")
+    _review_profile(
+        db_session,
+        reviewer=user,
+        stock=stock,
+        economic_class="ordinary",
+    )
+    original = _governed_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="owners_earnings_per_share",
+        value=10,
+    )
+    service = ScreenerService(db_session)
+    original_guard = service._guard_screen_sources
+
+    def replace_after_guard(*args, **kwargs):
+        authority = original_guard(*args, **kwargs)
+        with Session(bind=db_session.get_bind(), autoflush=False) as concurrent:
+            concurrent.execute(
+                update(MetricFact)
+                .where(MetricFact.id == original.id)
+                .values(is_current=False)
+            )
+            concurrent.add(
+                MetricFact(
+                    user_id=user.id,
+                    stock_id=stock.id,
+                    metric_key="owners_earnings_per_share",
+                    value_numeric=100,
+                    value_json={"fact_nature": "actual"},
+                    unit="ratio",
+                    period_type="FY",
+                    period_end_date=date(2024, 12, 31),
+                    source_type="manual",
+                    is_current=True,
+                )
+            )
+            concurrent.commit()
+        return authority
+
+    service._guard_screen_sources = replace_after_guard
+
+    matched = service.execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {
+                    "metric": "owners_earnings_per_share",
+                    "operator": ">",
+                    "value": 50,
+                }
+            ],
+        },
+        current_user_id=user.id,
+    )
+
+    assert matched == []
+
+
+def test_screener_binds_predicate_to_numeric_verified_before_same_id_update(
+    db_session, user_factory
+) -> None:
+    user = user_factory("screener-numeric-race@example.com", role="admin")
+    stock = _stock(db_session, "SCRNUM")
+    _review_profile(
+        db_session,
+        reviewer=user,
+        stock=stock,
+        economic_class="ordinary",
+    )
+    fact = _governed_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="returns.total_capital",
+        value=10,
+    )
+    service = ScreenerService(db_session)
+    original_guard = service._guard_screen_sources
+
+    def mutate_after_guard(*args, **kwargs):
+        authority = original_guard(*args, **kwargs)
+        with Session(bind=db_session.get_bind(), autoflush=False) as concurrent:
+            concurrent.execute(
+                update(MetricFact)
+                .where(MetricFact.id == fact.id)
+                .values(value_numeric=100)
+            )
+            concurrent.commit()
+        return authority
+
+    service._guard_screen_sources = mutate_after_guard
+
+    matched = service.execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {
+                    "metric": "returns.total_capital",
+                    "operator": ">",
+                    "value": 50,
+                }
+            ],
+        },
+        current_user_id=user.id,
+    )
+
+    assert matched == []
+
+
+def test_screener_uses_one_cutoff_when_review_commits_after_initial_guard(
+    db_session, user_factory
+) -> None:
+    user = user_factory("screener-review-race@example.com", role="admin")
+    stock = _stock(db_session, "SCRREVIEW")
+    _review_profile(
+        db_session,
+        reviewer=user,
+        stock=stock,
+        economic_class="ordinary",
+    )
+    classification = db_session.query(SecEconomicClassificationReview).filter_by(
+        stock_id=stock.id
+    ).one()
+    _governed_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="returns.total_capital",
+        value=100,
+    )
+    service = ScreenerService(db_session)
+    original_guard = service._guard_screen_sources
+    observed: dict[str, object] = {}
+
+    def invalidate_after_guard(*args, **kwargs):
+        authority = original_guard(*args, **kwargs)
+        observed["evaluated_at"] = authority.evaluated_at
+        with Session(bind=db_session.get_bind(), autoflush=False) as concurrent:
+            review = review_company_classification(
+                concurrent,
+                reviewer_user_id=user.id,
+                stock_id=stock.id,
+                economic_class="bank",
+                effective_from=date(2020, 1, 1),
+                supersedes_review_id=classification.id,
+                review_reason="Reclassified before screener predicate execution.",
+            )
+            concurrent.commit()
+            observed["review_known_at"] = review.known_at
+        return authority
+
+    service._guard_screen_sources = invalidate_after_guard
+
+    matched = service.execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {
+                    "metric": "returns.total_capital",
+                    "operator": ">",
+                    "value": 50,
+                }
+            ],
+        },
+        current_user_id=user.id,
+    )
+
+    assert matched == [stock]
+    assert observed["review_known_at"] > observed["evaluated_at"]
+
+
+def test_screener_allows_reviewed_multistock_multicondition_sources_only(
+    db_session, user_factory
+) -> None:
+    user = user_factory("screener-multistock@example.com", role="admin")
+    stocks = [_stock(db_session, ticker) for ticker in ("SCRMA", "SCRMB")]
+    for stock in stocks:
+        _review_profile(
+            db_session,
+            reviewer=user,
+            stock=stock,
+            economic_class="ordinary",
+        )
+        _governed_fact(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="owners_earnings_per_share",
+            value=100,
+        )
+        _governed_fact(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="revenue",
+            value=100,
+        )
+    _governed_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stocks[0].id,
+        metric_key="system_valuation.dcf",
+        value=1_000,
+    )
+
+    matched = ScreenerService(db_session).execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {
+                    "metric": "owners_earnings_per_share",
+                    "operator": ">",
+                    "value": 50,
+                },
+                {"metric": "revenue", "operator": ">", "value": 50},
+            ],
+        },
+        current_user_id=user.id,
+    )
+
+    assert {item.id for item in matched} == {stock.id for stock in stocks}

@@ -1,17 +1,39 @@
-from typing import List, Dict, Any, Callable
-from datetime import date, datetime, timezone
+from dataclasses import dataclass
+from typing import List, Dict, Any
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session, aliased
 from decimal import Decimal
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, false, or_, tuple_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
+    CanonicalUnavailableError,
     guard_sec_run_availability,
     require_applicable_method_facts,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import guard_reconciled_source_selection
+
+
+MAX_SCREENER_GUARD_FACTS = 10_000
+
+
+@dataclass(frozen=True)
+class _ScreenerSourceAuthority:
+    evaluated_at: datetime
+    allowed_by_stock_metric: dict[
+        tuple[int, str], tuple[tuple[int, Decimal], ...]
+    ]
+
+    def pairs_for_metric(self, metric_key: str) -> tuple[tuple[int, Decimal], ...]:
+        return tuple(
+            pair
+            for (stock_id, key), pairs in self.allowed_by_stock_metric.items()
+            if key == metric_key
+            for pair in pairs
+        )
+
 
 class ScreenerService:
     def __init__(self, db: Session):
@@ -193,7 +215,7 @@ class ScreenerService:
         if selected_source_type is not None and selected_source_type not in CANONICAL_SOURCE_TYPES:
             raise ValueError("unsupported source_type selection")
         conditions = rule_json.get("conditions", [])
-        self._guard_screen_sources(
+        authority = self._guard_screen_sources(
             conditions,
             current_user_id=current_user_id,
             selected_source_type=selected_source_type,
@@ -205,6 +227,7 @@ class ScreenerService:
                  conditions,
                  current_user_id,
                  selected_source_type=selected_source_type,
+                 authority=authority,
              )
         else:
             # "OR" logic is trickier with simple inner joins (might need left joins + coalescing, or union)
@@ -221,11 +244,13 @@ class ScreenerService:
         current_user_id: int,
         *,
         selected_source_type: str | None,
+        authority: _ScreenerSourceAuthority,
     ):
         for cond in conditions:
             metric_key = self._canonical_metric_key(cond["metric"])
             operator = cond["operator"]
             target_value = Decimal(str(cond["value"]))
+            allowed_pairs = authority.pairs_for_metric(metric_key)
             
             # Create an alias for MetricFact for this specific condition
             fact_alias = aliased(MetricFact)
@@ -237,7 +262,16 @@ class ScreenerService:
                     Stock.id == fact_alias.stock_id,
                     fact_alias.metric_key == metric_key,
                     fact_alias.is_current.is_(True),
+                    fact_alias.created_at <= authority.evaluated_at,
+                    fact_alias.updated_at <= authority.evaluated_at,
                     visible_metric_fact_predicate(fact_alias, user_id=current_user_id),
+                    (
+                        tuple_(fact_alias.id, fact_alias.value_numeric).in_(
+                            allowed_pairs
+                        )
+                        if allowed_pairs
+                        else false()
+                    ),
                     *(
                         [fact_alias.source_type == selected_source_type]
                         if selected_source_type is not None
@@ -266,26 +300,44 @@ class ScreenerService:
         *,
         current_user_id: int,
         selected_source_type: str | None,
-    ) -> None:
+    ) -> _ScreenerSourceAuthority:
+        evaluated_at = datetime.now(timezone.utc)
         metric_keys = {
             self._canonical_metric_key(str(condition.get("metric")))
             for condition in conditions
             if condition.get("metric") is not None
         }
         if not metric_keys:
-            return
-        facts = self.db.scalars(
-            select(MetricFact).where(
-                MetricFact.metric_key.in_(metric_keys),
-                MetricFact.is_current.is_(True),
-                visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
+            return _ScreenerSourceAuthority(
+                evaluated_at=evaluated_at,
+                allowed_by_stock_metric={},
             )
-        ).all()
+        facts = list(
+            self.db.scalars(
+                select(MetricFact).where(
+                    MetricFact.metric_key.in_(metric_keys),
+                    MetricFact.is_current.is_(True),
+                    MetricFact.created_at <= evaluated_at,
+                    MetricFact.updated_at <= evaluated_at,
+                    visible_metric_fact_predicate(
+                        MetricFact, user_id=current_user_id
+                    ),
+                )
+                .limit(MAX_SCREENER_GUARD_FACTS + 1)
+                .execution_options(populate_existing=True, autoflush=False)
+            ).all()
+        )
+        if len(facts) > MAX_SCREENER_GUARD_FACTS:
+            raise CanonicalUnavailableError(
+                {
+                    "reason_code": "screener_source_guard_bound_exceeded",
+                }
+            )
         by_stock: dict[int, list[MetricFact]] = {}
         for fact in facts:
             by_stock.setdefault(fact.stock_id, []).append(fact)
+        allowed: dict[tuple[int, str], list[tuple[int, Decimal]]] = {}
         for stock_id, stock_facts in by_stock.items():
-            evaluated_at = datetime.now(timezone.utc)
             stock_facts = guard_reconciled_source_selection(
                 stock_facts,
                 consumer="screener",
@@ -298,11 +350,36 @@ class ScreenerService:
                 self.db,
                 stock_id=stock_id,
                 facts=stock_facts,
+                knowledge_cutoff=evaluated_at,
             )
-            require_applicable_method_facts(
+            applicable = require_applicable_method_facts(
                 self.db,
                 stock_id=stock_id,
                 facts=stock_facts,
-                effective_as_of=date.today(),
+                effective_as_of=evaluated_at.date(),
                 knowledge_at=evaluated_at,
             )
+            for fact in applicable:
+                if (
+                    isinstance(fact.id, int)
+                    and not isinstance(fact.id, bool)
+                    and fact.id > 0
+                    and fact.metric_key in metric_keys
+                    and fact.value_numeric is not None
+                ):
+                    allowed.setdefault((fact.stock_id, fact.metric_key), []).append(
+                        (fact.id, fact.value_numeric)
+                    )
+        allowed_count = sum(len(pairs) for pairs in allowed.values())
+        if allowed_count > MAX_SCREENER_GUARD_FACTS:
+            raise CanonicalUnavailableError(
+                {
+                    "reason_code": "screener_source_guard_bound_exceeded",
+                }
+            )
+        return _ScreenerSourceAuthority(
+            evaluated_at=evaluated_at,
+            allowed_by_stock_metric={
+                key: tuple(sorted(set(pairs))) for key, pairs in allowed.items()
+            },
+        )

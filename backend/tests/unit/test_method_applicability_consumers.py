@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.models.facts import MetricFact
 from app.models.stocks import PoolMembership, Stock, StockPool
@@ -714,9 +715,10 @@ def test_stock_page_and_save_block_pending_system_valuation_without_numeric(
     reviewer = user_factory("consumer-dcf-api-blocked@example.com", role="admin")
     stock = _stock(db_session, "DCFAPIBLOCK")
     _review_ordinary_profile(db_session, reviewer=reviewer, stock=stock)
-    db_session.add_all(
-        _owner_earnings_inputs(user_id=reviewer.id, stock_id=stock.id)
+    input_facts = _owner_earnings_inputs(
+        user_id=reviewer.id, stock_id=stock.id
     )
+    db_session.add_all(input_facts)
     db_session.commit()
     created = IngestionService(db_session)._persist_owner_earnings_facts(
         user_id=reviewer.id,
@@ -762,14 +764,18 @@ def test_stock_page_and_save_block_pending_system_valuation_without_numeric(
         "method_key"
     ] == "system_valuation"
 
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=1)
+    cutoff = min(fact.created_at for fact in input_facts) - timedelta(
+        microseconds=1
+    )
     manifest = {
         "manifest_version": DCF_MANIFEST_VERSION,
         "selection_rule_version": DCF_NORMALIZED_SELECTION_RULE,
         "selection": "norm",
         "selected_year": None,
         "evaluated_at": cutoff.isoformat(),
-        "effective_as_of": cutoff.astimezone().date().isoformat(),
+        "effective_as_of": cutoff.astimezone(
+            ZoneInfo("America/New_York")
+        ).date().isoformat(),
         "method_authority": [],
         "facts": [],
     }
