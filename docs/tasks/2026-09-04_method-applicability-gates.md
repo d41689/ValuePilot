@@ -839,3 +839,102 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   tests, `233` frontend unit tests, frontend lint, production frontend build,
   and `git diff --check`. Only the pre-existing Starlette/httpx and anyio
   deprecation warnings remain in backend pytest.
+- 2026-09-05: Strict Terra R23 found that R22 bounded only caller-provided
+  filter dimensions, not the facts or revision history those filters matched.
+  Currentness now first selects at most 1,001 IDs from compact
+  `metric_facts`, returns typed overflow at 1,001, and ranks timeline state only
+  for the resulting exact IDs. Legitimately large stock-set consumers traverse
+  complete results with indexed keyset pages and fact/currentness chunks of at
+  most 1,000 while reusing one `EvaluationSnapshot`; no prefix is returned as a
+  complete result. Tenant/source filters are pushed into candidate selection.
+  Forward revision `20260904280000` adds `(stock_id,id)`, `(metric_key,id)`,
+  and `(source_document_id,id)` candidate indexes. Isolated `EXPLAIN` tests
+  prove the three candidate plans use those indexes; 1,001-stock valuation and
+  201-revision history-inflation regressions prove complete traversal and
+  exact-ID-only timeline ranking. API-sized reads return typed 409 overflow
+  instead of silently truncating.
+- 2026-09-05: Source reconciliation now requires one explicit
+  `EvaluationSnapshot` for every database-backed call. Seed materialization,
+  same-slot competitors, transitive lineage, currentness state, and unresolved
+  SEC availability all reuse its cutoff and transaction-visibility snapshot.
+  Currentness is projected exclusively from the retained timeline; mutable
+  live `is_current` and demotion-advanced `updated_at` are not PIT authority.
+  Separate-transaction regressions cover a fact committed after the stock
+  reconciliation GET boundary and a Piotroski input demoted after capture.
+  Formula, screener, stock facts, pool, Workspace, DCF, ratio and Oracle
+  consumers pass the captured snapshot through the shared source guard.
+- 2026-09-05: Forward revision `20260904270000` makes the manual-reason privacy
+  tombstone strictly one-way without changing applied revision 260. An
+  unredacted user-authored `value_json.reason` may become `[redacted]` exactly
+  once with its valid SHA-256 content hash; an existing tombstone permits only
+  a byte-for-byte no-op, so replacing hash A with hash B is rejected. Account
+  erasure applies that audited path to both numeric and unavailable manual
+  facts, includes the erased text in the account digest, and leaves numeric
+  economics and all other provenance unchanged. Mixed reason/no-reason tests
+  prove complete account erasure without leakage or fact rewriting; downgrade
+  refuses to weaken a retained tombstone.
+- 2026-09-05: Because manual corrections also carry a user-authored `note`,
+  applied revision 270 was left unchanged and forward revision
+  `20260904290000` extends the same single-transition rule to both rationale
+  fields. Account erasure hashes and tombstones `reason` and `note` together.
+  The manual `raw`/`value_text` payload and numeric value remain the economic
+  observation, and server provenance remains immutable. Once either rationale
+  hash exists, any later content or hash change is rejected; only an exact JSON
+  no-op remains legal.
+- 2026-09-05: R23 tests-first focused reconciliation/currentness/privacy set is
+  `58 passed`; the first 380-test affected run exposed eight compatibility or
+  deterministic-order assertions, all independently reproduced and corrected
+  without weakening PIT authority. Shared development was upgraded forward
+  from 260 through revision 290.
+- 2026-09-05: Piotroski caller/sibling projection and every manifest input now
+  use the same explicit `EvaluationSnapshot` and exact-ID currentness timeline.
+  Mutable `is_current`/`updated_at` fields are excluded from the immutable
+  caller projection. A derived replacement or input demotion committed after
+  capture does not change the retained decision; a fresh snapshot sees the new
+  state. The production stock, pool, formula, screener, DCF, Workspace and
+  Oracle method-gate paths explicitly pass their already-captured snapshot.
+  The focused Piotroski/source suite is `97 passed`.
+- 2026-09-05: The final read-side `MetricFact.is_current` audit found two
+  legacy reads outside reconciliation: document review ranking and repeat
+  manual-correction eligibility. Both now use a compact document/exact-fact
+  timeline scope. Remaining occurrences are currentness-revision authority,
+  writer-side demotions/inserts, or write-response serialization. The focused
+  document/source suite is `72 passed`.
+- 2026-09-05: Revision 290's intentionally conservative first implementation
+  froze all rationale once either hash existed. Forward revision
+  `20260904300000` narrows this to the correct per-field rule: plaintext
+  `reason` and `note` may each make one independently hashed transition, while
+  every already-redacted value/hash remains immutable. This lets account
+  erasure complete for a mixed legacy row whose reason was already redacted but
+  note was not. Downgrade refuses to weaken retained note tombstones. The
+  isolated migration/account suite is `8 passed`; shared development and the
+  sole head are revision 300. The final 21-file affected suite is `367 passed`
+  with only the existing framework deprecations.
+- 2026-09-05: The post-R23 exact container build, forward migration to the sole
+  revision-300 head, `233` frontend unit tests, frontend lint, production
+  frontend build, and `git diff --check` are green. Two exact backend-suite
+  attempts could not establish a valid closing-gate result because the host,
+  API container, and PostgreSQL wall clock moved backward while pytest was
+  running. The first attempt completed with `2635 passed, 58 failed`; every
+  failure was the intended conservative
+  `HistoricalCurrentnessUnverifiableError` after the now-earlier clock crossed
+  behind the test schema's authority marker. The second attempt reached about
+  90 percent with no failures before the same system-wide rollback and was
+  stopped after the identical fail-closed cascade began. Targeted and affected
+  suites remain green; PIT authority was not relaxed to mask this environment
+  fault. A stable-clock CI run is therefore still required for the exact
+  backend closing gate.
+- 2026-09-05: Final one-way audit found that revision 300 correctly froze an
+  already-redacted rationale/hash pair but an initially inserted legacy row
+  containing hash A and plaintext could still replace it with hash B while
+  making its first text-to-redacted transition. A red test reproduced both the
+  reason and note variants. Because revision 300 was already applied, forward
+  revision `20260904310000` adds a separate per-field guard: once that field's
+  hash exists, its text/hash pair is immutable, while the other rationale field
+  may still make its own independent legal transition. Downgrade refuses when
+  it would weaken a retained pre-hashed plaintext row. The migration/account
+  suite is now `10 passed`; shared development and the sole head are revision
+  310. The eight directly modified backend test files are `150 passed` after
+  this final migration. No migration at or below revision 300 was edited after
+  application. The exact backend full-suite gate remains the stable-clock CI
+  requirement described immediately above; it is not recorded as green.
