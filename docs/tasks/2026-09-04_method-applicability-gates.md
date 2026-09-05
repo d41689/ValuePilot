@@ -474,3 +474,34 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   holdings source-guard suites) is `799 passed` in 584.64 seconds. Only the
   pre-existing Starlette/httpx and anyio deprecation warnings remain. No
   migration, retained data, storage, or external source was changed.
+- 2026-09-04: Strict Terra R13 found that several current-state consumers used
+  the UTC/container calendar date as method-policy business time. The shared
+  authority module now owns an aware-only `America/New_York` business-date
+  derivation from the already captured database evaluation instant. Screener,
+  Formula, current Oracle overlays, stock detail/Piotroski, stock-pool and
+  watchlist projections, and the Research Workspace/API all use that one
+  `(T, New York date(T))` pair. DCF retains its equivalent existing ET clock;
+  calculation/ingestion gates tied to a financial input period and persisted
+  retained-authority replay retain their period/snapshot dates. Explicit
+  Oracle historical price/effective dates are never replaced by the current
+  business date.
+- 2026-09-04: Stock-pool/watchlist and Research Workspace reads now capture T
+  before the first governed query and pass it through fact timestamp bounds,
+  source reconciliation and SEC availability, Piotroski/method gates,
+  valuation facts, and current/canonical price reads. Workspace unresolved SEC
+  publications require both publication knowledge and availability no later
+  than T. Direct service calls may supply an aware historical/test T; the
+  service does not capture a replacement clock in that case. Current research
+  workspace and inbox dates are derived from the same New York business day,
+  while their existing no-false-historical-projection rejection remains.
+- 2026-09-04: R13 tests-first reproduced early authorization at `00:30Z` for a
+  review effective on that UTC date. Cross-consumer controls prove it remains
+  unavailable until New York midnight, then becomes available; Oracle's
+  explicit historical date remains blocked as requested. Additional tests
+  cover aware timestamps, exact cutoff propagation, future fact/valuation
+  exclusion, stock/Piotroski and pool display dates, research endpoint/service
+  clocks, and the full production consumer inventory. The focused eight-file
+  set is `185 passed`; the final from-scratch serial 33-file R5-R13 affected
+  superset is `835 passed` in 639.86 seconds. Only the pre-existing
+  Starlette/httpx and anyio deprecation warnings remain. No migration,
+  retained data, storage, or external source changed.

@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from sqlalchemy import update
 
+from app.api.v1.endpoints import stocks as stocks_endpoint
 from app.api.v1.endpoints.stock_pools import _guard_piotroski_display_facts
 from app.api.v1.endpoints.stocks import _build_piotroski_f_score_card
 from app.api.v1.endpoints.stocks_13f import _m3_panel_for_stock
@@ -19,6 +20,7 @@ from app.services.calculated_metrics.piotroski_f_score import (
 from app.services.canonical_financials import (
     PiotroskiMethodAuthorityError,
     apply_reviewed_method_gates,
+    evaluation_business_date,
     guard_piotroski_method_authority,
     reviewed_method_gate,
 )
@@ -35,6 +37,57 @@ from app.services.screener_service import ScreenerService
 
 PERIOD_0 = date(2023, 12, 31)
 PERIOD_1 = date(2024, 12, 31)
+
+
+def test_stock_piotroski_card_uses_new_york_business_date(
+    monkeypatch, db_session, user_factory
+):
+    owner = user_factory("stock-piot-clock@example.com")
+    stock = _stock(db_session, "SPCLOCK")
+    fact = MetricFact(
+        user_id=owner.id,
+        stock_id=stock.id,
+        metric_key="score.piotroski.total",
+        value_numeric=7,
+        value_json={"fiscal_year": 2024, "status": "calculated"},
+        unit="score_total",
+        period_type="FY",
+        period_end_date=PERIOD_1,
+        source_type="calculated",
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+    evaluated_at = datetime.combine(
+        datetime.now(timezone.utc).date() + timedelta(days=2),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    ) + timedelta(minutes=30)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "guard_reconciled_source_selection",
+        lambda facts, **_kwargs: facts,
+    )
+
+    def capture_guard(_session, **kwargs):
+        captured.update(kwargs)
+        return kwargs["facts"], []
+
+    monkeypatch.setattr(
+        stocks_endpoint, "guard_piotroski_method_authority", capture_guard
+    )
+
+    card = _build_piotroski_f_score_card(
+        db_session,
+        stock.id,
+        current_user_id=owner.id,
+        evaluated_at=evaluated_at,
+    )
+
+    assert card["state"]["status"] == "available"
+    assert captured["knowledge_at"] is evaluated_at
+    assert captured["effective_as_of"] == evaluated_at.date() - timedelta(days=1)
 
 
 def _stock(db_session, ticker: str) -> Stock:
@@ -839,7 +892,8 @@ def test_proxy_without_authority_is_hidden_from_all_numeric_consumers(
         db_session,
         user_id=owner.id,
         case_id=research_case.id,
-        as_of=date.today(),
+        as_of=evaluation_business_date(evaluated_at),
+        evaluated_at=evaluated_at,
     )
     assert workspace["piotroski_f_score"] == []
     blocked = [

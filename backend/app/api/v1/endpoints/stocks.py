@@ -21,6 +21,7 @@ from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
     database_evaluation_cutoff,
+    evaluation_business_date,
     guard_piotroski_method_authority,
     guard_sec_run_availability,
     resolve_sec_publication_evidence,
@@ -375,6 +376,8 @@ def _build_piotroski_f_score_card(
             MetricFact.source_type == "calculated",
             MetricFact.is_current.is_(True),
             MetricFact.period_type == "FY",
+            MetricFact.created_at <= evaluated_at,
+            MetricFact.updated_at <= evaluated_at,
         )
         .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
     ).all()
@@ -430,7 +433,7 @@ def _build_piotroski_f_score_card(
     facts, method_blocked = guard_piotroski_method_authority(
         session,
         facts=facts,
-        effective_as_of=evaluated_at.date(),
+        effective_as_of=evaluation_business_date(evaluated_at),
         knowledge_at=evaluated_at,
     )
     if method_blocked:
@@ -1074,6 +1077,7 @@ def read_stock_by_ticker(
                 MetricFact.stock_id == stock.id,
                 MetricFact.is_current.is_(True),
                 MetricFact.created_at <= dcf_evaluated_at,
+                MetricFact.updated_at <= dcf_evaluated_at,
                 _visible_fact_predicate(current_user.id, admin_user_ids),
                 MetricFact.period_type == "FY",
                 MetricFact.metric_key == "owners_earnings_per_share",
@@ -1528,7 +1532,7 @@ def read_stock_facts(
         session,
         stock_id=stock_id,
         facts=facts,
-        effective_as_of=evaluation_cutoff.astimezone(ET).date(),
+        effective_as_of=evaluation_business_date(evaluation_cutoff),
         knowledge_at=evaluation_cutoff,
     )
     facts_by_metric: dict[str, list[MetricFact]] = {}
@@ -1628,7 +1632,9 @@ def read_stock_facts(
         published
         + unsupported
         + reconciliation_states
-        + current_sec_unresolved_states(session, stock_id=stock_id)
+        + current_sec_unresolved_states(
+            session, stock_id=stock_id, knowledge_cutoff=evaluation_cutoff
+        )
     )
 
 

@@ -172,11 +172,13 @@ def read_valuation_context(
     *,
     user_id: int,
     stock_id: int,
+    knowledge_cutoff: datetime | None = None,
 ) -> ValuationContext:
     return read_valuation_contexts(
         session,
         user_id=user_id,
         stock_ids=[stock_id],
+        knowledge_cutoff=knowledge_cutoff,
     )[stock_id]
 
 
@@ -234,6 +236,7 @@ def read_valuation_contexts(
     *,
     user_id: int,
     stock_ids: list[int],
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[int, ValuationContext]:
     """Return valuation contexts with one user-scoped metric-fact query."""
 
@@ -242,6 +245,7 @@ def read_valuation_contexts(
         session,
         user_id=user_id,
         stock_ids=unique_stock_ids,
+        knowledge_cutoff=knowledge_cutoff,
     )
     return {
         stock_id: _valuation_context_from_facts(facts_by_stock_id[stock_id])
@@ -254,6 +258,7 @@ def read_valuation_facts_by_stock(
     *,
     user_id: int | None,
     stock_ids: list[int],
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[int, dict[str, ValuationFact]]:
     """Canonical, user-scoped valuation facts for batched product overlays.
 
@@ -267,16 +272,23 @@ def read_valuation_facts_by_stock(
     }
     if user_id is None or not unique_stock_ids:
         return result
-    facts = session.scalars(
-        select(MetricFact)
-        .where(
-            MetricFact.user_id == user_id,
-            MetricFact.stock_id.in_(unique_stock_ids),
-            MetricFact.metric_key.in_(
-                [USER_INTRINSIC_VALUE_KEY, VALUE_LINE_TARGET_REFERENCE_KEY]
-            ),
-            MetricFact.is_current.is_(True),
+    fact_query = select(MetricFact).where(
+        MetricFact.user_id == user_id,
+        MetricFact.stock_id.in_(unique_stock_ids),
+        MetricFact.metric_key.in_(
+            [USER_INTRINSIC_VALUE_KEY, VALUE_LINE_TARGET_REFERENCE_KEY]
+        ),
+        MetricFact.is_current.is_(True),
+    )
+    if knowledge_cutoff is not None:
+        if knowledge_cutoff.tzinfo is None:
+            raise ValueError("knowledge cutoff must be timezone-aware")
+        fact_query = fact_query.where(
+            MetricFact.created_at <= knowledge_cutoff,
+            MetricFact.updated_at <= knowledge_cutoff,
         )
+    facts = session.scalars(
+        fact_query
         .order_by(
             MetricFact.stock_id.asc(),
             MetricFact.period_end_date.desc().nullslast(),

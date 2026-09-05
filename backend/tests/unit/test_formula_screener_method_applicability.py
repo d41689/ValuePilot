@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import event, update
@@ -15,6 +16,7 @@ from app.services import screener_service as screener_service_module
 from app.services.canonical_financials import (
     CanonicalUnavailableError,
     UnsupportedSystemMethodError,
+    database_evaluation_cutoff,
 )
 from app.services.formula_engine import FormulaEngine
 from app.services.method_applicability import (
@@ -110,6 +112,90 @@ def _formula(db_session, *, user_id: int, metric_key: str, suffix: str) -> Formu
     db_session.add(formula)
     db_session.commit()
     return formula
+
+
+def test_formula_and_screener_use_new_york_business_date_from_same_database_cutoff(
+    db_session, user_factory, monkeypatch
+) -> None:
+    reviewer = user_factory("consumer-et-boundary@example.com", role="admin")
+    stock = _stock(db_session, "ETBOUND")
+    fact = _governed_fact(
+        db_session,
+        user_id=reviewer.id,
+        stock_id=stock.id,
+        metric_key="returns.total_capital",
+    )
+    assert fact.created_at is not None
+    db_now = database_evaluation_cutoff(db_session)
+    effective_date = db_now.date() + timedelta(days=2)
+    review_company_classification(
+        db_session,
+        reviewer_user_id=reviewer.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=effective_date,
+        review_reason="Review becomes effective at the New York date boundary.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=effective_date,
+            review_reason=f"Boundary review for {risk_attribute}.",
+        )
+    db_session.commit()
+    formula = _formula(
+        db_session,
+        user_id=reviewer.id,
+        metric_key="returns.total_capital",
+        suffix="et_boundary",
+    )
+    early = datetime.combine(effective_date, time(0, 30), tzinfo=timezone.utc)
+    after_new_york_midnight = (
+        datetime.combine(
+            effective_date,
+            time.min,
+            tzinfo=ZoneInfo("America/New_York"),
+        ).astimezone(timezone.utc)
+        + timedelta(minutes=30)
+    )
+    clock = [early]
+    monkeypatch.setattr(
+        formula_engine_service,
+        "database_evaluation_cutoff",
+        lambda _session: clock[0],
+    )
+    monkeypatch.setattr(
+        screener_service_module,
+        "database_evaluation_cutoff",
+        lambda _session: clock[0],
+    )
+    rule = {
+        "type": "AND",
+        "conditions": [
+            {"metric": "returns.total_capital", "operator": ">", "value": 1}
+        ],
+    }
+
+    with pytest.raises(UnsupportedSystemMethodError) as formula_error:
+        FormulaEngine(db_session).run_formula(
+            formula.id, stock.id, reviewer.id
+        )
+    assert formula_error.value.decision.reason_code == "classification_unreviewed"
+    with pytest.raises(UnsupportedSystemMethodError) as screener_error:
+        ScreenerService(db_session).execute_screen(rule, current_user_id=reviewer.id)
+    assert screener_error.value.decision.reason_code == "classification_unreviewed"
+
+    clock[0] = after_new_york_midnight
+    assert FormulaEngine(db_session).run_formula(
+        formula.id, stock.id, reviewer.id
+    ).result_value_json["value"] == "2.000000000000"
+    assert ScreenerService(db_session).execute_screen(
+        rule, current_user_id=reviewer.id
+    ) == [stock]
 
 
 @pytest.mark.parametrize(

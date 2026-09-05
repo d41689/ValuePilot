@@ -39,7 +39,12 @@ def _watchlist(db_session, user_id: int, stock: Stock) -> None:
 def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
     client, db_session, user_factory, auth_headers
 ):
-    today = date.today()
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    today = evaluation_business_date(database_evaluation_cutoff(db_session))
     user = user_factory(email="inbox-priority@example.com")
     own = _stock(db_session, "IBOWN")
     watch = _stock(db_session, "IBWAT")
@@ -128,7 +133,15 @@ def test_inbox_regeneration_rejects_historical_as_of_without_mutating_projection
     stock = _stock(db_session, "IPIT")
     db_session.add(ResearchCase(user_id=user.id, stock_id=stock.id, state="queued"))
     db_session.commit()
-    historical_day = date.today() - timedelta(days=1)
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    historical_day = (
+        evaluation_business_date(database_evaluation_cutoff(db_session))
+        - timedelta(days=1)
+    )
 
     response = client.post(
         f"/api/v1/research/inbox/regenerate?as_of={historical_day.isoformat()}",

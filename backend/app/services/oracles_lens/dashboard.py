@@ -27,6 +27,7 @@ from app.services.canonical_financials import (
     MethodGateDecision,
     apply_reviewed_method_gates,
     database_evaluation_cutoff,
+    evaluation_business_date,
     guard_sec_run_availability,
     reviewed_method_gate,
     visible_metric_fact_predicate,
@@ -1235,7 +1236,9 @@ def _m3_facts_by_stock(
             session,
             stock_id=stock_id,
             facts=all_facts,
-            effective_as_of=effective_as_of or evaluation_cutoff.date(),
+            effective_as_of=(
+                effective_as_of or evaluation_business_date(evaluation_cutoff)
+            ),
             knowledge_at=evaluation_cutoff,
             precomputed_decisions=(method_decisions_by_stock or {}).get(stock_id),
         )
@@ -1322,7 +1325,7 @@ def _quality_overlay_by_stock(
         return {}
 
     evaluated_at = database_evaluation_cutoff(session)
-    effective_as_of = price_as_of_date or evaluated_at.date()
+    effective_as_of = price_as_of_date or evaluation_business_date(evaluated_at)
     gate_decisions = {
         stock_id: {
             method_key: reviewed_method_gate(

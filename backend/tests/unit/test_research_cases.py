@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy.exc import DBAPIError
@@ -15,6 +16,12 @@ from app.models.research import (
 )
 from app.models.stocks import Stock
 from app.services.ingestion_service import IngestionService
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
+from app.services.research_workspace import build_research_workspace
 
 
 def _stock(db_session, ticker: str = "CASE") -> Stock:
@@ -45,6 +52,135 @@ def _create(client, headers, stock_id: int, *, origin_key: str = "manual"):
             },
         },
     )
+
+
+def test_workspace_endpoint_derives_current_as_of_from_one_database_cutoff(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import research as research_endpoint
+
+    user = user_factory("research-workspace-clock@example.com")
+    evaluated_at = datetime(2026, 9, 4, 0, 30, tzinfo=timezone.utc)
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        research_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: evaluated_at,
+        raising=False,
+    )
+
+    def capture_workspace(_session, **kwargs):
+        observed.update(kwargs)
+        return {"status": "captured"}
+
+    monkeypatch.setattr(
+        research_endpoint, "build_research_workspace", capture_workspace
+    )
+
+    response = client.get(
+        "/api/v1/research/cases/17/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert observed["evaluated_at"] is evaluated_at
+    assert observed["as_of"] == date(2026, 9, 3)
+
+
+def test_workspace_service_uses_supplied_cutoff_for_current_facts_and_gates(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = user_factory("research-workspace-service-clock@example.com", role="admin")
+    stock = _stock(db_session, "RWSCLOCK")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+    effective_date = database_evaluation_cutoff(db_session).date() + timedelta(days=2)
+    review_company_classification(
+        db_session,
+        reviewer_user_id=user.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=effective_date,
+        review_reason="Workspace boundary classification review.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=user.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=effective_date,
+            review_reason=f"Workspace boundary review for {risk_attribute}.",
+        )
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.future",
+            value_numeric=99,
+            period_type="FY",
+            period_end_date=effective_date,
+            source_type="manual",
+            is_current=True,
+            created_at=datetime.combine(
+                effective_date + timedelta(days=1),
+                datetime.min.time(),
+                tzinfo=timezone.utc,
+            ),
+            updated_at=datetime.combine(
+                effective_date + timedelta(days=1),
+                datetime.min.time(),
+                tzinfo=timezone.utc,
+            ),
+        )
+    )
+    db_session.commit()
+    evaluated_at = datetime.combine(
+        effective_date, datetime.min.time(), tzinfo=timezone.utc
+    ) + timedelta(minutes=30)
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=effective_date - timedelta(days=1),
+        evaluated_at=evaluated_at,
+    )
+
+    assert workspace["as_of"] == (effective_date - timedelta(days=1)).isoformat()
+    assert {
+        gate["effective_as_of"]
+        for gate in workspace["system_method_gates"].values()
+    } == {(effective_date - timedelta(days=1)).isoformat()}
+    assert {
+        gate["knowledge_at"]
+        for gate in workspace["system_method_gates"].values()
+    } == {evaluated_at.isoformat()}
+    assert {
+        gate["reason_code"] for gate in workspace["system_method_gates"].values()
+    } == {"classification_unreviewed"}
+    assert not any(
+        fact.get("metric_key") == "custom.future"
+        for fact in workspace["fundamentals"]
+    )
+
+    after_new_york_midnight = datetime.combine(
+        effective_date,
+        datetime.min.time(),
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(timezone.utc) + timedelta(minutes=30)
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=effective_date,
+        evaluated_at=after_new_york_midnight,
+    )
+    assert workspace["system_method_gates"]["roic"]["status"] == "approved"
 
 
 def _monitoring_revision(expected_head: int = 0) -> dict:
@@ -859,7 +995,15 @@ def test_workspace_rejects_historical_as_of_until_pit_reconstruction_exists(
     user = user_factory(email="workspace-no-false-pit@example.com")
     stock = _stock(db_session, "NOPIT")
     case_id = _create(client, auth_headers(user), stock.id).json()["case"]["id"]
-    historical_day = date.today() - timedelta(days=1)
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    historical_day = (
+        evaluation_business_date(database_evaluation_cutoff(db_session))
+        - timedelta(days=1)
+    )
 
     response = client.get(
         f"/api/v1/research/cases/{case_id}/workspace?as_of={historical_day.isoformat()}",

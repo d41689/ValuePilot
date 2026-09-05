@@ -24,10 +24,13 @@ from app.services.method_applicability import (
 )
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
+    database_evaluation_cutoff,
     reviewed_method_gate,
 )
 from app.services import dcf_inputs
+from app.services.oracles_lens import dashboard as oracles_dashboard
 from app.services.oracles_lens.dashboard import (
+    _m3_facts_by_stock,
     _quality_overlay_by_stock,
     _valuation_reference_by_stock,
 )
@@ -98,6 +101,45 @@ def _owner_earnings_inputs(*, user_id: int, stock_id: int) -> list[MetricFact]:
         )
         for metric_key, value, unit in rows
     ]
+
+
+def test_valuation_context_respects_shared_knowledge_cutoff(
+    db_session, user_factory
+) -> None:
+    user = user_factory("valuation-cutoff@example.com")
+    stock = _stock(db_session, "VALCUTOFF")
+    cutoff = datetime.now(timezone.utc) + timedelta(days=1)
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="val.fair_value",
+            value_numeric=123,
+            value_json={"manual_role": "direct_intrinsic_value"},
+            unit="USD",
+            currency="USD",
+            period_type="AS_OF",
+            period_end_date=cutoff.date(),
+            source_type="manual",
+            is_current=True,
+            created_at=cutoff + timedelta(minutes=1),
+            updated_at=cutoff + timedelta(minutes=1),
+        )
+    )
+    db_session.commit()
+
+    at_cutoff = read_valuation_context(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        knowledge_cutoff=cutoff,
+    )
+
+    assert at_cutoff.user_intrinsic_value is None
+    assert at_cutoff.user_intrinsic_value_status == "missing"
+    assert read_valuation_context(
+        db_session, user_id=user.id, stock_id=stock.id
+    ).user_intrinsic_value == 123
 
 
 def _legacy_owner_earnings_facts(
@@ -635,6 +677,91 @@ def test_oracles_lens_exposes_typed_roic_gate_when_numeric_is_blocked(
     assert overlay["system_method_gates"]["roic"]["reason_code"] == (
         "classification_unreviewed"
     )
+
+
+def test_oracles_lens_current_gate_uses_new_york_date_and_preserves_historical_date(
+    db_session, user_factory, monkeypatch
+) -> None:
+    reviewer = user_factory("oracle-et-boundary@example.com", role="admin")
+    stock = _stock(db_session, "ORACLEET")
+    db_now = database_evaluation_cutoff(db_session)
+    effective_date = db_now.date() + timedelta(days=2)
+    review_company_classification(
+        db_session,
+        reviewer_user_id=reviewer.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=effective_date,
+        review_reason="Oracle boundary classification review.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=effective_date,
+            review_reason=f"Oracle boundary review for {risk_attribute}.",
+        )
+    fact = MetricFact(
+        user_id=reviewer.id,
+        stock_id=stock.id,
+        metric_key="returns.total_capital",
+        value_numeric=0.25,
+        value_json={"fact_nature": "actual"},
+        unit="ratio",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="manual",
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+    early = datetime.combine(
+        effective_date, datetime.min.time(), tzinfo=timezone.utc
+    ) + timedelta(minutes=30)
+    late = datetime.combine(
+        effective_date,
+        datetime.min.time(),
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(timezone.utc) + timedelta(minutes=30)
+    clock = [early]
+    monkeypatch.setattr(
+        oracles_dashboard,
+        "database_evaluation_cutoff",
+        lambda _session, supplied=None: supplied or clock[0],
+    )
+
+    current, states = _m3_facts_by_stock(
+        db_session,
+        [stock.id],
+        ["returns.total_capital"],
+        user_id=reviewer.id,
+    )
+    assert current[stock.id] == {}
+    assert states[stock.id]["reason_code"] == "classification_unreviewed"
+
+    clock[0] = late
+    current, states = _m3_facts_by_stock(
+        db_session,
+        [stock.id],
+        ["returns.total_capital"],
+        user_id=reviewer.id,
+    )
+    assert current[stock.id]["returns.total_capital"].id == fact.id
+    assert states[stock.id]["status"] == "available"
+
+    historical, states = _m3_facts_by_stock(
+        db_session,
+        [stock.id],
+        ["returns.total_capital"],
+        user_id=reviewer.id,
+        effective_as_of=effective_date - timedelta(days=1),
+        knowledge_at=late,
+    )
+    assert historical[stock.id] == {}
+    assert states[stock.id]["reason_code"] == "classification_unreviewed"
 
 
 def test_dcf_manifest_method_authority_carries_complete_stable_contract(

@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, DecimalException
 import re
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
@@ -37,6 +38,7 @@ PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE = (
 HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE = (
     "historical_current_projection_unverifiable"
 )
+ANALYSIS_BUSINESS_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def database_evaluation_cutoff(
@@ -52,6 +54,14 @@ def database_evaluation_cutoff(
     if cutoff is None or cutoff.tzinfo is None:
         raise RuntimeError("database clock did not return an aware timestamp")
     return cutoff.astimezone(timezone.utc)
+
+
+def evaluation_business_date(evaluated_at: datetime) -> date:
+    """Derive the analysis business date from an aware evaluation instant."""
+
+    if evaluated_at.tzinfo is None:
+        raise ValueError("evaluation instant must be timezone-aware")
+    return evaluated_at.astimezone(ANALYSIS_BUSINESS_TIMEZONE).date()
 
 
 class CanonicalSourceConflictError(ValueError):
@@ -2142,7 +2152,13 @@ def resolve_sec_publication_evidence(
     }
 
 
-def current_sec_unresolved_states(session: Session, *, stock_id: int) -> list[dict[str, Any]]:
+def current_sec_unresolved_states(
+    session: Session,
+    *,
+    stock_id: int,
+    knowledge_cutoff: datetime | None = None,
+) -> list[dict[str, Any]]:
+    cutoff = database_evaluation_cutoff(session, knowledge_cutoff)
     rows = session.execute(
         text(
             """
@@ -2159,12 +2175,14 @@ def current_sec_unresolved_states(session: Session, *, stock_id: int) -> list[di
               JOIN sec_metric_publication_availabilities a
                 ON a.publication_run_id=r.id
               WHERE p.stock_id=:stock_id AND r.status='succeeded'
+                AND p.known_at <= :knowledge_cutoff
+                AND a.available_at <= :knowledge_cutoff
             ) ranked
             WHERE ranked.slot_rank=1 AND ranked.status IN ('unresolved','rejected')
             ORDER BY ranked.metric_key, ranked.period_end_date
             """
         ),
-        {"stock_id": stock_id},
+        {"stock_id": stock_id, "knowledge_cutoff": cutoff},
     ).mappings().all()
     states = [
         {
@@ -2183,5 +2201,9 @@ def current_sec_unresolved_states(session: Session, *, stock_id: int) -> list[di
         }
         for row in rows
     ]
-    states.extend(active_sec_run_unresolved_states(session, stock_id=stock_id))
+    states.extend(
+        active_sec_run_unresolved_states(
+            session, stock_id=stock_id, knowledge_cutoff=cutoff
+        )
+    )
     return states

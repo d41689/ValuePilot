@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -289,7 +290,7 @@ def test_watchlist_rows_batch_101_members_with_fixed_query_count(
         event.remove(connection, "before_cursor_execute", capture)
 
     assert len(rows) == 101
-    assert len(statements) == 5
+    assert len(statements) == 6
     assert {row["delta_today"] for row in rows} == {1}
     assert len({row["current_price"]["as_of_date"] for row in rows}) == 1
     assert len(
@@ -305,12 +306,46 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
 
     evaluated_at = datetime(2026, 2, 4, 17, tzinfo=timezone.utc)
 
-    class FixedDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return evaluated_at if tz is not None else evaluated_at.replace(tzinfo=None)
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session, supplied=None: supplied or evaluated_at,
+        raising=False,
+    )
+    observed_cutoffs: list[datetime] = []
+    original_piotroski = stock_pools_endpoint._piotroski_scores_for_stocks
+    original_current_prices = stock_pools_endpoint.read_current_eod_prices
+    original_previous_prices = stock_pools_endpoint.read_canonical_eod_prices
+    original_valuations = stock_pools_endpoint.read_valuation_contexts
 
-    monkeypatch.setattr(stock_pools_endpoint, "datetime", FixedDateTime)
+    def capture_piotroski(*args, **kwargs):
+        observed_cutoffs.append(kwargs["evaluated_at"])
+        return original_piotroski(*args, **kwargs)
+
+    def capture_current_prices(*args, **kwargs):
+        observed_cutoffs.append(kwargs["evaluated_at"])
+        return original_current_prices(*args, **kwargs)
+
+    def capture_previous_prices(*args, **kwargs):
+        observed_cutoffs.append(kwargs["knowledge_cutoff"])
+        return original_previous_prices(*args, **kwargs)
+
+    def capture_valuations(*args, **kwargs):
+        observed_cutoffs.append(kwargs["knowledge_cutoff"])
+        return original_valuations(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stock_pools_endpoint, "_piotroski_scores_for_stocks", capture_piotroski
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint, "read_current_eod_prices", capture_current_prices
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint, "read_canonical_eod_prices", capture_previous_prices
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint, "read_valuation_contexts", capture_valuations
+    )
     monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
     monkeypatch.setattr(
         market_data_service.settings,
@@ -398,6 +433,44 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
         "reason_code": "price_missing",
         "currency": None,
     }
+    assert observed_cutoffs
+    assert all(cutoff is evaluated_at for cutoff in observed_cutoffs)
+
+
+def test_stock_pool_piotroski_guard_uses_new_york_business_date(monkeypatch):
+    from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
+
+    evaluated_at = datetime(2026, 9, 4, 0, 30, tzinfo=timezone.utc)
+    fact = SimpleNamespace(id=1)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "guard_reconciled_source_selection",
+        lambda facts, **_kwargs: facts,
+    )
+
+    def capture_method_guard(_session, **kwargs):
+        captured.update(kwargs)
+        return kwargs["facts"], []
+
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "guard_piotroski_method_authority",
+        capture_method_guard,
+    )
+
+    guarded, state = stock_pools_endpoint._guard_piotroski_display_facts(
+        object(),
+        user_id=7,
+        stock_id=11,
+        facts=[fact],
+        evaluated_at=evaluated_at,
+    )
+
+    assert guarded == [fact]
+    assert state["status"] == "available"
+    assert captured["knowledge_at"] is evaluated_at
+    assert captured["effective_as_of"] == date(2026, 9, 3)
 
 
 def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(

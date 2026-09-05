@@ -8,6 +8,7 @@ from app.models.facts import MetricFact, Formula, CalculatedRun
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
     database_evaluation_cutoff,
+    evaluation_business_date,
     guard_sec_run_availability,
     is_reserved_system_output_key,
     require_applicable_method_facts,
@@ -168,7 +169,7 @@ class FormulaEngine:
             self.db,
             stock_id=stock_id,
             facts=facts,
-            effective_as_of=evaluated_at.date(),
+            effective_as_of=evaluation_business_date(evaluated_at),
             knowledge_at=evaluated_at,
         )
         facts_by_metric = {

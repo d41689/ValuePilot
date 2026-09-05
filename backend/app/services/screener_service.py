@@ -11,6 +11,7 @@ from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
     CanonicalUnavailableError,
     database_evaluation_cutoff,
+    evaluation_business_date,
     guard_sec_run_availability,
     require_applicable_method_facts,
     visible_metric_fact_predicate,
@@ -516,7 +517,7 @@ class ScreenerService:
                 self.db,
                 stock_id=stock_id,
                 facts=stock_facts,
-                effective_as_of=evaluated_at.date(),
+                effective_as_of=evaluation_business_date(evaluated_at),
                 knowledge_at=evaluated_at,
             )
             for fact in applicable:

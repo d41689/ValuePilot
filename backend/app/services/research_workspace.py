@@ -1,7 +1,7 @@
 """User-authorized, stock-centric read model for a research case."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -32,6 +32,8 @@ from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
+    database_evaluation_cutoff,
+    evaluation_business_date,
     reviewed_method_gate,
     system_method_for_fact,
     visible_metric_fact_predicate,
@@ -146,9 +148,12 @@ def build_research_workspace(
     *,
     user_id: int,
     case_id: int,
-    as_of: date,
+    as_of: date | None = None,
+    evaluated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    evaluated_at = datetime.now(timezone.utc)
+    evaluated_at = database_evaluation_cutoff(session, evaluated_at)
+    current_as_of = evaluation_business_date(evaluated_at)
+    as_of = as_of or current_as_of
     case = (
         session.query(ResearchCase)
         .filter(ResearchCase.id == case_id, ResearchCase.user_id == user_id)
@@ -156,7 +161,7 @@ def build_research_workspace(
     )
     if case is None:
         raise ResearchCaseError("case_not_found", "Research case not found.", status_code=404)
-    if as_of != date.today():
+    if as_of != current_as_of:
         raise ResearchCaseError(
             "historical_as_of_not_supported",
             "Only the current research workspace is supported; point-in-time reconstruction is unavailable.",
@@ -197,6 +202,8 @@ def build_research_workspace(
         .where(
             MetricFact.stock_id == stock.id,
             MetricFact.is_current.is_(True),
+            MetricFact.created_at <= evaluated_at,
+            MetricFact.updated_at <= evaluated_at,
             visible_metric_fact_predicate(MetricFact, user_id=user_id),
         )
         .order_by(
@@ -276,7 +283,12 @@ def build_research_workspace(
         [(row, stock) for row in coverage_rows],
         evaluated_at=evaluated_at,
     )
-    valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
+    valuation = read_valuation_context(
+        session,
+        user_id=user_id,
+        stock_id=stock.id,
+        knowledge_cutoff=evaluated_at,
+    )
     active_report = resolve_active_reports(
         session,
         stock_ids=[stock.id],
@@ -434,7 +446,9 @@ def build_research_workspace(
         ]
         + reconciliation_blocked_states
         + unsupported_method_states
-        + current_sec_unresolved_states(session, stock_id=stock.id),
+        + current_sec_unresolved_states(
+            session, stock_id=stock.id, knowledge_cutoff=evaluated_at
+        ),
         "system_method_gates": {
             method_key: method_gate_decisions[method_key].as_dict()
             for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")

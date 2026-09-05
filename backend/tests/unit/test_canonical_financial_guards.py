@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services import canonical_financials
 from app.services.calculated_metrics.piotroski_f_score import build_piotroski_f_score_facts
 from app.services.calculated_metrics.value_line_ratios import build_value_line_ratio_facts
 from app.services.canonical_financials import (
@@ -225,14 +226,33 @@ def test_all_production_sec_availability_callers_pass_a_cutoff():
     assert missing == []
 
 
+@pytest.mark.parametrize(
+    ("evaluated_at", "expected"),
+    [
+        (datetime(2026, 9, 4, 0, 30, tzinfo=timezone.utc), date(2026, 9, 3)),
+        (datetime(2026, 9, 4, 4, 30, tzinfo=timezone.utc), date(2026, 9, 4)),
+    ],
+)
+def test_evaluation_business_date_uses_new_york_boundary(evaluated_at, expected):
+    assert canonical_financials.evaluation_business_date(evaluated_at) == expected
+
+
+def test_evaluation_business_date_requires_aware_timestamp():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        canonical_financials.evaluation_business_date(datetime(2026, 9, 4, 4, 30))
+
+
 def test_method_gate_consumers_do_not_capture_independent_app_clocks():
     guarded_paths = (
+        Path("app/api/v1/endpoints/research.py"),
+        Path("app/api/v1/endpoints/stock_pools.py"),
         Path("app/api/v1/endpoints/stocks.py"),
         Path("app/services/calculated_metrics/piotroski_f_score.py"),
         Path("app/services/calculated_metrics/value_line_ratios.py"),
         Path("app/services/dcf_inputs.py"),
         Path("app/services/formula_engine.py"),
         Path("app/services/oracles_lens/dashboard.py"),
+        Path("app/services/research_workspace.py"),
         Path("app/services/screener_service.py"),
     )
     violations: list[str] = []
