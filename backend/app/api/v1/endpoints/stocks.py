@@ -28,6 +28,7 @@ from app.services.value_line_report_identity import (
     ResolvedValueLineReportIdentity,
     resolve_fact_report_identities,
 )
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.canonical_financials import (
     CanonicalUnavailableError,
     CanonicalSourceConflictError,
@@ -1022,6 +1023,8 @@ def read_stock_by_ticker(
     except (
         ReportIdentityUnverifiableError,
         ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        ValueLineSourceUnavailableError,
     ) as error:
         raise HTTPException(
             status_code=409,
@@ -1042,6 +1045,8 @@ def read_stock_by_ticker(
     except (
         ReportIdentityUnverifiableError,
         ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        ValueLineSourceUnavailableError,
     ) as error:
         raise HTTPException(
             status_code=409,
@@ -1412,6 +1417,7 @@ def read_stock_by_ticker(
         ReportIdentityUnverifiableError,
         ActualConflictAuthorityBoundExceededError,
         ActualConflictAuthorityAmbiguousError,
+        ValueLineSourceUnavailableError,
     ) as error:
         raise HTTPException(
             status_code=409,

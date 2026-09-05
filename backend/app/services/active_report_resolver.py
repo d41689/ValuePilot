@@ -8,12 +8,18 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import (
+    PdfDocument,
     ValueLineDocumentReportIdentityRevision,
     ValueLineParseRun,
 )
 from app.models.facts import MetricFact
 from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
+from app.services.value_line_source_visibility import (
+    ValueLineSourceUnavailableError,
+    current_value_line_source_available_predicate,
+    current_value_line_source_unavailable_predicate,
+)
 
 
 MAX_ACTIVE_REPORT_AUTHORITY_ITEMS = 500
@@ -32,6 +38,18 @@ class ActiveReportAuthorityBoundExceededError(ValueError):
         self.limit = limit
         super().__init__(
             "Active report authority exceeds the supported bounded scope."
+        )
+
+
+class ActualConflictAuthorityAmbiguousError(ValueError):
+    """No unique active report or canonical observation can be selected."""
+
+    code = "actual_conflict_authority_ambiguous"
+
+    def __init__(self, *, fact_ids: list[int]):
+        self.fact_ids = tuple(sorted(set(fact_ids)))
+        super().__init__(
+            "Actual conflict authority cannot identify a unique canonical fact."
         )
 
 
@@ -124,6 +142,78 @@ def resolve_active_reports(
             document_ids=[unverifiable.source_document_id],
         )
 
+    fact_time_authority = [
+        MetricFact.value_line_fact_known_at <= knowledge_cutoff,
+        identity.known_at <= knowledge_cutoff,
+        or_(
+            MetricFact.value_line_created_txid.is_(None),
+            MetricFact.created_at <= knowledge_cutoff,
+        ),
+    ]
+    temporal_authority = [
+        *fact_time_authority,
+        or_(
+            MetricFact.value_line_parse_run_id.is_(None),
+            and_(
+                ValueLineParseRun.status == "succeeded",
+                ValueLineParseRun.completed_at.is_not(None),
+                ValueLineParseRun.completed_at <= knowledge_cutoff,
+            ),
+            and_(
+                ValueLineParseRun.status == "running",
+                ValueLineParseRun.created_txid == func.txid_current(),
+            ),
+        ),
+    ]
+    source_document_ids = session.scalars(
+        select(MetricFact.source_document_id)
+        .join(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
+        )
+        .outerjoin(
+            ValueLineParseRun,
+            ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
+        )
+        .where(*scope, *temporal_authority)
+        .distinct()
+        .limit(MAX_ACTIVE_REPORT_AUTHORITY_ITEMS + 1)
+    ).all()
+    if len(source_document_ids) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="candidates",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
+    if source_document_ids:
+        # Hold current document authorization stable until the request
+        # transaction ends. A concurrent transfer or source revocation either
+        # completes before this lock and is rejected below, or waits.
+        session.execute(
+            select(PdfDocument.id)
+            .where(PdfDocument.id.in_(source_document_ids))
+            .with_for_update(of=PdfDocument, read=True)
+        ).all()
+    source_unavailable = session.execute(
+        select(MetricFact.id)
+        .join(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
+        )
+        .outerjoin(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
+        .outerjoin(
+            ValueLineParseRun,
+            ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
+        )
+        .where(
+            *scope,
+            *temporal_authority,
+            current_value_line_source_unavailable_predicate(),
+        )
+        .limit(1)
+    ).first()
+    if source_unavailable is not None:
+        raise ValueLineSourceUnavailableError()
+
     rows = session.execute(
         select(
             MetricFact.stock_id,
@@ -135,30 +225,15 @@ def resolve_active_reports(
             identity,
             identity.id == MetricFact.value_line_report_identity_revision_id,
         )
+        .join(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
         .outerjoin(
             ValueLineParseRun,
             ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
         )
         .where(
             *scope,
-            MetricFact.value_line_fact_known_at <= knowledge_cutoff,
-            identity.known_at <= knowledge_cutoff,
-            or_(
-                MetricFact.value_line_created_txid.is_(None),
-                MetricFact.created_at <= knowledge_cutoff,
-            ),
-            or_(
-                MetricFact.value_line_parse_run_id.is_(None),
-                and_(
-                    ValueLineParseRun.status == "succeeded",
-                    ValueLineParseRun.completed_at.is_not(None),
-                    ValueLineParseRun.completed_at <= knowledge_cutoff,
-                ),
-                and_(
-                    ValueLineParseRun.status == "running",
-                    ValueLineParseRun.created_txid == func.txid_current(),
-                ),
-            ),
+            *temporal_authority,
+            current_value_line_source_available_predicate(),
         )
         .distinct()
         .order_by(
@@ -173,7 +248,7 @@ def resolve_active_reports(
             dimension="candidates",
             limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
         )
-    active_by_stock: dict[int, ActiveReportSelection] = {}
+    candidates_by_stock: dict[int, list[ActiveReportSelection]] = {}
     for row in rows:
         if row.stock_id is None or row.source_document_id is None:
             continue
@@ -183,18 +258,33 @@ def resolve_active_reports(
             report_identity_revision_id=row.revision_id,
             report_date=row.report_date,
         )
-        current = active_by_stock.get(row.stock_id)
-        if current is None or _selection_rank(candidate) > _selection_rank(current):
-            active_by_stock[row.stock_id] = candidate
+        candidates_by_stock.setdefault(row.stock_id, []).append(candidate)
+
+    active_by_stock: dict[int, ActiveReportSelection] = {}
+    for candidate_stock_id, candidates in candidates_by_stock.items():
+        dated_candidates = [
+            candidate for candidate in candidates if candidate.report_date is not None
+        ]
+        if not dated_candidates:
+            # One undated report remains useful provenance. Multiple undated
+            # reports have no date authority with which to select an active one.
+            if len(candidates) == 1:
+                active_by_stock[candidate_stock_id] = candidates[0]
+            continue
+        latest_rank = max(_selection_rank(candidate) for candidate in dated_candidates)
+        latest = [
+            candidate
+            for candidate in dated_candidates
+            if _selection_rank(candidate) == latest_rank
+        ]
+        if len(latest) != 1:
+            raise ActualConflictAuthorityAmbiguousError(fact_ids=[])
+        active_by_stock[candidate_stock_id] = latest[0]
     return active_by_stock
 
 
-def _selection_rank(selection: ActiveReportSelection) -> tuple[date, int, int]:
-    return (
-        selection.report_date or date.min,
-        selection.document_id,
-        selection.report_identity_revision_id,
-    )
+def _selection_rank(selection: ActiveReportSelection) -> date:
+    return selection.report_date or date.min
 
 
 def _bounded_ids(values: list[int], *, dimension: str) -> list[int]:

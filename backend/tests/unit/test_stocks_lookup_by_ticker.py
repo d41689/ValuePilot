@@ -2231,6 +2231,34 @@ def test_stock_maps_active_report_authority_bound_to_typed_conflict(
     }
 
 
+def test_stock_maps_active_report_source_loss_to_typed_conflict(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.value_line_source_visibility import (
+        ValueLineSourceUnavailableError,
+    )
+
+    user = User(email="ticker-active-report-source@example.com")
+    stock = Stock(
+        ticker="AR_SOURCE",
+        exchange="NYSE",
+        company_name="Active Report Source",
+    )
+    db_session.add_all([user, stock])
+    db_session.commit()
+
+    def reject_source(*_args, **_kwargs):
+        raise ValueLineSourceUnavailableError()
+
+    monkeypatch.setattr(stocks_endpoint, "resolve_active_reports", reject_source)
+    response = client.get(
+        "/api/v1/stocks/by_ticker/ar_source", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "source_unavailable"
+
+
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     client, db_session, auth_headers, monkeypatch
 ):

@@ -14,10 +14,8 @@ def test_document_cursor_round_trips_null_upload_time() -> None:
     cursor = DocumentCursor(
         user_id=17,
         limit=25,
-        snapshot_cutoff=datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc),
-        snapshot_visibility="100:110:105,108",
-        snapshot_max_id=99,
-        snapshot_total=45,
+        snapshot_id="snapshot-id-with-at-least-thirty-two-characters",
+        last_ordinal=11,
         last_upload_time=None,
         last_id=12,
     )
@@ -32,10 +30,8 @@ def test_document_cursor_rejects_noncanonical_signature_encoding() -> None:
     cursor = DocumentCursor(
         user_id=17,
         limit=25,
-        snapshot_cutoff=datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc),
-        snapshot_visibility="100:110:",
-        snapshot_max_id=99,
-        snapshot_total=45,
+        snapshot_id="snapshot-id-with-at-least-thirty-two-characters",
+        last_ordinal=11,
         last_upload_time=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
         last_id=12,
     )

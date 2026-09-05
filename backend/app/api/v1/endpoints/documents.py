@@ -17,11 +17,10 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
-from sqlalchemy import and_, or_, select, func, text
+from sqlalchemy import select, func
 import yaml
 from app.models.artifacts import (
     DocumentPage,
-    ValueLineDocumentReportIdentityRevision,
     ValueLineFactExtractionInput,
 )
 from app.models.extractions import MetricExtraction
@@ -43,16 +42,24 @@ from app.ingestion.parsers.v1_value_line.page_json import (
 from app.services.active_report_resolver import (
     MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
     ActiveReportAuthorityBoundExceededError,
+    ActualConflictAuthorityAmbiguousError,
     resolve_active_reports,
 )
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
 from app.services.document_cursor import (
     DocumentCursor,
+    DocumentsCursorExpiredError,
+    DocumentsSnapshotBoundExceededError,
+    DocumentsSnapshotSourceUnavailableError,
     InvalidDocumentsCursorError,
+    create_document_snapshot,
     decode_document_cursor,
     encode_document_cursor,
+    load_document_snapshot,
+    load_document_snapshot_page,
 )
 from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
 from app.services.manual_metric_correction import (
@@ -221,6 +228,7 @@ def list_documents(
         _raise_invalid_documents_cursor()
 
     cursor_state: DocumentCursor | None = None
+    created_cursor_snapshot = False
     if cursor is not None:
         try:
             cursor_state = decode_document_cursor(cursor, user_id=user_id)
@@ -236,99 +244,52 @@ def list_documents(
     if cursor_mode:
         effective_limit = cursor_state.limit if cursor_state is not None else limit
         assert effective_limit is not None
-        if cursor_state is None:
-            snapshot_clock = session.execute(
-                text(
-                    "SELECT clock_timestamp() AS snapshot_cutoff, "
-                    "pg_current_snapshot()::text AS snapshot_visibility"
+        try:
+            snapshot = (
+                create_document_snapshot(
+                    session,
+                    user_id=user_id,
+                    limit=effective_limit,
                 )
-            ).one()
-            snapshot_cutoff = snapshot_clock.snapshot_cutoff
-            snapshot_visibility = snapshot_clock.snapshot_visibility
-            snapshot_row_visible = _document_snapshot_visibility_predicate(
-                snapshot_visibility=snapshot_visibility
+                if cursor_state is None
+                else load_document_snapshot(session, cursor=cursor_state)
             )
-            snapshot_owner = _document_snapshot_owner_predicate(
-                user_id=user_id,
-                snapshot_cutoff=snapshot_cutoff,
+            created_cursor_snapshot = cursor_state is None
+            snapshot_rows, has_next = load_document_snapshot_page(
+                session,
+                snapshot=snapshot,
+                after_ordinal=(cursor_state.last_ordinal if cursor_state else 0),
             )
-            snapshot_max_id = session.scalar(
-                select(func.max(PdfDocument.id)).where(
-                    PdfDocument.user_id == user_id,
-                    snapshot_row_visible,
-                    snapshot_owner,
-                )
-            ) or 0
-            snapshot_total = session.scalar(
-                select(func.count(PdfDocument.id)).where(
-                    PdfDocument.user_id == user_id,
-                    snapshot_row_visible,
-                    snapshot_owner,
-                    PdfDocument.id <= snapshot_max_id,
-                )
-            ) or 0
-        else:
-            snapshot_cutoff = cursor_state.snapshot_cutoff
-            snapshot_visibility = cursor_state.snapshot_visibility
-            snapshot_max_id = cursor_state.snapshot_max_id
-            snapshot_total = cursor_state.snapshot_total
-            snapshot_owner = _document_snapshot_owner_predicate(
-                user_id=user_id,
-                snapshot_cutoff=snapshot_cutoff,
-            )
-            snapshot_row_visible = _document_snapshot_visibility_predicate(
-                snapshot_visibility=snapshot_visibility
-            )
-        stmt = select(PdfDocument).where(
-            PdfDocument.user_id == user_id,
-            snapshot_row_visible,
-            snapshot_owner,
-            PdfDocument.id <= snapshot_max_id,
-        )
-        if cursor_state is not None:
-            if cursor_state.last_upload_time is None:
-                stmt = stmt.where(
-                    PdfDocument.upload_time.is_(None),
-                    PdfDocument.id < cursor_state.last_id,
-                )
-            else:
-                stmt = stmt.where(
-                    or_(
-                        PdfDocument.upload_time
-                        < cursor_state.last_upload_time,
-                        and_(
-                            PdfDocument.upload_time
-                            == cursor_state.last_upload_time,
-                            PdfDocument.id < cursor_state.last_id,
-                        ),
-                        PdfDocument.upload_time.is_(None),
-                    )
-                )
-        page_rows = session.scalars(
-            stmt.order_by(
-                PdfDocument.upload_time.desc().nulls_last(),
-                PdfDocument.id.desc(),
-            ).limit(effective_limit + 1)
-        ).all()
-        has_next = len(page_rows) > effective_limit
-        docs = page_rows[:effective_limit]
-        total = snapshot_total
+        except InvalidDocumentsCursorError:
+            _raise_invalid_documents_cursor()
+        except (
+            DocumentsCursorExpiredError,
+            DocumentsSnapshotBoundExceededError,
+            DocumentsSnapshotSourceUnavailableError,
+        ) as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
+        docs = [row.document for row in snapshot_rows]
+        snapshot_upload_times = {
+            row.document.id: row.upload_time for row in snapshot_rows
+        }
+        total = snapshot.snapshot_total
         response.headers["X-Pagination-Mode"] = "cursor"
-        response.headers["X-Snapshot-Cutoff"] = snapshot_cutoff.isoformat()
-        response.headers["X-Snapshot-Max-Id"] = str(snapshot_max_id)
+        response.headers["X-Snapshot-Cutoff"] = snapshot.snapshot_cutoff.isoformat()
+        response.headers["X-Snapshot-Max-Id"] = str(snapshot.snapshot_max_id)
         response.headers["X-Page-Offset"] = "0"
         if has_next and docs:
-            last = docs[-1]
+            last = snapshot_rows[-1]
             response.headers["X-Next-Cursor"] = encode_document_cursor(
                 DocumentCursor(
                     user_id=user_id,
                     limit=effective_limit,
-                    snapshot_cutoff=snapshot_cutoff,
-                    snapshot_visibility=snapshot_visibility,
-                    snapshot_max_id=snapshot_max_id,
-                    snapshot_total=snapshot_total,
+                    snapshot_id=snapshot.snapshot_id,
+                    last_ordinal=last.ordinal,
                     last_upload_time=last.upload_time,
-                    last_id=last.id,
+                    last_id=last.document.id,
                 )
             )
     else:
@@ -353,6 +314,7 @@ def list_documents(
             "offset" if offset is not None else "unpaged"
         )
         response.headers["X-Page-Offset"] = str(legacy_offset)
+        snapshot_upload_times = {}
 
     if limit is None and not cursor_mode and total > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
         error = ActiveReportAuthorityBoundExceededError(
@@ -366,6 +328,8 @@ def list_documents(
     response.headers["X-Total-Count"] = str(total)
     response.headers["X-Page-Limit"] = str(effective_limit)
     if not docs:
+        if created_cursor_snapshot:
+            session.commit()
         return []
 
     doc_ids = [doc.id for doc in docs]
@@ -454,6 +418,8 @@ def list_documents(
     except (
         ReportIdentityUnverifiableError,
         ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        ValueLineSourceUnavailableError,
     ) as error:
         raise HTTPException(
             status_code=409,
@@ -496,7 +462,11 @@ def list_documents(
                 "source": doc.source,
                 "template_label": template_label,
                 "parse_status": doc.parse_status,
-                "upload_time": doc.upload_time.isoformat() if doc.upload_time else None,
+                "upload_time": (
+                    snapshot_upload_times.get(doc.id, doc.upload_time).isoformat()
+                    if snapshot_upload_times.get(doc.id, doc.upload_time)
+                    else None
+                ),
                 "report_date": doc.report_date.isoformat() if doc.report_date else None,
                 "page_count": page_counts.get(doc.id, 0),
                 "parsed_page_count": parsed_page_counts.get(doc.id, 0),
@@ -509,6 +479,10 @@ def list_documents(
 
     # Preserve the exact stable order used by the SQL page. Re-sorting a page by
     # derived ticker/report metadata would make offset pages overlap or skip rows.
+    if created_cursor_snapshot:
+        # Publish the snapshot only after the first page and all derived
+        # metadata were produced from the same request transaction.
+        session.commit()
     return output
 
 
@@ -519,40 +493,6 @@ def _raise_invalid_documents_cursor() -> None:
         detail={"code": error.code, "message": str(error)},
     ) from error
 
-
-def _document_snapshot_owner_predicate(
-    *,
-    user_id: int,
-    snapshot_cutoff: datetime,
-) -> Any:
-    """Require the latest DB-owned identity at the snapshot to own the doc."""
-
-    identity = ValueLineDocumentReportIdentityRevision
-    snapshot_owner = (
-        select(identity.user_id)
-        .where(
-            identity.document_id == PdfDocument.id,
-            identity.known_at <= snapshot_cutoff,
-        )
-        .order_by(identity.known_at.desc(), identity.id.desc())
-        .limit(1)
-        .correlate(PdfDocument)
-        .scalar_subquery()
-    )
-    return snapshot_owner == user_id
-
-
-def _document_snapshot_visibility_predicate(
-    *,
-    snapshot_visibility: str,
-) -> Any:
-    """Keep only document tuple versions visible in the first-page snapshot."""
-
-    return text(
-        "(pg_visible_in_snapshot((pdf_documents.xmin::text)::xid8, "
-        "CAST(:document_snapshot_visibility AS pg_snapshot)) "
-        "OR pg_xact_status((pdf_documents.xmin::text)::xid8)='in progress')"
-    ).bindparams(document_snapshot_visibility=snapshot_visibility)
 
 @router.post("/upload", response_model=dict)
 def upload_document(

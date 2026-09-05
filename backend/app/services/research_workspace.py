@@ -40,6 +40,7 @@ from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
     resolve_fact_report_identities,
 )
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
@@ -305,6 +306,7 @@ def build_research_workspace(
         ActiveReportAuthorityBoundExceededError,
         ActualConflictAuthorityBoundExceededError,
         ActualConflictAuthorityAmbiguousError,
+        ValueLineSourceUnavailableError,
     ) as error:
         raise ResearchCaseError(
             error.code,

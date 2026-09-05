@@ -9,6 +9,7 @@ from app.models.users import User
 from app.models.stocks import Stock
 from app.models.artifacts import (
     PdfDocument,
+    DocumentListSnapshot,
     DocumentPage,
     ValueLineFactExtractionInput,
     ValueLineParseRun,
@@ -20,6 +21,7 @@ from app.services.active_report_resolver import (
     ActiveReportAuthorityBoundExceededError,
 )
 from app.services.ingestion_service import IngestionService
+from app.services.document_cursor import decode_document_cursor
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.api.v1.endpoints.extractions import (
     ExtractionCorrectionIdentityError,
@@ -2830,6 +2832,172 @@ def test_documents_cursor_snapshot_excludes_concurrent_insert_without_duplicates
     assert second_page.headers.get("x-next-cursor") is None
 
 
+def test_documents_cursor_persists_membership_across_unrelated_row_update(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-cursor-update@example.com")
+    documents = [
+        PdfDocument(
+            user_id=user.id,
+            file_name=f"stable-{day}.pdf",
+            source="value_line",
+            file_storage_key=f"tests/stable-{day}.pdf",
+            parse_status="parsed",
+            upload_time=datetime(2026, 5, day, 12, 0),
+        )
+        for day in range(1, 4)
+    ]
+    db_session.add_all(documents)
+    db_session.commit()
+
+    first = client.get("/api/v1/documents?limit=1", headers=auth_headers(user))
+    cursor = first.headers["x-next-cursor"]
+    documents[1].file_name = "renamed-without-authority-change.pdf"
+    documents[1].upload_time = datetime(2026, 6, 1, 12, 0)
+    db_session.commit()
+
+    second = client.get(
+        "/api/v1/documents", params={"cursor": cursor}, headers=auth_headers(user)
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert second.json()[0]["id"] == documents[1].id
+    assert second.json()[0]["file_name"] == "renamed-without-authority-change.pdf"
+    assert second.json()[0]["upload_time"].startswith("2026-05-02T12:00:00")
+    assert first.headers["x-total-count"] == second.headers["x-total-count"] == "3"
+
+
+def test_documents_cursor_reports_current_visibility_loss_instead_of_shrinking(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory("documents-cursor-visibility@example.com")
+    other = user_factory("documents-cursor-visibility-other@example.com")
+    documents = [
+        PdfDocument(
+            user_id=owner.id,
+            file_name=f"visibility-{day}.pdf",
+            source="value_line",
+            file_storage_key=f"tests/visibility-{day}.pdf",
+            parse_status="parsed",
+            upload_time=datetime(2026, 5, day, 12, 0),
+        )
+        for day in range(1, 3)
+    ]
+    db_session.add_all(documents)
+    db_session.commit()
+    first = client.get("/api/v1/documents?limit=1", headers=auth_headers(owner))
+    cursor = first.headers["x-next-cursor"]
+
+    documents[0].user_id = other.id
+    db_session.commit()
+    continued = client.get(
+        "/api/v1/documents", params={"cursor": cursor}, headers=auth_headers(owner)
+    )
+
+    assert continued.status_code == 409
+    assert continued.json()["detail"]["code"] == (
+        "documents_snapshot_source_unavailable"
+    )
+
+
+def test_documents_cursor_reports_source_revocation_instead_of_returning_member(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory("documents-cursor-source-loss@example.com")
+    documents = [
+        PdfDocument(
+            user_id=owner.id,
+            file_name=f"source-loss-{day}.pdf",
+            source="value_line",
+            file_storage_key=f"tests/source-loss-{day}.pdf",
+            parse_status="parsed",
+            upload_time=datetime(2026, 5, day, 12, 0),
+        )
+        for day in range(1, 3)
+    ]
+    db_session.add_all(documents)
+    db_session.commit()
+    first = client.get("/api/v1/documents?limit=1", headers=auth_headers(owner))
+    documents[0].source = "authorization_revoked"
+    db_session.commit()
+
+    continued = client.get(
+        "/api/v1/documents",
+        params={"cursor": first.headers["x-next-cursor"]},
+        headers=auth_headers(owner),
+    )
+    assert continued.status_code == 409
+    assert continued.json()["detail"]["code"] == (
+        "documents_snapshot_source_unavailable"
+    )
+
+
+def test_documents_cursor_expiry_is_typed(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import document_cursor as cursor_service
+
+    monkeypatch.setattr(cursor_service, "DOCUMENT_SNAPSHOT_TTL_MINUTES", 0)
+    user = user_factory("documents-cursor-expiry@example.com")
+    db_session.add_all(
+        [
+            PdfDocument(
+                user_id=user.id,
+                file_name=f"expiry-{index}.pdf",
+                source="value_line",
+                file_storage_key=f"tests/expiry-{index}.pdf",
+                parse_status="parsed",
+            )
+            for index in range(2)
+        ]
+    )
+    db_session.commit()
+    first = client.get("/api/v1/documents?limit=1", headers=auth_headers(user))
+    cursor = first.headers["x-next-cursor"]
+    decoded = decode_document_cursor(cursor, user_id=user.id)
+    assert db_session.get(DocumentListSnapshot, decoded.snapshot_id) is not None
+
+    continued = client.get(
+        "/api/v1/documents", params={"cursor": cursor}, headers=auth_headers(user)
+    )
+    assert continued.status_code == 409
+    assert continued.json()["detail"]["code"] == "documents_cursor_expired"
+    db_session.expire_all()
+    assert db_session.get(DocumentListSnapshot, decoded.snapshot_id) is None
+
+
+def test_documents_cursor_rejects_collection_beyond_persistent_snapshot_bound(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import document_cursor as cursor_service
+
+    user = user_factory("documents-cursor-bound@example.com")
+    db_session.add_all(
+        [
+            PdfDocument(
+                user_id=user.id,
+                file_name=f"bound-{index}.pdf",
+                source="value_line",
+                file_storage_key=f"tests/bound-{index}.pdf",
+                parse_status="parsed",
+            )
+            for index in range(3)
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(cursor_service, "MAX_DOCUMENT_SNAPSHOT_MEMBERS", 2)
+
+    response = client.get("/api/v1/documents?limit=1", headers=auth_headers(user))
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "documents_snapshot_bound_exceeded"
+    assert db_session.scalar(
+        sa.select(sa.func.count(DocumentListSnapshot.id)).where(
+            DocumentListSnapshot.user_id == user.id
+        )
+    ) == 0
+
+
 def test_documents_cursor_excludes_insert_uncommitted_at_snapshot_then_committed(
     client, db_session, auth_headers
 ):
@@ -2931,8 +3099,8 @@ def test_documents_cursor_handles_ties_and_deletion(
         headers=auth_headers(user),
     )
     cursor = first_page.headers["x-next-cursor"]
-    # Deleting an unseen snapshot member must not shift another row across the
-    # cursor boundary or cause a duplicate.
+    # Deleting an unseen member makes the retained traversal incomplete; it
+    # must never be silently skipped while preserving the original total.
     db_session.delete(oldest)
     db_session.commit()
     second_page = client.get(
@@ -2942,11 +3110,10 @@ def test_documents_cursor_handles_ties_and_deletion(
     )
 
     assert first_page.status_code == 200, first_page.text
-    assert second_page.status_code == 200, second_page.text
-    assert [first_page.json()[0]["id"], second_page.json()[0]["id"]] == [
-        tied[1].id,
-        tied[0].id,
-    ]
+    assert second_page.status_code == 409, second_page.text
+    assert second_page.json()["detail"]["code"] == (
+        "documents_snapshot_source_unavailable"
+    )
 
 
 def test_documents_cursor_rejects_tampering_cross_user_replay_and_limit_change(
@@ -3142,6 +3309,40 @@ def test_documents_list_maps_active_report_bound_to_typed_conflict(
         "code": "active_report_authority_bound_exceeded",
         "message": "Active report authority exceeds the supported bounded scope.",
     }
+
+
+def test_documents_list_maps_value_line_source_loss_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import documents as documents_endpoint
+    from app.services.value_line_source_visibility import (
+        ValueLineSourceUnavailableError,
+    )
+
+    user = user_factory("documents-source-unavailable@example.com")
+    stock = Stock(ticker="DOCSRC", exchange="NYSE", company_name="Document Source")
+    db_session.add(stock)
+    db_session.flush()
+    db_session.add(
+        PdfDocument(
+            user_id=user.id,
+            stock_id=stock.id,
+            file_name="document-source.pdf",
+            source="value_line",
+            file_storage_key="tests/document-source.pdf",
+            parse_status="parsed",
+        )
+    )
+    db_session.commit()
+
+    def reject_source(*_args, **_kwargs):
+        raise ValueLineSourceUnavailableError()
+
+    monkeypatch.setattr(documents_endpoint, "resolve_active_reports", reject_source)
+    response = client.get("/api/v1/documents", headers=auth_headers(user))
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "source_unavailable"
 
 
 def test_reparse_endpoint_maps_unverifiable_retained_identity_to_typed_conflict(

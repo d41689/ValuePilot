@@ -706,3 +706,40 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   ambiguity regression and canonical-base64/oversized-cursor rejection. The
   six directly affected files are `110 passed` in 33.62 seconds.
   Exact canonical closing gates remain pending for the post-review gate.
+- 2026-09-05: Strict Terra R20 rejected PostgreSQL tuple visibility as a
+  cross-request pagination snapshot: an unrelated UPDATE replaces the visible
+  tuple and could omit a retained member. Forward migration `20260904190000`
+  introduces a tenant-owned, 15-minute document-list snapshot with at most
+  5,000 immutable members. The first request captures membership and immutable
+  `(upload_time, document_id)` order in one database statement; the signed v2
+  cursor carries only an unguessable snapshot ID and the last server-validated
+  ordinal/key. Continuations read persisted membership, preserve the initial
+  total, exclude later inserts, and return typed errors for expiry, tampering,
+  tenant/page-size mismatch, or a member whose current ownership/source became
+  unavailable. Deletion is intentionally detectable because the member's
+  document ID is not a foreign key. Expired snapshots are lazily deleted;
+  snapshot ownership cascades if a user row is eventually deleted, while FT-02
+  account-erasure work must explicitly clear still-retained user tombstones.
+- 2026-09-05: R20 also removes document/revision/run-time tie-breakers from
+  current Value Line report authority. A unique greatest `report_date` is the
+  only active-report winner; distinct documents or identity revisions tied at
+  the greatest date fail closed as `actual_conflict_authority_ambiguous`.
+  Actual-value conflict ranking applies the same rule (equal values are not a
+  value conflict, and duplicate observations within one report slot still
+  require a unique canonical `is_current` fact). Active-report and conflict
+  readers now share one current visibility gate: the present document must
+  still match fact ownership/stock, an authorized upload/Value Line source,
+  usable parse state, and reviewed identity. Current authorization rows are
+  share-locked for the request transaction, while historical fact/report
+  identity remains evaluated independently at the caller's PIT cutoff. Stock,
+  document and Research Workspace consumers map ambiguity and source loss to
+  generic typed 409 responses without tenant identifiers.
+- 2026-09-05: R20 tests-first coverage includes unrelated tuple updates,
+  concurrent/uncommitted inserts, ownership loss, expiry and cleanup, snapshot
+  bounds, signed cursor isolation, migration round-trip/immutability/cascade,
+  same-date 100/120 ambiguity, equal-value non-conflict, older-date tie
+  boundaries, and current source/ownership loss. The latest directly affected
+  cursor/documents/migration set is `55 passed`. The 21-file method, identity,
+  migration, documents, stock, Workspace, quant-audit, reconciliation, pool and
+  calculation regression set is `411 passed` in 193.74 seconds. Exact canonical
+  closing gates remain pending for the post-review gate.

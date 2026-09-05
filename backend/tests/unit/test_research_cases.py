@@ -469,6 +469,33 @@ def test_workspace_maps_active_report_authority_bound_to_typed_conflict(
     }
 
 
+def test_workspace_maps_value_line_source_loss_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import research_workspace
+    from app.services.value_line_source_visibility import (
+        ValueLineSourceUnavailableError,
+    )
+
+    user = user_factory("workspace-source-unavailable@example.com")
+    stock = _stock(db_session, "RWSSOURCE")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_source(*_args, **_kwargs):
+        raise ValueLineSourceUnavailableError()
+
+    monkeypatch.setattr(research_workspace, "resolve_active_reports", reject_source)
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "source_unavailable"
+
+
 def test_workspace_maps_actual_conflict_observation_bound_to_typed_conflict(
     client, db_session, user_factory, auth_headers, monkeypatch
 ):
@@ -1273,7 +1300,7 @@ def test_workspace_redacts_only_blocked_reconciliation_slot(
             parse_status="parsed",
             stock_id=stock.id,
             identity_needs_review=False,
-            report_date=date(2026, 1, 2),
+            report_date=date(2026, 1, 2 + index),
         )
         for index in range(2)
     ]

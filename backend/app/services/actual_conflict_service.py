@@ -8,13 +8,22 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import (
+    PdfDocument,
     ValueLineDocumentReportIdentityRevision,
     ValueLineParseRun,
 )
 from app.models.facts import MetricFact
-from app.services.active_report_resolver import ActiveReportSelection
+from app.services.active_report_resolver import (
+    ActiveReportSelection,
+    ActualConflictAuthorityAmbiguousError,
+)
 from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
+from app.services.value_line_source_visibility import (
+    ValueLineSourceUnavailableError,
+    current_value_line_source_available_predicate,
+    current_value_line_source_unavailable_predicate,
+)
 
 
 MAX_ACTUAL_CONFLICT_OBSERVATIONS = 500
@@ -33,18 +42,6 @@ class ActualConflictAuthorityBoundExceededError(ValueError):
         self.limit = limit
         super().__init__(
             "Actual conflict authority exceeds the supported bounded scope."
-        )
-
-
-class ActualConflictAuthorityAmbiguousError(ValueError):
-    """No unique canonical fact exists for one report/metric/period slot."""
-
-    code = "actual_conflict_authority_ambiguous"
-
-    def __init__(self, *, fact_ids: list[int]):
-        self.fact_ids = tuple(sorted(set(fact_ids)))
-        super().__init__(
-            "Actual conflict authority cannot identify a unique canonical fact."
         )
 
 
@@ -123,6 +120,71 @@ def detect_actual_conflicts(
             document_ids=[unverifiable.source_document_id],
         )
 
+    fact_time_authority = [
+        MetricFact.value_line_fact_known_at <= knowledge_cutoff,
+        identity.known_at <= knowledge_cutoff,
+    ]
+    temporal_authority = [
+        *fact_time_authority,
+        or_(
+            MetricFact.value_line_parse_run_id.is_(None),
+            and_(
+                ValueLineParseRun.status == "succeeded",
+                ValueLineParseRun.completed_at.is_not(None),
+                ValueLineParseRun.completed_at <= knowledge_cutoff,
+            ),
+            and_(
+                ValueLineParseRun.status == "running",
+                ValueLineParseRun.created_txid == func.txid_current(),
+            ),
+        ),
+    ]
+    source_document_ids = session.scalars(
+        select(MetricFact.source_document_id)
+        .join(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
+        )
+        .outerjoin(
+            ValueLineParseRun,
+            ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
+        )
+        .where(*scope, *temporal_authority)
+        .distinct()
+        .limit(MAX_ACTUAL_CONFLICT_OBSERVATIONS + 1)
+    ).all()
+    if len(source_document_ids) > MAX_ACTUAL_CONFLICT_OBSERVATIONS:
+        raise ActualConflictAuthorityBoundExceededError(
+            dimension="observations",
+            limit=MAX_ACTUAL_CONFLICT_OBSERVATIONS,
+        )
+    if source_document_ids:
+        session.execute(
+            select(PdfDocument.id)
+            .where(PdfDocument.id.in_(source_document_ids))
+            .with_for_update(of=PdfDocument, read=True)
+        ).all()
+    source_unavailable = session.execute(
+        select(MetricFact.id)
+        .join(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
+        )
+        .outerjoin(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
+        .outerjoin(
+            ValueLineParseRun,
+            ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
+        )
+        .where(
+            *scope,
+            *temporal_authority,
+            current_value_line_source_unavailable_predicate(),
+        )
+        .limit(1)
+    ).first()
+    if source_unavailable is not None:
+        raise ValueLineSourceUnavailableError()
+
     observations = session.execute(
         select(
             MetricFact.id,
@@ -140,24 +202,15 @@ def detect_actual_conflicts(
             identity,
             identity.id == MetricFact.value_line_report_identity_revision_id,
         )
+        .join(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
         .outerjoin(
             ValueLineParseRun,
             ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
         )
-        .where(*scope)
         .where(
-            or_(
-                MetricFact.value_line_parse_run_id.is_(None),
-                and_(
-                    ValueLineParseRun.status == "succeeded",
-                    ValueLineParseRun.completed_at.is_not(None),
-                    ValueLineParseRun.completed_at <= knowledge_cutoff,
-                ),
-                and_(
-                    ValueLineParseRun.status == "running",
-                    ValueLineParseRun.created_txid == func.txid_current(),
-                ),
-            )
+            *scope,
+            *temporal_authority,
+            current_value_line_source_available_predicate(),
         )
         .order_by(MetricFact.id.asc())
         .limit(MAX_ACTUAL_CONFLICT_OBSERVATIONS + 1)
@@ -232,13 +285,32 @@ def detect_actual_conflicts(
             continue
         ranked = sorted(
             observations,
-            key=lambda obs: (
-                obs["source_report_date"] or "",
-                obs["source_document_id"] or -1,
-                obs["source_report_identity_revision_id"] or -1,
-            ),
+            key=lambda obs: obs["source_report_date"] or "",
             reverse=True,
         )
+        ranked_dates = list(
+            dict.fromkeys(obs["source_report_date"] or "" for obs in ranked)
+        )
+        # Both projected values must be selected by report date alone. A
+        # document/revision/row identifier is provenance, never a tie-breaker.
+        for decisive_date in ranked_dates[:2]:
+            tied = [
+                obs
+                for obs in ranked
+                if (obs["source_report_date"] or "") == decisive_date
+            ]
+            if len(
+                {
+                    (
+                        obs["source_document_id"],
+                        obs["source_report_identity_revision_id"],
+                    )
+                    for obs in tied
+                }
+            ) > 1:
+                raise ActualConflictAuthorityAmbiguousError(
+                    fact_ids=[obs["fact_id"] for obs in tied]
+                )
         conflicts.append(
             {
                 "metric_key": metric_key,

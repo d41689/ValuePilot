@@ -22,6 +22,7 @@ from app.services.actual_conflict_service import (
 )
 from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 
 
 def _document(db_session, *, user_id: int, stock_id: int, name: str, report_date: date):
@@ -331,6 +332,185 @@ def test_conflict_ranking_uses_fact_bound_identity_before_metadata_change(
     )
     assert conflicts[0]["current_report_date"] == "2026-04-09"
     assert conflicts[0]["previous_report_date"] == "2026-01-09"
+
+
+def test_same_latest_report_date_across_documents_fails_closed(db_session):
+    user = User(email="report-identity-same-date@example.com")
+    stock = Stock(ticker="RISAME", exchange="NYSE", company_name="RI Same Date")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    first = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="same-date-first.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    second = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="same-date-second.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=first.id,
+        value=100,
+        is_current=True,
+    )
+    _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=second.id,
+        value=120,
+        is_current=True,
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    with pytest.raises(ActualConflictAuthorityAmbiguousError):
+        resolve_active_reports(
+            db_session,
+            stock_ids=[stock.id],
+            current_user_id=user.id,
+            knowledge_cutoff=cutoff,
+        )
+    with pytest.raises(ActualConflictAuthorityAmbiguousError):
+        detect_actual_conflicts(
+            db_session,
+            stock_id=stock.id,
+            active_report=None,
+            current_user_id=user.id,
+            knowledge_cutoff=cutoff,
+        )
+
+
+def test_same_older_report_dates_do_not_block_unique_latest_report(db_session):
+    user = User(email="report-identity-old-tie@example.com")
+    stock = Stock(ticker="RIOLDT", exchange="NYSE", company_name="RI Old Tie")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    documents = [
+        _document(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            name=f"old-tie-{index}.pdf",
+            report_date=report_date,
+        )
+        for index, report_date in enumerate(
+            [date(2025, 10, 9), date(2025, 10, 9), date(2026, 1, 9)]
+        )
+    ]
+    for index, document in enumerate(documents):
+        _actual_fact(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            value=100 + index,
+            is_current=True,
+        )
+    db_session.commit()
+
+    active = resolve_active_reports(
+        db_session,
+        stock_ids=[stock.id],
+        current_user_id=user.id,
+        knowledge_cutoff=database_evaluation_cutoff(db_session),
+    )
+    assert active[stock.id].document_id == documents[-1].id
+
+
+def test_same_report_date_equal_values_are_not_an_actual_value_conflict(db_session):
+    user = User(email="report-identity-same-value@example.com")
+    stock = Stock(ticker="RIEQUAL", exchange="NYSE", company_name="RI Equal")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    for suffix in ("one", "two"):
+        document = _document(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            name=f"same-value-{suffix}.pdf",
+            report_date=date(2026, 1, 9),
+        )
+        _actual_fact(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            value=100,
+            is_current=True,
+        )
+    db_session.commit()
+
+    assert detect_actual_conflicts(
+        db_session,
+        stock_id=stock.id,
+        active_report=None,
+        current_user_id=user.id,
+        knowledge_cutoff=database_evaluation_cutoff(db_session),
+    ) == []
+
+
+@pytest.mark.parametrize("visibility_loss", ["source", "owner"])
+def test_report_authority_requires_current_source_visibility(
+    db_session, visibility_loss
+):
+    user = User(email=f"report-source-{visibility_loss}@example.com")
+    other = User(email=f"report-source-{visibility_loss}-other@example.com")
+    stock = Stock(
+        ticker=f"RIV{visibility_loss[0]}",
+        exchange="NYSE",
+        company_name="RI Visibility",
+    )
+    db_session.add_all([user, other, stock])
+    db_session.flush()
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name=f"source-{visibility_loss}.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        value=100,
+        is_current=True,
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    if visibility_loss == "source":
+        document.source = "unlicensed"
+    else:
+        document.user_id = other.id
+    db_session.commit()
+
+    with pytest.raises(ValueLineSourceUnavailableError) as active_error:
+        resolve_active_reports(
+            db_session,
+            stock_ids=[stock.id],
+            current_user_id=user.id,
+            knowledge_cutoff=cutoff,
+        )
+    assert active_error.value.code == "source_unavailable"
+    with pytest.raises(ValueLineSourceUnavailableError):
+        detect_actual_conflicts(
+            db_session,
+            stock_id=stock.id,
+            active_report=None,
+            current_user_id=user.id,
+            knowledge_cutoff=cutoff,
+        )
 
 
 def test_same_document_reparse_uses_only_current_canonical_observation(db_session):
