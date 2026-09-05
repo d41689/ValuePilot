@@ -17,6 +17,7 @@ from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.api.v1.endpoints.documents import _document_compare_value_label
 from app.services.ingestion_service import IngestionService
+from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.api.v1.endpoints.extractions import (
     ExtractionCorrectionIdentityError,
     _resolve_canonical_fact_for_extraction,
@@ -2642,3 +2643,44 @@ def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
 def test_documents_list_requires_auth(client, db_session):
     resp = client.get("/api/v1/documents")
     assert resp.status_code == 401, resp.text
+
+
+def test_reparse_endpoint_maps_unverifiable_retained_identity_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    user = user_factory("document-reparse-unverifiable@example.com")
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="unverifiable-reparse.pdf",
+        source="value_line",
+        file_storage_key="tests/unverifiable-reparse.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    def reject_unverifiable(_service, **_kwargs):
+        raise ReportIdentityUnverifiableError(
+            fact_ids=[17],
+            document_ids=[document.id],
+        )
+
+    monkeypatch.setattr(
+        IngestionService,
+        "reparse_existing_document",
+        reject_unverifiable,
+    )
+
+    response = client.post(
+        f"/api/v1/documents/{document.id}/reparse",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "historical_report_identity_unverifiable",
+        "message": (
+            "Value Line report identity cannot be reconstructed at the requested "
+            "knowledge cutoff."
+        ),
+    }

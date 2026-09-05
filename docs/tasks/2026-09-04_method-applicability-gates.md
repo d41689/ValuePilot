@@ -579,3 +579,37 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   MagicMock fixture that did not return the aware database cutoff introduced in
   R12; the fixture now supplies an explicit aware timestamp without changing
   production behavior. Exact canonical closing gates remain pending.
+- 2026-09-05: Strict Terra R16 found that caller-controlled parsed-fact
+  timestamps could still manufacture historical visibility. Fresh migration
+  `20260904180000` leaves applied migrations 150/160/170 unchanged, stamps every
+  new parsed fact's creation/knowledge time and creating transaction in
+  PostgreSQL, and makes the row immutable except for the existing one-way
+  `is_current=true` to `false` demotion. Retained rows receive only a
+  conservative migration observation time and no invented creation-transaction
+  identity. Cross-transaction timestamp/transaction backfill and later content
+  mutation are rejected at the database boundary.
+- 2026-09-05: Quant coverage now derives publication dates and stock ownership
+  from each parsed fact's exact bound report-identity revision. It intentionally
+  retains facts visible before a later currentness demotion, while unbound,
+  pre-authority, identity-mismatched, or cutoff-unverifiable evidence produces
+  typed `historical_report_identity_unverifiable` with no quantitative coverage
+  claim. Mutable document metadata is no longer audit authority.
+- 2026-09-05: Research Workspace documents are now derived only from the final
+  bounded, visible, method-gated and reconciliation-safe fact set. Exact
+  revision resolution is limited to those fact IDs and supports a shared
+  multi-company PDF whose document stock is NULL while each fact retains its
+  own stock identity. Reparse propagates the stable report-identity error and
+  the HTTP boundary maps it to 409 rather than a generic 500.
+- 2026-09-05: Active report resolution no longer hydrates every matching
+  `MetricFact`. One bounded sentinel query detects unbound authority and a
+  projected, distinct SQL query returns only stock/document/revision/report-date
+  candidates. A 250-fact/one-document regression observes zero MetricFact ORM
+  loads. R16 tests-first began with five expected failures; the new migration
+  suite is `4 passed`, migration compatibility is `37 passed`, the focused
+  identity/consumer set is `42 passed`, and the wider 23-file consumer set is
+  `417 passed` in 196.03 seconds. One intervening run after earlier failed test
+  sessions showed non-reproducible cross-suite failures; its exemplars passed
+  independently and the exact full set then passed from a fresh pytest session.
+  The shared development database was upgraded forward from 170 to sole head
+  180 and contained zero parsed facts, so no retained row was rewritten there.
+  Exact canonical closing gates remain pending.

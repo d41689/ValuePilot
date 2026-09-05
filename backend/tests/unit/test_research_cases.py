@@ -321,7 +321,64 @@ def test_workspace_provenance_uses_fact_bound_report_identity_after_reparse_rese
     assert workspace["actual_conflicts"] == []
 
 
-def test_workspace_endpoint_returns_typed_conflict_for_unverifiable_report_identity(
+def test_workspace_documents_come_from_visible_multi_company_fact_identity(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    user = user_factory("research-workspace-container@example.com")
+    stock = _stock(db_session, "RWSCONTAINER")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-container.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-container.pdf",
+        parse_status="parsed",
+        stock_id=None,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add_all([case, document])
+    db_session.flush()
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="custom.container_provenance",
+        value_json={"fact_nature": "actual"},
+        value_numeric=100,
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        source_document_id=document.id,
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+    evaluated_at = database_evaluation_cutoff(db_session)
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=evaluation_business_date(evaluated_at),
+        evaluated_at=evaluated_at,
+    )
+
+    assert [item["id"] for item in workspace["documents"]] == [document.id]
+    assert workspace["documents"][0]["report_date"] == "2026-01-09"
+    visible_fact = next(
+        item
+        for item in workspace["fundamentals"]
+        if item.get("id") == fact.id
+    )
+    assert visible_fact["source_document_id"] == document.id
+    assert visible_fact["source_report_date"] == "2026-01-09"
+
+
+def test_workspace_excludes_database_stamped_fact_created_after_cutoff(
     client, db_session, user_factory, auth_headers, monkeypatch
 ):
     from app.api.v1.endpoints import research as research_endpoint
@@ -373,14 +430,9 @@ def test_workspace_endpoint_returns_typed_conflict_for_unverifiable_report_ident
         headers=auth_headers(user),
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"] == {
-        "code": "historical_report_identity_unverifiable",
-        "message": (
-            "Value Line report identity cannot be reconstructed at the requested "
-            "knowledge cutoff."
-        ),
-    }
+    assert response.status_code == 200, response.text
+    assert response.json()["documents"] == []
+    assert response.json()["fundamentals"] == []
 
 
 def _monitoring_revision(expected_head: int = 0) -> dict:

@@ -31,7 +31,7 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260831120000"
-HEAD = "20260904170000"
+HEAD = "20260904180000"
 
 
 def test_unresolved_guard_keeps_published_unit_strict() -> None:

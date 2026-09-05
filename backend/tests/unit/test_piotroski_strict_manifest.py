@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import event, func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
@@ -1283,20 +1284,13 @@ def test_guard_fails_closed_when_current_sibling_was_updated_after_cutoff(
     )
 
 
-def test_guard_fails_closed_when_manifest_input_was_updated_after_cutoff(
+def test_database_rejects_manifest_input_timestamp_mutation(
     db_session, user_factory
 ) -> None:
     user = user_factory("piot-future-input-update@example.com")
     stock = _stock(db_session, "PFUTINPUT")
-    written = _generate_complete(db_session, user=user, stock=stock)
+    _generate_complete(db_session, user=user, stock=stock)
     db_session.commit()
-    total = next(
-        fact
-        for fact in written
-        if fact.metric_key == "score.piotroski.total"
-        and fact.period_end_date == PERIOD_1
-    )
-    caller = _identified_clone(total)
     cutoff = db_session.scalar(select(func.clock_timestamp()))
     assert cutoff is not None
     source = db_session.scalar(
@@ -1309,24 +1303,13 @@ def test_guard_fails_closed_when_manifest_input_was_updated_after_cutoff(
         )
     )
     assert source is not None
-    db_session.execute(
-        update(MetricFact)
-        .where(MetricFact.id == source.id)
-        .values(updated_at=cutoff + timedelta(seconds=1))
-    )
-    db_session.commit()
-
-    kept, blocked = guard_piotroski_method_authority(
-        db_session,
-        facts=[caller],
-        effective_as_of=date.today(),
-        knowledge_at=cutoff,
-    )
-
-    assert kept == []
-    assert blocked[0]["reason_code"] == (
-        "historical_current_projection_unverifiable"
-    )
+    with pytest.raises(DBAPIError, match="authority is immutable"):
+        db_session.execute(
+            update(MetricFact)
+            .where(MetricFact.id == source.id)
+            .values(updated_at=cutoff + timedelta(seconds=1))
+        )
+    db_session.rollback()
 
 
 def test_guard_does_not_reconstruct_historical_currentness_after_replacement(

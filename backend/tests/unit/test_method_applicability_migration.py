@@ -27,7 +27,7 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
     }
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
-HEAD = "20260904170000"
+HEAD = "20260904180000"
 V2_REVISION = "20260904150000"
 PARENT = "20260904140000"
 

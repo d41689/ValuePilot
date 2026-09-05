@@ -1996,7 +1996,7 @@ def test_stock_provenance_uses_fact_bound_report_date_after_metadata_change(
     }
 
 
-def test_stock_returns_typed_conflict_when_report_identity_was_unknown_at_cutoff(
+def test_stock_excludes_database_stamped_fact_created_after_cutoff(
     client, db_session, auth_headers, monkeypatch
 ):
     from app.services.canonical_financials import database_evaluation_cutoff
@@ -2045,10 +2045,8 @@ def test_stock_returns_typed_conflict_when_report_identity_was_unknown_at_cutoff
         "/api/v1/stocks/by_ticker/unver_ri", headers=auth_headers(user)
     )
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == (
-        "historical_report_identity_unverifiable"
-    )
+    assert response.status_code == 200
+    assert response.json()["active_report_document_id"] is None
 
 
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
@@ -2293,6 +2291,12 @@ def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_c
     )
     db_session.add_all([user, stock])
     db_session.flush()
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    evaluated_at = database_evaluation_cutoff(db_session)
     db_session.add(
         MetricFact(
             user_id=user.id,
@@ -2307,15 +2311,15 @@ def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_c
             },
             unit="ratio",
             period_type="AS_OF",
-            period_end_date=date(2099, 9, 4),
+            period_end_date=evaluation_business_date(evaluated_at),
             source_type="parsed",
             is_current=True,
-            created_at=datetime(2099, 9, 4, 13, tzinfo=timezone.utc),
-            updated_at=datetime(2099, 9, 4, 13, tzinfo=timezone.utc),
+            # Caller backdating is ignored by the database boundary.
+            created_at=evaluated_at - timedelta(minutes=1),
+            updated_at=evaluated_at - timedelta(minutes=1),
         )
     )
     db_session.commit()
-    evaluated_at = datetime(2099, 9, 4, 12, tzinfo=timezone.utc)
     monkeypatch.setattr(
         stocks_endpoint,
         "database_evaluation_cutoff",
@@ -2326,7 +2330,7 @@ def test_lookup_stock_by_ticker_does_not_serialize_fact_known_after_evaluation_c
         "dcf_evaluation_clock",
         lambda *, evaluated_at: DcfEvaluationClock(
             evaluated_at,
-            date(2099, 9, 4),
+            evaluation_business_date(evaluated_at),
         ),
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
@@ -158,6 +158,9 @@ def seed_strict_piotroski_total(
             period_end_date=payload["period_end_date"],
             source_type="calculated",
             is_current=True,
+            # The strict manifest requires outputs to be created no earlier
+            # than their DB-stamped parsed inputs within the same transaction.
+            created_at=func.clock_timestamp(),
         )
         for payload in payloads
     ]

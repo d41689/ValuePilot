@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 import pytest
+from sqlalchemy import event, text
 
 from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
@@ -161,7 +162,7 @@ def test_conflict_ranking_uses_fact_bound_identity_before_metadata_change(
     assert conflicts[0]["previous_report_date"] == "2026-01-09"
 
 
-def test_identity_unknown_at_cutoff_is_typed_unverifiable(db_session):
+def test_database_stamped_future_fact_is_absent_at_earlier_cutoff(db_session):
     user = User(email="report-identity-legacy@example.com")
     stock = Stock(ticker="RILEG", exchange="NYSE", company_name="RI Legacy")
     db_session.add_all([user, stock])
@@ -187,11 +188,88 @@ def test_identity_unknown_at_cutoff_is_typed_unverifiable(db_session):
     )
     db_session.commit()
 
-    with pytest.raises(ReportIdentityUnverifiableError) as raised:
-        resolve_active_reports(
+    assert resolve_active_reports(
+        db_session,
+        stock_ids=[stock.id],
+        current_user_id=user.id,
+        knowledge_cutoff=cutoff,
+    ) == {}
+
+
+def test_active_report_does_not_hydrate_one_orm_fact_per_duplicate_observation(
+    db_session,
+):
+    user = User(email="report-identity-bounded@example.com")
+    stock = Stock(ticker="RIBOUND", exchange="NYSE", company_name="RI Bounded")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="ri-bounded.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    policy_id = db_session.scalar(
+        text(
+            "SELECT id FROM value_line_mapping_policies "
+            "WHERE status='approved' ORDER BY effective_from DESC LIMIT 1"
+        )
+    )
+    run_id = db_session.scalar(
+        text(
+            "INSERT INTO value_line_parse_runs "
+            "(user_id,document_id,parser_version,source_mapping_version,status,"
+            "created_txid) VALUES (:user,:document,'value-line-v1',:policy,"
+            "'running',0) RETURNING id"
+        ),
+        {"user": user.id, "document": document.id, "policy": policy_id},
+    )
+    for offset in range(250):
+        db_session.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_numeric,source_type,"
+                "source_document_id,is_current,value_line_parse_run_id) "
+                "VALUES (:user,:stock,:key,:value,'parsed',:document,true,:run)"
+            ),
+            {
+                "user": user.id,
+                "stock": stock.id,
+                "key": f"custom.duplicate_{offset}",
+                "value": offset,
+                "document": document.id,
+                "run": run_id,
+            },
+        )
+    db_session.execute(
+        text("UPDATE value_line_parse_runs SET status='succeeded' WHERE id=:id"),
+        {"id": run_id},
+    )
+    db_session.commit()
+    stock_id = stock.id
+    user_id = user.id
+    document_id = document.id
+    cutoff = database_evaluation_cutoff(db_session)
+    db_session.expunge_all()
+
+    loaded_metric_facts = 0
+
+    def count_metric_fact_load(_session, instance):
+        nonlocal loaded_metric_facts
+        if isinstance(instance, MetricFact):
+            loaded_metric_facts += 1
+
+    event.listen(db_session, "loaded_as_persistent", count_metric_fact_load)
+    try:
+        active = resolve_active_reports(
             db_session,
-            stock_ids=[stock.id],
-            current_user_id=user.id,
+            stock_ids=[stock_id],
+            current_user_id=user_id,
             knowledge_cutoff=cutoff,
         )
-    assert raised.value.code == "historical_report_identity_unverifiable"
+    finally:
+        event.remove(db_session, "loaded_as_persistent", count_metric_fact_load)
+
+    assert active[stock_id].document_id == document_id
+    assert loaded_metric_facts == 0

@@ -353,6 +353,11 @@ def reparse_document(
     try:
         doc = service.reparse_existing_document(user_id=user_id, document_id=document_id, reextract_pdf=reextract_pdf)
         return {"id": doc.id, "status": doc.parse_status}
+    except ReportIdentityUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reparse failed: {str(e)}")
 

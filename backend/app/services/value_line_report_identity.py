@@ -71,14 +71,21 @@ def resolve_fact_report_identities(
             if fact.value_line_report_identity_revision_id is not None
         }
     )
-    revisions = session.scalars(
-        select(ValueLineDocumentReportIdentityRevision)
+    revision_rows = session.execute(
+        select(
+            ValueLineDocumentReportIdentityRevision.id,
+            ValueLineDocumentReportIdentityRevision.document_id,
+            ValueLineDocumentReportIdentityRevision.user_id,
+            ValueLineDocumentReportIdentityRevision.stock_id,
+            ValueLineDocumentReportIdentityRevision.report_date,
+            ValueLineDocumentReportIdentityRevision.known_at,
+        )
         .where(
             ValueLineDocumentReportIdentityRevision.id.in_(revision_ids),
             ValueLineDocumentReportIdentityRevision.known_at <= knowledge_cutoff,
         )
     ).all()
-    by_id = {revision.id: revision for revision in revisions}
+    by_id = {revision.id: revision for revision in revision_rows}
 
     resolved: dict[int, ResolvedValueLineReportIdentity] = {}
     invalid_fact_ids: list[int] = []
@@ -86,9 +93,25 @@ def resolve_fact_report_identities(
     for fact in parsed_facts:
         fact_id = int(fact.id) if fact.id is not None else -1
         revision = by_id.get(fact.value_line_report_identity_revision_id)
+        fact_time_unverifiable = (
+            fact.value_line_fact_known_at is None
+            or (
+                fact.value_line_created_txid is None
+                and fact.value_line_fact_known_at > knowledge_cutoff
+            )
+            or (
+                fact.value_line_created_txid is not None
+                and (
+                    fact.created_at is None
+                    or fact.value_line_fact_known_at != fact.created_at
+                    or fact.created_at > knowledge_cutoff
+                )
+            )
+        )
         if (
             fact.id is None
             or revision is None
+            or fact_time_unverifiable
             or revision.document_id != fact.source_document_id
             or revision.user_id != fact.user_id
             or (

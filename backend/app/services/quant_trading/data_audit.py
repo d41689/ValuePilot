@@ -31,11 +31,10 @@ import re
 from statistics import NormalDist, median
 from typing import Any
 
-from sqlalchemy import func, or_, text, tuple_
+from sqlalchemy import and_, func, or_, text, tuple_
 from sqlalchemy.orm import Session
 
-from app.ingestion.parsers.v1_value_line.semantics import has_value_line_markers
-from app.models.artifacts import PdfDocument
+from app.models.artifacts import ValueLineDocumentReportIdentityRevision
 from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, ParseRun13F
 from app.models.stocks import StockPrice
@@ -289,66 +288,96 @@ def _metric_fact_coverage(
     user_id: int,
     knowledge_cutoff: datetime,
 ) -> dict[str, Any]:
-    eligible_fact_documents = (
-        session.query(MetricFact.source_document_id)
-        .filter(
-            MetricFact.user_id == user_id,
-            MetricFact.source_type == "parsed",
-            MetricFact.source_document_id.is_not(None),
-            MetricFact.created_at <= knowledge_cutoff,
-            MetricFact.updated_at <= knowledge_cutoff,
-        )
-        .distinct()
+    identity = ValueLineDocumentReportIdentityRevision
+    scope = (
+        MetricFact.user_id == user_id,
+        MetricFact.source_type == "parsed",
+        MetricFact.source_document_id.is_not(None),
     )
-    document_rows = (
+    mismatch = or_(
+        MetricFact.value_line_report_identity_revision_id.is_(None),
+        MetricFact.value_line_fact_known_at.is_(None),
+        identity.id.is_(None),
+        identity.document_id != MetricFact.source_document_id,
+        identity.user_id != MetricFact.user_id,
+        and_(identity.stock_id.is_not(None), identity.stock_id != MetricFact.stock_id),
+        and_(
+            MetricFact.value_line_created_txid.is_(None),
+            or_(
+                MetricFact.value_line_fact_known_at > knowledge_cutoff,
+                identity.known_at > knowledge_cutoff,
+            ),
+        ),
+        and_(
+            MetricFact.value_line_created_txid.is_not(None),
+            MetricFact.value_line_fact_known_at != MetricFact.created_at,
+        ),
+    )
+    unverifiable = (
+        session.query(MetricFact.id, MetricFact.source_document_id)
+        .outerjoin(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
+        )
+        .filter(*scope, mismatch)
+        .limit(1)
+        .first()
+    )
+    if unverifiable is not None:
+        return _unavailable_metric_fact_coverage(
+            fact_id=unverifiable.id,
+            document_id=unverifiable.source_document_id,
+        )
+
+    fact_rows = (
         session.query(
-            PdfDocument.id,
-            PdfDocument.report_date,
-            PdfDocument.stock_id,
-            PdfDocument.raw_text,
+            identity.document_id,
+            identity.id.label("revision_id"),
+            identity.report_date,
+            MetricFact.stock_id,
+            MetricFact.metric_key,
+            MetricFact.period_end_date,
+        )
+        .join(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
         )
         .filter(
-            PdfDocument.user_id == user_id,
-            PdfDocument.parse_status == "parsed",
-            PdfDocument.report_date.is_not(None),
-            PdfDocument.report_date <= knowledge_cutoff.date(),
-            PdfDocument.upload_time <= knowledge_cutoff,
-            PdfDocument.stock_id.is_not(None),
-            PdfDocument.id.in_(eligible_fact_documents),
+            *scope,
+            MetricFact.value_line_fact_known_at <= knowledge_cutoff,
+            identity.known_at <= knowledge_cutoff,
+            identity.report_date.is_not(None),
+            identity.report_date <= knowledge_cutoff.date(),
+            MetricFact.stock_id.is_not(None),
+            or_(
+                MetricFact.value_line_created_txid.is_(None),
+                MetricFact.created_at <= knowledge_cutoff,
+            ),
         )
         .all()
     )
-    value_line_documents = [row for row in document_rows if has_value_line_markers(row.raw_text)]
-    document_ids = [row.id for row in value_line_documents]
-    report_dates = [row.report_date for row in value_line_documents]
-
-    fact_rows: list[tuple[date, int, str, date | None]] = []
-    if document_ids:
-        fact_rows = (
-            session.query(
-                PdfDocument.report_date,
-                MetricFact.stock_id,
-                MetricFact.metric_key,
-                MetricFact.period_end_date,
-            )
-            .join(PdfDocument, MetricFact.source_document_id == PdfDocument.id)
-            .filter(
-                MetricFact.user_id == user_id,
-                MetricFact.source_type == "parsed",
-                MetricFact.created_at <= knowledge_cutoff,
-                MetricFact.updated_at <= knowledge_cutoff,
-                PdfDocument.user_id == user_id,
-                PdfDocument.id.in_(document_ids),
-            )
-            .all()
-        )
+    value_line_documents = {row.document_id for row in fact_rows}
+    report_dates = list(
+        {
+            (row.document_id, row.revision_id, row.report_date)
+            for row in fact_rows
+        }
+    )
+    report_dates = [row[2] for row in report_dates]
 
     month_buckets: dict[str, dict[str, Any]] = {}
     all_stocks: set[int] = set()
     all_metric_keys: set[str] = set()
     period_dates: list[date] = []
     future_period_rows = 0
-    for report_date, stock_id, metric_key, period_end_date in fact_rows:
+    for (
+        _document_id,
+        _revision_id,
+        report_date,
+        stock_id,
+        metric_key,
+        period_end_date,
+    ) in fact_rows:
         month = report_date.strftime("%Y-%m")
         bucket = month_buckets.setdefault(
             month,
@@ -387,6 +416,8 @@ def _metric_fact_coverage(
     period_min = min(period_dates) if period_dates else None
     period_max = max(period_dates) if period_dates else None
     return {
+        "status": "available",
+        "reason_code": None,
         "documents": len(value_line_documents),
         "parsed_fact_rows": len(fact_rows),
         "stocks": len(all_stocks),
@@ -415,6 +446,44 @@ def _metric_fact_coverage(
                 "restated/estimated rows inside observed reports; not independent PIT vintages"
             ),
             "user_scoped": True,
+            "point_in_time_authority": "fact_bound_report_identity_and_fact_known_at",
+        },
+    }
+
+
+def _unavailable_metric_fact_coverage(
+    *, fact_id: int | None, document_id: int | None
+) -> dict[str, Any]:
+    """Return no quantitative claim when exact historical lineage is unknown."""
+
+    return {
+        "status": "unavailable",
+        "reason_code": "historical_report_identity_unverifiable",
+        "unverifiable_fact_id": fact_id,
+        "unverifiable_document_id": document_id,
+        "documents": 0,
+        "parsed_fact_rows": 0,
+        "stocks": 0,
+        "metric_keys": 0,
+        "report_date_start": None,
+        "report_date_end": None,
+        "publication_span_years": 0.0,
+        "publication_months": 0,
+        "observed_archive_weeks": 0,
+        "longest_consecutive_archive_weeks": 0,
+        "minimum_monthly_stock_breadth": 0,
+        "median_monthly_stock_breadth": 0.0,
+        "period_end_start": None,
+        "period_end_end": None,
+        "embedded_period_span_years": 0.0,
+        "future_or_estimate_period_rows": 0,
+        "historical_or_asof_period_rows": 0,
+        "monthly_cross_sections": [],
+        "coverage_semantics": {
+            "publication_vintage": "unverifiable",
+            "embedded_period_depth": "unverifiable",
+            "user_scoped": True,
+            "point_in_time_authority": "unverifiable",
         },
     }
 

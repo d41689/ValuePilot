@@ -55,6 +55,18 @@ class MetricFact(Base):
         nullable=True,
         index=True,
     )
+    # Conservative database observation time for retained parsed facts and the
+    # exact database creation time for new parsed facts. A cutoff before this
+    # stamp cannot claim point-in-time visibility from caller-provided times.
+    value_line_fact_known_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    # Non-null only when PostgreSQL observed the fact's creating transaction.
+    # Retained pre-authority facts remain NULL and use the conservative
+    # value_line_fact_known_at observation boundary instead.
+    value_line_created_txid: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

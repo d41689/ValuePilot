@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.artifacts import PdfDocument, ValueLineParseRun
@@ -610,12 +611,6 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     valid = _parsed_fact(
         user_id=user.id, stock_id=stock.id, document_id=valid_doc.id
     )
-    post_cutoff = _parsed_fact(
-        user_id=user.id,
-        stock_id=stock.id,
-        document_id=valid_doc.id,
-        metric_key="bs.total_assets",
-    )
     revoked = _parsed_fact(
         user_id=user.id,
         stock_id=stock.id,
@@ -630,18 +625,36 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     )
     retired.value_json = {**retired.value_json, "authorization_state": "retired"}
     valid.value_line_parse_run_id = valid_run.id
-    post_cutoff.value_line_parse_run_id = valid_run.id
     retired.value_line_parse_run_id = valid_run.id
     revoked.value_line_parse_run_id = revoked_run.id
-    future_known_at = datetime.now(timezone.utc) + timedelta(hours=1)
-    post_cutoff.created_at = future_known_at
-    post_cutoff.updated_at = future_known_at
-    db_session.add_all([valid, post_cutoff, revoked, retired])
+    db_session.add_all([valid, revoked, retired])
     db_session.flush()
     valid_run.status = "succeeded"
     revoked_run.status = "succeeded"
+    db_session.commit()
+
+    cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert cutoff is not None
+    db_session.commit()
+    post_cutoff_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=valid_doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(post_cutoff_run)
     db_session.flush()
-    cutoff = datetime.now(timezone.utc)
+    post_cutoff = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=valid_doc.id,
+        metric_key="bs.total_assets",
+    )
+    post_cutoff.value_line_parse_run_id = post_cutoff_run.id
+    db_session.add(post_cutoff)
+    db_session.flush()
+    post_cutoff_run.status = "succeeded"
     db_session.commit()
 
     response = client.get(
@@ -771,15 +784,11 @@ def test_formula_persists_exact_input_lineage_for_replay(db_session, user_factor
 def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
     db_session, user_factory
 ):
-    baseline_known_at = datetime.now(timezone.utc) - timedelta(minutes=2)
-    competing_known_at = baseline_known_at + timedelta(minutes=1)
-    historical_cutoff = baseline_known_at + timedelta(seconds=30)
     user = user_factory("reconcile-late-competitor@example.com")
     stock = Stock(ticker="RLATE", exchange="NYSE", company_name="Late Source Co")
     db_session.add(stock)
     db_session.flush()
     document = _document(user_id=user.id, stock_id=stock.id)
-    document.upload_time = baseline_known_at
     db_session.add(document)
     db_session.flush()
     original = _parsed_fact(
@@ -789,8 +798,6 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
         metric_key="is.net_income",
         value=100,
     )
-    original.created_at = baseline_known_at
-    original.updated_at = baseline_known_at
     db_session.add(original)
     db_session.flush()
     output = MetricFact(
@@ -813,8 +820,6 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
         period_end_date=date(2025, 12, 31),
         source_type="calculated",
         is_current=True,
-        created_at=baseline_known_at,
-        updated_at=baseline_known_at,
     )
     db_session.add(output)
     db_session.commit()
@@ -827,10 +832,13 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
         user_id=user.id,
     ) == [output]
 
+    historical_cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert historical_cutoff is not None
+    db_session.commit()
+
     competing_document = _document(
         user_id=user.id, stock_id=stock.id, suffix="-late"
     )
-    competing_document.upload_time = competing_known_at
     db_session.add(competing_document)
     db_session.flush()
     competing = _parsed_fact(
@@ -844,8 +852,6 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
         **competing.value_json,
         "mapping_id": "is.net_income.alternate",
     }
-    competing.created_at = competing_known_at
-    competing.updated_at = competing_known_at
     db_session.add(competing)
     db_session.commit()
 

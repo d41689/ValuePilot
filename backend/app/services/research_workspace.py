@@ -31,7 +31,6 @@ from app.services.active_report_resolver import resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
-    resolve_document_report_identities,
     resolve_fact_report_identities,
 )
 from app.services.canonical_financials import (
@@ -188,24 +187,6 @@ def build_research_workspace(
         .limit(100)
         .all()
     )
-    document_identities = resolve_document_report_identities(
-        session,
-        knowledge_cutoff=evaluated_at,
-        user_id=user_id,
-        stock_id=stock.id,
-    )
-    documents = session.scalars(
-        select(PdfDocument).where(PdfDocument.id.in_(document_identities))
-    ).all()
-    documents = sorted(
-        documents,
-        key=lambda document: (
-            document_identities[document.id].report_date or date.min,
-            document.upload_time,
-            document.id,
-        ),
-        reverse=True,
-    )[:20]
     facts = session.scalars(
         select(MetricFact)
         .where(
@@ -312,11 +293,6 @@ def build_research_workspace(
             current_user_id=user_id,
             knowledge_cutoff=evaluated_at,
         )
-        report_identities_by_fact = resolve_fact_report_identities(
-            session,
-            facts=facts,
-            knowledge_cutoff=evaluated_at,
-        )
     except ReportIdentityUnverifiableError as error:
         raise ResearchCaseError(
             error.code,
@@ -352,6 +328,43 @@ def build_research_workspace(
             user_id=user_id,
             knowledge_cutoff=evaluated_at,
         )
+    try:
+        report_identities_by_fact = resolve_fact_report_identities(
+            session,
+            facts=facts,
+            knowledge_cutoff=evaluated_at,
+        )
+    except ReportIdentityUnverifiableError as error:
+        raise ResearchCaseError(
+            error.code,
+            str(error),
+            status_code=409,
+        ) from error
+
+    # Documents are provenance of the exact visible fact set, not a projection
+    # from mutable pdf_documents stock metadata. This preserves a multi-company
+    # container whose document-level stock is NULL while a bound fact belongs
+    # to the requested stock. The fact query above supplies the resource bound.
+    document_identities = {}
+    for identity in report_identities_by_fact.values():
+        current = document_identities.get(identity.document_id)
+        if current is None or (identity.known_at, identity.revision_id) > (
+            current.known_at,
+            current.revision_id,
+        ):
+            document_identities[identity.document_id] = identity
+    documents = session.scalars(
+        select(PdfDocument).where(PdfDocument.id.in_(sorted(document_identities)))
+    ).all()
+    documents = sorted(
+        documents,
+        key=lambda document: (
+            document_identities[document.id].report_date or date.min,
+            document.upload_time,
+            document.id,
+        ),
+        reverse=True,
+    )[:20]
     signal = (
         session.query(OraclesLensSignal)
         .filter(OraclesLensSignal.stock_id == stock.id)
