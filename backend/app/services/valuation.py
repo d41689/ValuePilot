@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.models.research import ResearchCaseRevision
+from app.services.canonical_financials import database_evaluation_cutoff
 
 
 USER_INTRINSIC_VALUE_KEY = "val.fair_value"
@@ -150,11 +152,16 @@ def _latest_current_fact(
     metric_key: str,
     source_type: str | None = None,
 ) -> MetricFact | None:
+    knowledge_cutoff = database_evaluation_cutoff(session)
     stmt = select(MetricFact).where(
         MetricFact.user_id == user_id,
         MetricFact.stock_id == stock_id,
         MetricFact.metric_key == metric_key,
-        MetricFact.is_current.is_(True),
+        MetricFact.id.in_(
+            current_metric_fact_ids_at(
+                session, knowledge_cutoff=knowledge_cutoff
+            )
+        ),
     )
     if source_type is not None:
         stmt = stmt.where(MetricFact.source_type == source_type)
@@ -272,21 +279,22 @@ def read_valuation_facts_by_stock(
     }
     if user_id is None or not unique_stock_ids:
         return result
+    if knowledge_cutoff is None:
+        knowledge_cutoff = database_evaluation_cutoff(session)
+    if knowledge_cutoff.tzinfo is None:
+        raise ValueError("knowledge cutoff must be timezone-aware")
     fact_query = select(MetricFact).where(
         MetricFact.user_id == user_id,
         MetricFact.stock_id.in_(unique_stock_ids),
         MetricFact.metric_key.in_(
             [USER_INTRINSIC_VALUE_KEY, VALUE_LINE_TARGET_REFERENCE_KEY]
         ),
-        MetricFact.is_current.is_(True),
+        MetricFact.id.in_(
+            current_metric_fact_ids_at(
+                session, knowledge_cutoff=knowledge_cutoff
+            )
+        ),
     )
-    if knowledge_cutoff is not None:
-        if knowledge_cutoff.tzinfo is None:
-            raise ValueError("knowledge cutoff must be timezone-aware")
-        fact_query = fact_query.where(
-            MetricFact.created_at <= knowledge_cutoff,
-            MetricFact.updated_at <= knowledge_cutoff,
-        )
     facts = session.scalars(
         fact_query
         .order_by(

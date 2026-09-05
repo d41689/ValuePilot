@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
@@ -1215,9 +1216,13 @@ def _m3_facts_by_stock(
         .filter(visible_metric_fact_predicate(MetricFact, user_id=user_id))
         .filter(MetricFact.stock_id.in_(unique_stock_ids))
         .filter(MetricFact.metric_key.in_(metric_keys))
-        .filter(MetricFact.is_current.is_(True))
-        .filter(MetricFact.created_at <= evaluation_cutoff)
-        .filter(MetricFact.updated_at <= evaluation_cutoff)
+        .filter(
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session, knowledge_cutoff=evaluation_cutoff
+                )
+            )
+        )
         .order_by(
             MetricFact.stock_id.asc(),
             MetricFact.metric_key.asc(),

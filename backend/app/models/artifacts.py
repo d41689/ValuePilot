@@ -75,6 +75,8 @@ class DocumentListSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    membership_fingerprint: Mapped[str] = mapped_column(String(32), nullable=False)
+    visibility_snapshot: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class DocumentListSnapshotMember(Base):
@@ -104,6 +106,7 @@ class DocumentListSnapshotMember(Base):
         DateTime(timezone=True), nullable=True
     )
     source: Mapped[str] = mapped_column(String, nullable=False)
+    report_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 

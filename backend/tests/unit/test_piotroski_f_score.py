@@ -392,6 +392,11 @@ def test_piotroski_calculator_inserts_current_calculated_facts(db_session, user_
 
 def test_piotroski_calculator_explicitly_selects_parsed_source():
     db = MagicMock()
+    db.info = {
+        "metric_fact_currentness_authority_started_at": datetime(
+            2026, 1, 1, tzinfo=timezone.utc
+        )
+    }
     db.scalar.return_value = datetime.now(timezone.utc)
     db.scalars.return_value.all.return_value = []
 

@@ -96,7 +96,7 @@ def isolated():
 
 def test_publication_schema_empty_upgrade_downgrade_upgrade(isolated) -> None:
     url, engine = isolated
-    alembic(url, "upgrade", "head")
+    alembic(url, "upgrade", HEAD)
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == HEAD
         tables = set(inspect(connection).get_table_names())
@@ -115,12 +115,12 @@ def test_publication_schema_empty_upgrade_downgrade_upgrade(isolated) -> None:
         assert "'direct'" in input_checks and "arithmetic_sign = 1" in input_checks
         assert "'right_operand'" in input_checks and "arithmetic_sign = '-1'" in input_checks
     alembic(url, "downgrade", PARENT)
-    alembic(url, "upgrade", "head")
+    alembic(url, "upgrade", HEAD)
 
 
 def test_mapping_and_method_authorities_stamp_and_fail_closed(isolated) -> None:
     url, engine = isolated
-    alembic(url, "upgrade", "head")
+    alembic(url, "upgrade", HEAD)
     with engine.begin() as connection:
         user_id = connection.execute(text("INSERT INTO users (email,hashed_password,is_active,role) VALUES ('schema@example.com','x',true,'admin') RETURNING id")).scalar_one()
         stock_id = connection.execute(text("INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) VALUES ('SCH','US','US','Schema',true) RETURNING id")).scalar_one()
@@ -216,7 +216,7 @@ def test_mapping_and_method_authorities_stamp_and_fail_closed(isolated) -> None:
 
 def test_precision_sensitive_metric_fact_blocks_downgrade(isolated) -> None:
     url, engine = isolated
-    alembic(url, "upgrade", "head")
+    alembic(url, "upgrade", HEAD)
     with engine.begin() as connection:
         user_id = connection.execute(text("INSERT INTO users (email,hashed_password,is_active) VALUES ('precision@example.com','x',true) RETURNING id")).scalar_one()
         stock_id = connection.execute(text("INSERT INTO stocks (ticker,exchange,market_country,company_name,is_active) VALUES ('PRE','US','US','Precision',true) RETURNING id")).scalar_one()
@@ -234,7 +234,7 @@ def test_precision_sensitive_metric_fact_blocks_downgrade(isolated) -> None:
 
 def test_db_owned_numeric_normalization_exact_lexical_contract(isolated) -> None:
     url, engine = isolated
-    alembic(url, "upgrade", "head")
+    alembic(url, "upgrade", HEAD)
     cases = [
         ({"raw_value": "1,234.50", "transformation_format": "ixt:num-dot-decimal", "scale": 0}, "1234.500000000000"),
         ({"raw_value": "1.234,50", "transformation_format": "ixt:num-comma-decimal", "scale": 0}, "1234.500000000000"),
@@ -306,7 +306,7 @@ def test_metric_fact_orm_and_formula_keep_decimal_precision(isolated) -> None:
 )
 def test_numeric_38_12_persistence_boundary_matches_postgres(raw: str, expected: str, isolated) -> None:
     url, engine = isolated
-    alembic(url, "upgrade", "head")
+    alembic(url, "upgrade", HEAD)
     persisted = persist_numeric_38_12(Decimal(raw))
     assert format(persisted, "f") == expected
     with engine.connect() as connection:

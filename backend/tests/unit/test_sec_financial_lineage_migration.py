@@ -367,7 +367,7 @@ def test_parser_v2_downgrade_waits_for_pending_writer_then_refuses() -> None:
     writer = None
     process = None
     try:
-        _alembic(backend_dir, database_url, "upgrade", "head")
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
         with engine.begin() as connection:
             stock_id = connection.execute(
                 text(
@@ -1771,7 +1771,7 @@ def test_submission_snapshot_downgrade_refuses_nonempty_table() -> None:
     create_test_schema(_BASE_DATABASE_URL, schema_name)
     engine = create_engine(database_url, pool_pre_ping=True)
     try:
-        _alembic(backend_dir, database_url, "upgrade", "head")
+        _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
         with engine.begin() as connection:
             stock_id = connection.execute(
                 text(
@@ -1843,7 +1843,7 @@ def test_submission_snapshot_downgrade_locks_before_nonempty_preflight() -> None
     database_url = build_isolated_database_url(_BASE_DATABASE_URL, schema_name)
     create_test_schema(_BASE_DATABASE_URL, schema_name)
     engine = create_engine(database_url, pool_pre_ping=True)
-    _alembic(backend_dir, database_url, "upgrade", "head")
+    _alembic(backend_dir, database_url, "upgrade", HEAD_REVISION)
     with engine.begin() as connection:
         stock_id = connection.execute(
             text(

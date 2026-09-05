@@ -28,6 +28,10 @@ from app.services.value_line_report_identity import (
     ResolvedValueLineReportIdentity,
     resolve_fact_report_identities,
 )
+from app.services.metric_fact_currentness import (
+    HistoricalCurrentnessUnverifiableError,
+    current_metric_fact_ids_at,
+)
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.canonical_financials import (
     CanonicalUnavailableError,
@@ -397,10 +401,12 @@ def _build_piotroski_f_score_card(
             MetricFact.user_id == current_user_id,
             MetricFact.metric_key.in_(metric_keys),
             MetricFact.source_type == "calculated",
-            MetricFact.is_current.is_(True),
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session, knowledge_cutoff=evaluated_at
+                )
+            ),
             MetricFact.period_type == "FY",
-            MetricFact.created_at <= evaluated_at,
-            MetricFact.updated_at <= evaluated_at,
         )
         .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
     ).all()
@@ -758,8 +764,11 @@ def _validated_dcf_save(
         select(MetricFact).where(
             MetricFact.id.in_(fact_ids),
             MetricFact.stock_id == stock_id,
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= server_evaluated_at,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session, knowledge_cutoff=server_evaluated_at
+                )
+            ),
             _visible_fact_predicate(current_user_id, []),
         )
     ).all()
@@ -974,9 +983,11 @@ def _select_stock_for_ticker(
             select(MetricFact.stock_id, func.count(MetricFact.id))
             .where(
                 MetricFact.stock_id.in_(stock_ids),
-                MetricFact.is_current.is_(True),
-                MetricFact.created_at <= knowledge_cutoff,
-                MetricFact.updated_at <= knowledge_cutoff,
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session, knowledge_cutoff=knowledge_cutoff
+                    )
+                ),
                 _visible_fact_predicate(current_user_id, admin_user_ids),
             )
             .group_by(MetricFact.stock_id)
@@ -1024,6 +1035,7 @@ def read_stock_by_ticker(
         ReportIdentityUnverifiableError,
         ActiveReportAuthorityBoundExceededError,
         ActualConflictAuthorityAmbiguousError,
+        HistoricalCurrentnessUnverifiableError,
         ValueLineSourceUnavailableError,
     ) as error:
         raise HTTPException(
@@ -1055,9 +1067,11 @@ def read_stock_by_ticker(
 
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
-        MetricFact.is_current.is_(True),
-        MetricFact.created_at <= dcf_evaluated_at,
-        MetricFact.updated_at <= dcf_evaluated_at,
+        MetricFact.id.in_(
+            current_metric_fact_ids_at(
+                session, knowledge_cutoff=dcf_evaluated_at
+            )
+        ),
         _visible_fact_predicate(current_user.id, admin_user_ids),
         MetricFact.metric_key.in_(
             ["mkt.price", "val.pe", "owners_earnings_per_share_normalized"]
@@ -1131,9 +1145,11 @@ def read_stock_by_ticker(
         owner_candidates = session.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock.id,
-                MetricFact.is_current.is_(True),
-                MetricFact.created_at <= dcf_evaluated_at,
-                MetricFact.updated_at <= dcf_evaluated_at,
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session, knowledge_cutoff=dcf_evaluated_at
+                    )
+                ),
                 _visible_fact_predicate(current_user.id, admin_user_ids),
                 MetricFact.period_type == "FY",
                 MetricFact.metric_key == "owners_earnings_per_share",
@@ -1175,9 +1191,11 @@ def read_stock_by_ticker(
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= dcf_evaluated_at,
-            MetricFact.updated_at <= dcf_evaluated_at,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session, knowledge_cutoff=dcf_evaluated_at
+                )
+            ),
             _visible_fact_predicate(current_user.id, admin_user_ids),
             MetricFact.metric_key.in_(growth_metric_keys),
         )
@@ -1417,6 +1435,7 @@ def read_stock_by_ticker(
         ReportIdentityUnverifiableError,
         ActualConflictAuthorityBoundExceededError,
         ActualConflictAuthorityAmbiguousError,
+        HistoricalCurrentnessUnverifiableError,
         ValueLineSourceUnavailableError,
     ) as error:
         raise HTTPException(
@@ -1584,9 +1603,11 @@ def read_stock_facts(
     # Get current facts
     stmt = select(MetricFact).where(
         MetricFact.stock_id == stock_id,
-        MetricFact.is_current.is_(True),
-        MetricFact.created_at <= evaluation_cutoff,
-        MetricFact.updated_at <= evaluation_cutoff,
+        MetricFact.id.in_(
+            current_metric_fact_ids_at(
+                session, knowledge_cutoff=evaluation_cutoff
+            )
+        ),
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()

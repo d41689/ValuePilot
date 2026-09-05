@@ -7,6 +7,7 @@ from decimal import Decimal, DecimalException
 from sqlalchemy import select, and_, false, or_, tuple_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
     CanonicalUnavailableError,
@@ -151,9 +152,11 @@ class ScreenerService:
         stmt = select(MetricFact).where(
             MetricFact.stock_id.in_(stock_ids),
             MetricFact.metric_key.in_(self.metric_keys()),
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= evaluated_at,
-            MetricFact.updated_at <= evaluated_at,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    self.db, knowledge_cutoff=evaluated_at
+                )
+            ),
             visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
             or_(
                 fact_nature_expr.is_(None),
@@ -419,9 +422,6 @@ class ScreenerService:
                 and_(
                     Stock.id == fact_alias.stock_id,
                     fact_alias.metric_key == cond.metric_key,
-                    fact_alias.is_current.is_(True),
-                    fact_alias.created_at <= authority.evaluated_at,
-                    fact_alias.updated_at <= authority.evaluated_at,
                     visible_metric_fact_predicate(fact_alias, user_id=current_user_id),
                     (
                         tuple_(fact_alias.id, fact_alias.value_numeric).in_(
@@ -450,7 +450,7 @@ class ScreenerService:
             else:
                 query = query.where(fact_alias.value_numeric == cond.target_value)
                 
-        return query
+        return query.distinct()
 
     def _guard_screen_sources(
         self,
@@ -477,9 +477,11 @@ class ScreenerService:
             self.db.scalars(
                 select(MetricFact).where(
                     MetricFact.metric_key.in_(metric_keys),
-                    MetricFact.is_current.is_(True),
-                    MetricFact.created_at <= evaluated_at,
-                    MetricFact.updated_at <= evaluated_at,
+                    MetricFact.id.in_(
+                        current_metric_fact_ids_at(
+                            self.db, knowledge_cutoff=evaluated_at
+                        )
+                    ),
                     visible_metric_fact_predicate(
                         MetricFact, user_id=current_user_id
                     ),

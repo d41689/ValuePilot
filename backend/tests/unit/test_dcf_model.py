@@ -102,6 +102,11 @@ def test_dcf_evaluation_clock_derives_effective_date_in_new_york():
 
 def test_dcf_fact_universe_fails_closed_above_bounded_query_limit(monkeypatch):
     session = MagicMock()
+    session.info = {
+        "metric_fact_currentness_authority_started_at": datetime(
+            2026, 1, 1, tzinfo=timezone.utc
+        )
+    }
     monkeypatch.setattr(
         "app.services.dcf_inputs.reviewed_method_gate",
         lambda *_args, **_kwargs: MagicMock(status="approved"),

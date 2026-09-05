@@ -40,6 +40,10 @@ from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
     resolve_fact_report_identities,
 )
+from app.services.metric_fact_currentness import (
+    HistoricalCurrentnessUnverifiableError,
+    current_metric_fact_ids_at,
+)
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
@@ -195,13 +199,17 @@ def build_research_workspace(
         .limit(100)
         .all()
     )
+    try:
+        current_fact_ids = current_metric_fact_ids_at(
+            session, knowledge_cutoff=evaluated_at
+        )
+    except HistoricalCurrentnessUnverifiableError as error:
+        raise ResearchCaseError(error.code, str(error), status_code=409) from error
     facts = session.scalars(
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= evaluated_at,
-            MetricFact.updated_at <= evaluated_at,
+            MetricFact.id.in_(current_fact_ids),
             visible_metric_fact_predicate(MetricFact, user_id=user_id),
         )
         .order_by(
@@ -306,6 +314,7 @@ def build_research_workspace(
         ActiveReportAuthorityBoundExceededError,
         ActualConflictAuthorityBoundExceededError,
         ActualConflictAuthorityAmbiguousError,
+        HistoricalCurrentnessUnverifiableError,
         ValueLineSourceUnavailableError,
     ) as error:
         raise ResearchCaseError(

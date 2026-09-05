@@ -103,7 +103,7 @@ def _owner_earnings_inputs(*, user_id: int, stock_id: int) -> list[MetricFact]:
     ]
 
 
-def test_valuation_context_respects_shared_knowledge_cutoff(
+def test_valuation_context_uses_db_currentness_time_not_caller_fact_time(
     db_session, user_factory
 ) -> None:
     user = user_factory("valuation-cutoff@example.com")
@@ -135,8 +135,8 @@ def test_valuation_context_respects_shared_knowledge_cutoff(
         knowledge_cutoff=cutoff,
     )
 
-    assert at_cutoff.user_intrinsic_value is None
-    assert at_cutoff.user_intrinsic_value_status == "missing"
+    assert at_cutoff.user_intrinsic_value == 123
+    assert at_cutoff.user_intrinsic_value_status == "available"
     assert read_valuation_context(
         db_session, user_id=user.id, stock_id=stock.id
     ).user_intrinsic_value == 123

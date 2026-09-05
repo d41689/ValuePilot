@@ -160,6 +160,7 @@ app.add_middleware(
         "X-Pagination-Mode",
         "X-Snapshot-Cutoff",
         "X-Snapshot-Max-Id",
+        "X-Snapshot-Scope",
         "X-Next-Cursor",
     ],
 )

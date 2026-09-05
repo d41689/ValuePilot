@@ -743,3 +743,63 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   migration, documents, stock, Workspace, quant-audit, reconciliation, pool and
   calculation regression set is `411 passed` in 193.74 seconds. Exact canonical
   closing gates remain pending for the post-review gate.
+- 2026-09-05: Strict Terra R21 found five remaining authority and resource
+  gaps. Forward migration `20260904200000` starts a DB-owned, append-only
+  `metric_fact_currentness_revisions` timeline, freezes its conservative
+  observation boundary, and backfills only the state observed at that boundary.
+  A request before that boundary fails with typed
+  `historical_currentness_unverifiable`; it never projects today's mutable
+  `is_current` value into earlier history. The stock, pool, screener, formula,
+  valuation, DCF, reconciliation, calculated-metric, Research Workspace, and
+  Oracle's Lens fact readers now select the last recorded state at their common
+  knowledge cutoff. Currentness flips remain normal `metric_facts` writes, but
+  their time, transaction identity, prior edge, and immutable slot snapshot are
+  database-owned. Tests cover conservative backfill, demotion/replacement PIT
+  replay, direct-history forgery, slot mutation, and an uncommitted concurrent
+  demotion.
+- 2026-09-05: The R21 schema is intentionally a forward-only 200–240 chain.
+  Revision 200 creates the timeline, bounded snapshot fields, exact document
+  order index, and same-clock 15-minute snapshot trigger. Revision 210 changes
+  timeline ownership deletion to permit only an existing parent fact cascade,
+  preserving the previously supported document/fact deletion workflow.
+  Revision 220 makes the authority marker and fact slot immutable and persists
+  the exact PostgreSQL transaction-visibility snapshot used by cursor-derived
+  reads. Revision 230 completes the immutable timeline slot with `as_of_date`,
+  which was found missing only after 220 had been applied. Revision 240 removes
+  220's overly broad cross-source current-slot unique index: existing canonical
+  consumers deliberately retain malformed calculated duplicates so they can
+  return typed ambiguity, while the narrower manual, parsed-document, and SEC
+  unique contracts remain. These corrections had to be separate because every
+  earlier revision had already been applied; no applied migration was edited.
+- 2026-09-05: Revision 250 is a final forward compatibility correction after
+  240 was already applied. It keeps tenant, stock, metric, source, reference,
+  period and as-of slot identity immutable, and keeps parsed-document identity
+  immutable, while allowing the established dedupe workflow to relocate a
+  manual fact's provenance document (the manual canonical slot never includes
+  document ID). Its trigger sorts after the existing stock-lock and Value Line
+  lineage guards, so rejected stock/source mutations still honor their earlier
+  concurrency and typed-integrity contracts. Revisions 200 through 250 were
+  never edited after being applied; each discovered compatibility correction
+  was added as a new forward revision.
+- 2026-09-05: Document cursor creation now takes a per-user PostgreSQL advisory
+  transaction lock, reuses only an unexpired snapshot with the same page limit
+  and exact membership/report-date fingerprint, caps each user at eight active
+  traversals, retains at most 5,000 members, and deletes at most 16 expired rows
+  per request. Capacity and collection overflow are typed 409 outcomes. Cursor
+  membership, order, report date, currentness, and active-report authority use
+  the initial cutoff plus its MVCC visibility snapshot; later report
+  transactions cannot enter a continuation. Other file/page display metadata
+  is explicitly current, not historical evidence, and the response advertises
+  that scope. The database overwrites caller-supplied past/future cutoff,
+  creation, expiry and transaction values from one clock, enforces exactly 15
+  minutes, and rejects mutation. Tests cover concurrent first-page reuse,
+  different-limit capacity, 5,000-member reuse, post-capture report commit,
+  report-date mutation, exact index planning, and all timestamp override forms.
+- 2026-09-05: R21 focused verification includes `55 passed` for the
+  complete document API file, `42 passed` for the screener/applicability files,
+  `15 passed` for ingestion files, and passing currentness plus full isolated
+  `190 -> 250 -> 190 -> 250` migration tests. Shared development and the unique
+  Alembic head are revision 250. Exact closing gates are green: container build,
+  migration upgrade, `2669` backend tests, `233` frontend unit tests, frontend
+  lint, production frontend build, and `git diff --check`. Only the pre-existing
+  Starlette/httpx and anyio deprecation warnings remain in backend pytest.

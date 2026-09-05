@@ -64,8 +64,8 @@ def test_lookup_uses_one_et_effective_clock_for_all_method_gates(
     stock = Stock(ticker="CLOCK", exchange="NYSE", company_name="Clock Inc")
     db_session.add_all([user, stock])
     db_session.commit()
-    evaluated_at = datetime(2026, 9, 4, 1, 30, tzinfo=timezone.utc)
-    effective_as_of = date(2026, 9, 3)
+    evaluated_at = datetime(2027, 9, 4, 1, 30, tzinfo=timezone.utc)
+    effective_as_of = date(2027, 9, 3)
     calls = []
     availability_cutoffs = []
     original_gate = dcf_inputs.reviewed_method_gate
@@ -104,8 +104,8 @@ def test_lookup_uses_one_et_effective_clock_for_all_method_gates(
     assert {call["knowledge_at"] for call in calls} == {evaluated_at}
     assert availability_cutoffs == [evaluated_at]
     for gate in response.json()["system_method_gates"].values():
-        assert gate["effective_as_of"] == "2026-09-03"
-        assert gate["knowledge_at"] == "2026-09-04T01:30:00+00:00"
+        assert gate["effective_as_of"] == "2027-09-03"
+        assert gate["knowledge_at"] == "2027-09-04T01:30:00+00:00"
 
 
 def _piotroski_fact(

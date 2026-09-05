@@ -21,6 +21,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from app.models.artifacts import PdfDocument, ValueLineMappingPolicy
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.services.mapping_spec import (
     MappingSpec,
     load_resolved_value_line_mapping_spec,
@@ -1399,7 +1400,11 @@ def _current_same_slot_competitors(
                 .where(
                     MetricFact.stock_id == stock_id,
                     MetricFact.metric_key == metric_key,
-                    MetricFact.is_current.is_(True),
+                    MetricFact.id.in_(
+                        current_metric_fact_ids_at(
+                            session, knowledge_cutoff=knowledge_cutoff
+                        )
+                    ),
                     visible_metric_fact_predicate(MetricFact, user_id=user_id),
                 )
                 .order_by(MetricFact.id)

@@ -37,6 +37,7 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
 )
 from app.services.value_line_report_identity import resolve_fact_report_identities
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 
@@ -764,11 +765,16 @@ class IngestionService:
             return []
         method_snapshot = decision.as_dict()
 
+        knowledge_cutoff = database_evaluation_cutoff(self.db)
         source_query = select(MetricFact).where(
             MetricFact.user_id == user_id,
             MetricFact.stock_id == stock_id,
             MetricFact.source_type == "parsed",
-            MetricFact.is_current.is_(True),
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    self.db, knowledge_cutoff=knowledge_cutoff
+                )
+            ),
             MetricFact.period_type == "FY",
             MetricFact.metric_key.in_(OE_INPUT_KEYS),
         )

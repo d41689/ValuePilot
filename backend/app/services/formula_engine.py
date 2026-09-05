@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.models.facts import MetricFact, Formula, CalculatedRun
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.services.numeric_persistence import persist_numeric_38_12
 from app.services.canonical_financials import (
     database_evaluation_cutoff,
@@ -145,9 +146,11 @@ class FormulaEngine:
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key.in_(formula.dependencies_json),
-                MetricFact.is_current.is_(True),
-                MetricFact.created_at <= evaluated_at,
-                MetricFact.updated_at <= evaluated_at,
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        self.db, knowledge_cutoff=evaluated_at
+                    )
+                ),
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()

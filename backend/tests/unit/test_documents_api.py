@@ -1,8 +1,11 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from threading import Barrier
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.users import User
@@ -19,9 +22,14 @@ from app.models.facts import MetricFact
 from app.api.v1.endpoints.documents import _document_compare_value_label
 from app.services.active_report_resolver import (
     ActiveReportAuthorityBoundExceededError,
+    resolve_active_reports,
 )
 from app.services.ingestion_service import IngestionService
-from app.services.document_cursor import decode_document_cursor
+from app.services.document_cursor import (
+    create_document_snapshot,
+    decode_document_cursor,
+    load_document_snapshot_page,
+)
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.api.v1.endpoints.extractions import (
     ExtractionCorrectionIdentityError,
@@ -2955,7 +2963,13 @@ def test_documents_cursor_expiry_is_typed(
     first = client.get("/api/v1/documents?limit=1", headers=auth_headers(user))
     cursor = first.headers["x-next-cursor"]
     decoded = decode_document_cursor(cursor, user_id=user.id)
-    assert db_session.get(DocumentListSnapshot, decoded.snapshot_id) is not None
+    retained = db_session.get(DocumentListSnapshot, decoded.snapshot_id)
+    assert retained is not None
+    assert retained.expires_at - retained.created_at == timedelta(minutes=15)
+    # A caller-side TTL override cannot alter database-owned expiry. Removing
+    # the retained server snapshot exercises the same typed continuation path.
+    db_session.delete(retained)
+    db_session.commit()
 
     continued = client.get(
         "/api/v1/documents", params={"cursor": cursor}, headers=auth_headers(user)
@@ -2996,6 +3010,167 @@ def test_documents_cursor_rejects_collection_beyond_persistent_snapshot_bound(
             DocumentListSnapshot.user_id == user.id
         )
     ) == 0
+
+
+def test_documents_cursor_reuses_identical_first_page_snapshot(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-cursor-reuse@example.com")
+    db_session.add_all(
+        [
+            PdfDocument(
+                user_id=user.id,
+                file_name=f"reuse-{index}.pdf",
+                source="value_line",
+                file_storage_key=f"tests/reuse-{index}.pdf",
+                parse_status="parsed",
+            )
+            for index in range(3)
+        ]
+    )
+    db_session.commit()
+
+    first = client.get("/api/v1/documents?limit=1", headers=auth_headers(user))
+    repeated = client.get("/api/v1/documents?limit=1", headers=auth_headers(user))
+
+    assert first.status_code == repeated.status_code == 200
+    assert first.headers["x-next-cursor"] == repeated.headers["x-next-cursor"]
+    assert db_session.scalar(
+        sa.select(sa.func.count(DocumentListSnapshot.id)).where(
+            DocumentListSnapshot.user_id == user.id
+        )
+    ) == 1
+
+
+def test_document_snapshot_creation_serializes_concurrent_reuse(
+    db_session,
+):
+    engine = db_session.get_bind().engine
+    with engine.begin() as setup:
+        user_id = setup.scalar(
+            sa.text(
+                "INSERT INTO users (email,hashed_password,is_active) VALUES "
+                "('documents-cursor-concurrent-reuse@example.com','x',true) "
+                "RETURNING id"
+            )
+        )
+        setup.execute(
+            sa.text(
+                "INSERT INTO pdf_documents "
+                "(user_id,file_name,source,file_storage_key,parse_status,"
+                "identity_needs_review) SELECT :user,'concurrent-reuse-'||g||'.pdf',"
+                "'value_line','tests/concurrent-reuse-'||g,'parsed',false "
+                "FROM generate_series(1,3) g"
+            ),
+            {"user": user_id},
+        )
+    start = Barrier(2)
+
+    def capture() -> str:
+        with Session(engine) as session:
+            start.wait()
+            snapshot = create_document_snapshot(session, user_id=user_id, limit=1)
+            session.commit()
+            return snapshot.snapshot_id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            snapshot_ids = list(executor.map(lambda _index: capture(), range(2)))
+
+        assert len(set(snapshot_ids)) == 1
+        with engine.connect() as verification:
+            assert verification.scalar(
+                sa.select(sa.func.count(DocumentListSnapshot.id)).where(
+                    DocumentListSnapshot.user_id == user_id
+                )
+            ) == 1
+    finally:
+        with engine.begin() as cleanup:
+            cleanup.execute(
+                sa.text("DELETE FROM document_list_snapshots WHERE user_id=:user"),
+                {"user": user_id},
+            )
+            cleanup.execute(
+                sa.text("DELETE FROM pdf_documents WHERE user_id=:user"),
+                {"user": user_id},
+            )
+            cleanup.execute(
+                sa.text("DELETE FROM users WHERE id=:user"), {"user": user_id}
+            )
+
+
+def test_documents_cursor_capacity_is_typed_and_per_user(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import document_cursor as cursor_service
+
+    monkeypatch.setattr(cursor_service, "MAX_ACTIVE_DOCUMENT_SNAPSHOTS_PER_USER", 2)
+    owner = user_factory("documents-cursor-capacity@example.com")
+    other = user_factory("documents-cursor-capacity-other@example.com")
+    db_session.add_all(
+        [
+            PdfDocument(
+                user_id=owner.id,
+                file_name=f"capacity-{index}.pdf",
+                source="value_line",
+                file_storage_key=f"tests/capacity-{index}.pdf",
+                parse_status="parsed",
+            )
+            for index in range(3)
+        ]
+    )
+    db_session.commit()
+
+    assert client.get(
+        "/api/v1/documents?limit=1", headers=auth_headers(owner)
+    ).status_code == 200
+    assert client.get(
+        "/api/v1/documents?limit=2", headers=auth_headers(owner)
+    ).status_code == 200
+    blocked = client.get(
+        "/api/v1/documents?limit=3", headers=auth_headers(owner)
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "documents_snapshot_capacity_exceeded"
+    assert client.get(
+        "/api/v1/documents?limit=1", headers=auth_headers(other)
+    ).status_code == 200
+    assert db_session.scalar(
+        sa.select(sa.func.count(DocumentListSnapshot.id)).where(
+            DocumentListSnapshot.user_id == owner.id
+        )
+    ) == 2
+
+
+def test_documents_cursor_exact_bound_reuse_retains_only_one_5000_member_snapshot(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-cursor-exact-bound@example.com")
+    db_session.execute(
+        sa.text(
+            "INSERT INTO pdf_documents "
+            "(user_id,file_name,source,file_storage_key,parse_status,identity_needs_review) "
+            "SELECT :user,'exact-'||g||'.pdf','value_line','tests/exact-'||g,"
+            "'parsed',false FROM generate_series(1,5000) g"
+        ),
+        {"user": user.id},
+    )
+    db_session.commit()
+
+    first = client.get("/api/v1/documents?limit=500", headers=auth_headers(user))
+    repeated = client.get("/api/v1/documents?limit=500", headers=auth_headers(user))
+
+    assert first.status_code == repeated.status_code == 200
+    snapshot_count, member_count = db_session.execute(
+        sa.text(
+            "SELECT count(DISTINCT s.id),count(m.snapshot_id) "
+            "FROM document_list_snapshots s "
+            "JOIN document_list_snapshot_members m ON m.snapshot_id=s.id "
+            "WHERE s.user_id=:user"
+        ),
+        {"user": user.id},
+    ).one()
+    assert (snapshot_count, member_count) == (1, 5000)
 
 
 def test_documents_cursor_excludes_insert_uncommitted_at_snapshot_then_committed(
@@ -3272,6 +3447,140 @@ def test_documents_page_uses_global_active_report_not_page_local_latest(
     assert response.status_code == 200, response.text
     assert response.json()[0]["id"] == old_document.id
     assert response.json()[0]["is_active_report"] is False
+
+
+def test_documents_cursor_derived_report_authority_uses_snapshot_cutoff(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-snapshot-report-authority@example.com")
+    stock = Stock(ticker="DOCPIT", exchange="NYSE", company_name="Doc PIT")
+    db_session.add(stock)
+    db_session.flush()
+    older = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="pit-older.pdf",
+        source="value_line",
+        file_storage_key="tests/pit-older.pdf",
+        parse_status="parsed",
+        report_date=date(2025, 1, 9),
+        upload_time=datetime(2025, 1, 9),
+    )
+    newer = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="pit-newer.pdf",
+        source="value_line",
+        file_storage_key="tests/pit-newer.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 9),
+        upload_time=datetime(2026, 1, 9),
+    )
+    db_session.add_all([older, newer])
+    db_session.flush()
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="custom.pit.older",
+                value_numeric=1,
+                source_type="parsed",
+                source_document_id=older.id,
+                is_current=True,
+            ),
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="custom.pit.newer",
+                value_numeric=2,
+                source_type="parsed",
+                source_document_id=newer.id,
+                is_current=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    first = client.get("/api/v1/documents?limit=1", headers=auth_headers(user))
+    assert first.status_code == 200, first.text
+    older.report_date = date(2099, 1, 9)
+    db_session.commit()
+    second = client.get(
+        "/api/v1/documents",
+        params={"cursor": first.headers["x-next-cursor"]},
+        headers=auth_headers(user),
+    )
+
+    assert second.status_code == 200, second.text
+    assert second.json()[0]["id"] == older.id
+    assert second.json()[0]["report_date"] == "2025-01-09"
+    assert second.json()[0]["is_active_report"] is False
+    assert second.headers["x-snapshot-cutoff"] == first.headers["x-snapshot-cutoff"]
+
+
+def test_snapshot_mvcc_excludes_report_transaction_committed_after_capture(
+    db_session,
+):
+    engine = db_session.get_bind().engine
+    with engine.begin() as setup:
+        user_id = setup.scalar(
+            sa.text(
+                "INSERT INTO users (email,hashed_password,is_active) VALUES "
+                "('documents-snapshot-mvcc@example.com','x',true) RETURNING id"
+            )
+        )
+        stock_id = setup.scalar(
+            sa.text(
+                "INSERT INTO stocks (ticker,exchange,company_name,is_active) VALUES "
+                "('DOCMVCC','NYSE','Doc MVCC',true) RETURNING id"
+            )
+        )
+    pending = engine.connect()
+    transaction = pending.begin()
+    snapshot_session = Session(engine)
+    try:
+        pending.scalar(
+            sa.text(
+                "INSERT INTO pdf_documents "
+                "(user_id,stock_id,file_name,source,file_storage_key,parse_status,"
+                "report_date,identity_needs_review) VALUES "
+                "(:user,:stock,'pending-report.pdf','value_line','tests/pending-report.pdf',"
+                "'parsed','2026-01-09',false) RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        )
+
+        snapshot = create_document_snapshot(snapshot_session, user_id=user_id, limit=1)
+        snapshot_session.commit()
+        assert snapshot.snapshot_total == 0
+        transaction.commit()
+
+        rows, has_more = load_document_snapshot_page(
+            snapshot_session, snapshot=snapshot, after_ordinal=0
+        )
+        assert rows == []
+        assert has_more is False
+    finally:
+        if transaction.is_active:
+            transaction.rollback()
+        pending.close()
+        snapshot_session.close()
+        with engine.begin() as cleanup:
+            cleanup.execute(
+                sa.text("DELETE FROM document_list_snapshots WHERE user_id=:user"),
+                {"user": user_id},
+            )
+            cleanup.execute(
+                sa.text("DELETE FROM pdf_documents WHERE user_id=:user"),
+                {"user": user_id},
+            )
+            cleanup.execute(
+                sa.text("DELETE FROM users WHERE id=:user"), {"user": user_id}
+            )
+            cleanup.execute(
+                sa.text("DELETE FROM stocks WHERE id=:stock"), {"stock": stock_id}
+            )
 
 
 def test_documents_list_maps_active_report_bound_to_typed_conflict(

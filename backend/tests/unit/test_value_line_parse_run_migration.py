@@ -65,7 +65,7 @@ def isolated():
 
 def test_value_line_parse_run_empty_upgrade_roundtrip(isolated) -> None:
     url, engine = isolated
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
 
     with engine.connect() as connection:
         assert connection.execute(
@@ -79,7 +79,7 @@ def test_value_line_parse_run_empty_upgrade_roundtrip(isolated) -> None:
             )
         ).scalar_one() == APPROVED_MAPPING_VERSION
     _alembic(url, "downgrade", PARENT)
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
 
 
 def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) -> None:
@@ -120,7 +120,7 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
             {"user": user_id, "stock": stock_id, "document": document_id},
         ).scalar_one()
 
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
 
     with engine.connect() as connection:
         assert connection.execute(
@@ -502,7 +502,7 @@ def test_value_line_reparse_document_lock_serializes_concurrent_attempts(
     isolated,
 ) -> None:
     url, engine = isolated
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
     first = engine.connect()
     second = engine.connect()
     try:

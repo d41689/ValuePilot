@@ -17,7 +17,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func
+from sqlalchemy import func, or_, select
 import yaml
 from app.models.artifacts import (
     DocumentPage,
@@ -44,7 +44,9 @@ from app.services.active_report_resolver import (
     ActiveReportAuthorityBoundExceededError,
     ActualConflictAuthorityAmbiguousError,
     resolve_active_reports,
+    transaction_visible_in_snapshot_predicate,
 )
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.document_dedupe_service import DocumentDedupeService
@@ -53,6 +55,7 @@ from app.services.document_cursor import (
     DocumentCursor,
     DocumentsCursorExpiredError,
     DocumentsSnapshotBoundExceededError,
+    DocumentsSnapshotCapacityExceededError,
     DocumentsSnapshotSourceUnavailableError,
     InvalidDocumentsCursorError,
     create_document_snapshot,
@@ -187,6 +190,14 @@ DOCUMENT_LIST_RESPONSE_HEADERS = {
         "schema": {"type": "integer"},
         "description": "Immutable document-ID upper boundary for the snapshot.",
     },
+    "X-Snapshot-Scope": {
+        "schema": {"type": "string"},
+        "description": (
+            "Cursor mode freezes membership, ordering, report date and active-report "
+            "authority. File name, parse/page counts and other display metadata remain "
+            "current and are not historical evidence."
+        ),
+    },
     "X-Next-Cursor": {
         "schema": {"type": "string"},
         "description": "Opaque signed continuation token; omitted on the last page.",
@@ -265,6 +276,7 @@ def list_documents(
         except (
             DocumentsCursorExpiredError,
             DocumentsSnapshotBoundExceededError,
+            DocumentsSnapshotCapacityExceededError,
             DocumentsSnapshotSourceUnavailableError,
         ) as error:
             raise HTTPException(
@@ -275,10 +287,14 @@ def list_documents(
         snapshot_upload_times = {
             row.document.id: row.upload_time for row in snapshot_rows
         }
+        snapshot_report_dates = {
+            row.document.id: row.report_date for row in snapshot_rows
+        }
         total = snapshot.snapshot_total
         response.headers["X-Pagination-Mode"] = "cursor"
         response.headers["X-Snapshot-Cutoff"] = snapshot.snapshot_cutoff.isoformat()
         response.headers["X-Snapshot-Max-Id"] = str(snapshot.snapshot_max_id)
+        response.headers["X-Snapshot-Scope"] = "membership-report-authority"
         response.headers["X-Page-Offset"] = "0"
         if has_next and docs:
             last = snapshot_rows[-1]
@@ -315,6 +331,7 @@ def list_documents(
         )
         response.headers["X-Page-Offset"] = str(legacy_offset)
         snapshot_upload_times = {}
+        snapshot_report_dates = {}
 
     if limit is None and not cursor_mode and total > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
         error = ActiveReportAuthorityBoundExceededError(
@@ -362,7 +379,7 @@ def list_documents(
     )
 
     companies_map: dict[int, dict[int, dict[str, str]]] = {}
-    company_rows = session.execute(
+    company_query = (
         select(MetricFact.source_document_id, Stock.id, Stock.ticker, Stock.company_name)
         .join(Stock, Stock.id == MetricFact.stock_id)
         .where(
@@ -372,7 +389,28 @@ def list_documents(
         )
         .distinct()
         .limit(MAX_ACTIVE_REPORT_AUTHORITY_ITEMS + 1)
-    ).all()
+    )
+    if cursor_mode:
+        company_query = company_query.where(
+            MetricFact.value_line_fact_known_at.is_not(None),
+            MetricFact.value_line_fact_known_at <= snapshot.snapshot_cutoff,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=snapshot.snapshot_cutoff,
+                    knowledge_txid_snapshot=snapshot.visibility_snapshot,
+                )
+            ),
+            or_(
+                MetricFact.value_line_created_txid.is_(None),
+                transaction_visible_in_snapshot_predicate(
+                    MetricFact.value_line_created_txid,
+                    visibility_snapshot=snapshot.visibility_snapshot,
+                    bind_name="document_company_visibility_snapshot",
+                ),
+            ),
+        )
+    company_rows = session.execute(company_query).all()
     if len(company_rows) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
         error = ActiveReportAuthorityBoundExceededError(
             dimension="document_stock_candidates",
@@ -393,7 +431,11 @@ def list_documents(
     # Ensure single-stock docs still show company even if no parsed facts exist.
     stock_ids = sorted(
         {
-            *[doc.stock_id for doc in docs if doc.stock_id],
+            *(
+                []
+                if cursor_mode
+                else [doc.stock_id for doc in docs if doc.stock_id]
+            ),
             *[
                 stock_id
                 for companies in companies_map.values()
@@ -411,6 +453,10 @@ def list_documents(
                 session,
                 stock_ids=stock_ids,
                 current_user_id=user_id,
+                knowledge_cutoff=(snapshot.snapshot_cutoff if cursor_mode else None),
+                knowledge_txid_snapshot=(
+                    snapshot.visibility_snapshot if cursor_mode else None
+                ),
             )
             if stock_ids
             else {}
@@ -438,7 +484,12 @@ def list_documents(
     output = []
     for doc in docs:
         companies_dict = companies_map.get(doc.id, {})
-        if doc.stock_id and doc.stock_id in stock_lookup and doc.stock_id not in companies_dict:
+        if (
+            not cursor_mode
+            and doc.stock_id
+            and doc.stock_id in stock_lookup
+            and doc.stock_id not in companies_dict
+        ):
             stock = stock_lookup[doc.stock_id]
             companies_dict[doc.stock_id] = {
                 "ticker": stock.ticker,
@@ -467,7 +518,13 @@ def list_documents(
                     if snapshot_upload_times.get(doc.id, doc.upload_time)
                     else None
                 ),
-                "report_date": doc.report_date.isoformat() if doc.report_date else None,
+                "report_date": (
+                    snapshot_report_dates.get(doc.id)
+                    if cursor_mode
+                    else doc.report_date
+                ).isoformat()
+                if (snapshot_report_dates.get(doc.id) if cursor_mode else doc.report_date)
+                else None,
                 "page_count": page_counts.get(doc.id, 0),
                 "parsed_page_count": parsed_page_counts.get(doc.id, 0),
                 "companies": companies,

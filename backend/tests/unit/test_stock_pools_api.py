@@ -290,7 +290,7 @@ def test_watchlist_rows_batch_101_members_with_fixed_query_count(
         event.remove(connection, "before_cursor_execute", capture)
 
     assert len(rows) == 101
-    assert len(statements) == 6
+    assert len(statements) == 7
     assert {row["delta_today"] for row in rows} == {1}
     assert len({row["current_price"]["as_of_date"] for row in rows}) == 1
     assert len(
@@ -304,7 +304,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
     from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
     from app.services import market_data_service
 
-    evaluated_at = datetime(2026, 2, 4, 17, tzinfo=timezone.utc)
+    evaluated_at = datetime(2027, 2, 4, 17, tzinfo=timezone.utc)
 
     monkeypatch.setattr(
         stock_pools_endpoint,
@@ -372,7 +372,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
         [
             StockPrice(
                 stock_id=stock.id,
-                price_date=date(2026, 2, 3),
+                price_date=date(2027, 2, 3),
                 open=100,
                 high=100,
                 low=100,
@@ -380,7 +380,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
                 volume=1,
                 source="yfinance",
                 currency="USD",
-                created_at=datetime(2026, 2, 3, 22, tzinfo=timezone.utc),
+                    created_at=datetime(2027, 2, 3, 22, tzinfo=timezone.utc),
             )
             for stock in (known_stock, future_stock)
         ]
@@ -389,7 +389,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
         [
             StockPrice(
                 stock_id=known_stock.id,
-                price_date=date(2026, 2, 2),
+                price_date=date(2027, 2, 2),
                 open=98,
                 high=98,
                 low=98,
@@ -398,11 +398,11 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
                 source="yfinance",
                 currency="USD",
                 # After target-date NY midnight (05:00 UTC), but known now.
-                created_at=datetime(2026, 2, 3, 6, tzinfo=timezone.utc),
+                created_at=datetime(2027, 2, 3, 6, tzinfo=timezone.utc),
             ),
             StockPrice(
                 stock_id=future_stock.id,
-                price_date=date(2026, 2, 2),
+                price_date=date(2027, 2, 2),
                 open=97,
                 high=97,
                 low=97,
@@ -410,7 +410,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
                 volume=1,
                 source="yfinance",
                 currency="USD",
-                created_at=datetime(2026, 2, 4, 18, tzinfo=timezone.utc),
+                created_at=datetime(2027, 2, 4, 18, tzinfo=timezone.utc),
             ),
         ]
     )

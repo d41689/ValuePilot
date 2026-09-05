@@ -74,6 +74,34 @@ class MetricFact(Base):
     user: Mapped[Optional["User"]] = relationship("User")
     stock: Mapped["Stock"] = relationship("Stock")
 
+
+class MetricFactCurrentnessRevision(Base):
+    """Append-only, database-owned history of the canonical projection flag."""
+
+    __tablename__ = "metric_fact_currentness_revisions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("metric_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    stock_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    metric_key: Mapped[str] = mapped_column(String, nullable=False)
+    source_type: Mapped[str] = mapped_column(String, nullable=False)
+    source_document_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    source_ref_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    period_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    period_end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    as_of_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    known_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_txid: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    is_backfill: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    prior_revision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("metric_fact_currentness_revisions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
 class Formula(Base):
     __tablename__ = "formulas"
 

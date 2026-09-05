@@ -18,6 +18,10 @@ from app.services.active_report_resolver import (
     ActualConflictAuthorityAmbiguousError,
 )
 from app.services.canonical_financials import database_evaluation_cutoff
+from app.services.metric_fact_currentness import (
+    current_metric_fact_ids_at,
+    currentness_state_subquery,
+)
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import (
     ValueLineSourceUnavailableError,
@@ -59,6 +63,12 @@ def detect_actual_conflicts(
     elif knowledge_cutoff.utcoffset() is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
     shared_ids = sorted(set(shared_parsed_user_ids or []))
+    # Validate the conservative backfill boundary before using any historical
+    # canonical projection. The returned ID query is used by simpler consumers;
+    # conflicts need both true and false states and therefore join the complete
+    # latest-state projection below.
+    current_metric_fact_ids_at(session, knowledge_cutoff=knowledge_cutoff)
+    currentness = currentness_state_subquery(knowledge_cutoff=knowledge_cutoff)
     if len(shared_ids) > MAX_ACTUAL_CONFLICT_OBSERVATIONS:
         raise ActualConflictAuthorityBoundExceededError(
             dimension="shared_parsed_user_ids",
@@ -194,7 +204,7 @@ def detect_actual_conflicts(
             MetricFact.source_document_id,
             MetricFact.value_numeric,
             MetricFact.value_text,
-            MetricFact.is_current,
+            currentness.c.is_current,
             identity.id.label("report_identity_revision_id"),
             identity.report_date.label("source_report_date"),
         )
@@ -202,6 +212,7 @@ def detect_actual_conflicts(
             identity,
             identity.id == MetricFact.value_line_report_identity_revision_id,
         )
+        .join(currentness, currentness.c.fact_id == MetricFact.id)
         .join(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
         .outerjoin(
             ValueLineParseRun,

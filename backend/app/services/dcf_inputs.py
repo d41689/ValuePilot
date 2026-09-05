@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.currencies import normalize_iso4217_currency
 from app.core.config import settings
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     guard_sec_run_availability,
@@ -156,9 +157,11 @@ def load_canonical_dcf_fact_universe(
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock_id,
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= evaluated_at,
-            MetricFact.updated_at <= evaluated_at,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session, knowledge_cutoff=evaluated_at
+                )
+            ),
             visible_metric_fact_predicate(MetricFact, user_id=user_id),
             MetricFact.period_type == "FY",
             MetricFact.metric_key.in_(

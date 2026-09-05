@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, bindparam, cast, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.types import UserDefinedType
 
 from app.models.artifacts import (
     PdfDocument,
@@ -53,6 +54,27 @@ class ActualConflictAuthorityAmbiguousError(ValueError):
         )
 
 
+class _TxidSnapshot(UserDefinedType):
+    cache_ok = True
+
+    def get_col_spec(self, **_kw):
+        return "txid_snapshot"
+
+
+def transaction_visible_in_snapshot_predicate(
+    transaction_id,
+    *,
+    visibility_snapshot: str,
+    bind_name: str,
+):
+    """Bind a PostgreSQL MVCC snapshot without interpolating SQL text."""
+
+    return func.txid_visible_in_snapshot(
+        transaction_id,
+        cast(bindparam(bind_name, visibility_snapshot), _TxidSnapshot()),
+    )
+
+
 @dataclass(frozen=True)
 class ActiveReportSelection:
     stock_id: int
@@ -69,6 +91,7 @@ def resolve_active_reports(
     current_user_id: Optional[int] = None,
     shared_parsed_user_ids: Optional[list[int]] = None,
     knowledge_cutoff: datetime | None = None,
+    knowledge_txid_snapshot: str | None = None,
 ) -> dict[int, ActiveReportSelection]:
     if document_ids is not None:
         document_ids = _bounded_ids(document_ids, dimension="document_ids")
@@ -80,6 +103,10 @@ def resolve_active_reports(
     )
     if knowledge_cutoff is not None and knowledge_cutoff.utcoffset() is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
+    if knowledge_txid_snapshot is not None and not isinstance(
+        knowledge_txid_snapshot, str
+    ):
+        raise ValueError("knowledge_txid_snapshot must be a database snapshot")
     if document_ids == [] or stock_ids == []:
         return {}
 
@@ -89,6 +116,17 @@ def resolve_active_reports(
         MetricFact.source_type == "parsed",
         MetricFact.source_document_id.is_not(None),
     ]
+    if knowledge_txid_snapshot is not None:
+        scope.append(
+            or_(
+                MetricFact.value_line_created_txid.is_(None),
+                transaction_visible_in_snapshot_predicate(
+                    MetricFact.value_line_created_txid,
+                    visibility_snapshot=knowledge_txid_snapshot,
+                    bind_name="active_report_scope_visibility_snapshot",
+                ),
+            )
+        )
 
     if document_ids is not None:
         scope.append(MetricFact.source_document_id.in_(document_ids))
@@ -127,6 +165,18 @@ def resolve_active_reports(
         identity.user_id != MetricFact.user_id,
         and_(identity.stock_id.is_not(None), identity.stock_id != MetricFact.stock_id),
     )
+    if knowledge_txid_snapshot is not None:
+        mismatch = or_(
+            mismatch,
+            and_(
+                identity.id.is_not(None),
+                ~transaction_visible_in_snapshot_predicate(
+                    identity.created_txid,
+                    visibility_snapshot=knowledge_txid_snapshot,
+                    bind_name="active_report_mismatch_visibility_snapshot",
+                ),
+            ),
+        )
     unverifiable = session.execute(
         select(MetricFact.id, MetricFact.source_document_id)
         .outerjoin(
@@ -150,6 +200,24 @@ def resolve_active_reports(
             MetricFact.created_at <= knowledge_cutoff,
         ),
     ]
+    if knowledge_txid_snapshot is not None:
+        fact_time_authority.extend(
+            [
+                or_(
+                    MetricFact.value_line_created_txid.is_(None),
+                    transaction_visible_in_snapshot_predicate(
+                        MetricFact.value_line_created_txid,
+                        visibility_snapshot=knowledge_txid_snapshot,
+                        bind_name="active_report_fact_visibility_snapshot",
+                    ),
+                ),
+                transaction_visible_in_snapshot_predicate(
+                    identity.created_txid,
+                    visibility_snapshot=knowledge_txid_snapshot,
+                    bind_name="active_report_identity_visibility_snapshot",
+                ),
+            ]
+        )
     temporal_authority = [
         *fact_time_authority,
         or_(

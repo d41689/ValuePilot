@@ -10,6 +10,7 @@ from sqlalchemy import select, func, delete
 from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import StockPool, PoolMembership, Stock
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 from app.services.market_data_service import (
     read_canonical_eod_prices,
     read_current_eod_prices,
@@ -80,11 +81,13 @@ def _piotroski_scores_for_stocks(
             MetricFact.stock_id.in_(unique_stock_ids),
             MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
             MetricFact.source_type == "calculated",
-            MetricFact.is_current.is_(True),
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session, knowledge_cutoff=evaluated_at
+                )
+            ),
             MetricFact.period_type == "FY",
             MetricFact.period_end_date.is_not(None),
-            MetricFact.created_at <= evaluated_at,
-            MetricFact.updated_at <= evaluated_at,
         )
         .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
     ).all()
@@ -259,11 +262,13 @@ def _piotroski_compare_payload(
                 MetricFact.stock_id.in_(stock_ids),
                 MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
                 MetricFact.source_type == "calculated",
-                MetricFact.is_current.is_(True),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session, knowledge_cutoff=evaluated_at
+                    )
+                ),
                 MetricFact.period_type == "FY",
                 MetricFact.period_end_date.is_not(None),
-                MetricFact.created_at <= evaluated_at,
-                MetricFact.updated_at <= evaluated_at,
             )
             .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.asc(), MetricFact.created_at.desc())
         ).all()

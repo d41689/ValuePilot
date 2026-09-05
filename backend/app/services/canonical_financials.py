@@ -18,6 +18,7 @@ from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import current_metric_fact_ids_at
 
 
 CANONICAL_SOURCE_TYPES = frozenset({"sec", "parsed", "manual", "calculated"})
@@ -1056,10 +1057,13 @@ def guard_piotroski_method_authority(
                 .label("sibling_rank"),
             )
             .where(
-                MetricFact.is_current.is_(True),
-                MetricFact.created_at <= cutoff,
                 MetricFact.metric_key.like(f"{PIOTROSKI_PREFIX}%"),
                 or_(*period_clauses),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session, knowledge_cutoff=cutoff
+                    )
+                ),
             )
             .subquery()
         )
@@ -1622,11 +1626,16 @@ def require_applicable_method_facts(
 def current_visible_facts(
     session: Session, *, stock_id: int, user_id: int
 ) -> list[MetricFact]:
+    knowledge_cutoff = database_evaluation_cutoff(session)
     return list(
         session.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
-                MetricFact.is_current.is_(True),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session, knowledge_cutoff=knowledge_cutoff
+                    )
+                ),
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()

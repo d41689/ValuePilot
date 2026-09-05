@@ -422,7 +422,7 @@ def test_component_only_screener_requires_complete_current_sibling_period(
     assert error.value.code == "piotroski_method_authority_manifest_invalid"
 
 
-def test_component_screener_never_admits_forged_replacement_after_guard(
+def test_component_screener_keeps_guarded_pit_authority_after_replacement(
     db_session, user_factory
 ) -> None:
     user = user_factory("piot-screener-race@example.com")
@@ -482,7 +482,7 @@ def test_component_screener_never_admits_forged_replacement_after_guard(
         current_user_id=user.id,
     )
 
-    assert matched == []
+    assert [matched_stock.id for matched_stock in matched] == [stock.id]
 
 
 def test_component_only_request_is_quarantined_when_current_total_is_demoted(
