@@ -16,6 +16,9 @@ from app.models.artifacts import (
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.api.v1.endpoints.documents import _document_compare_value_label
+from app.services.active_report_resolver import (
+    ActiveReportAuthorityBoundExceededError,
+)
 from app.services.ingestion_service import IngestionService
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.api.v1.endpoints.extractions import (
@@ -2643,6 +2646,169 @@ def test_documents_compare_endpoint_returns_structured_diffs_by_fact_nature(
 def test_documents_list_requires_auth(client, db_session):
     resp = client.get("/api/v1/documents")
     assert resp.status_code == 401, resp.text
+
+
+def test_documents_list_supports_bounded_pagination_with_total_headers(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-pagination@example.com")
+    documents = [
+        PdfDocument(
+            user_id=user.id,
+            file_name=f"page-{offset}.pdf",
+            source="value_line",
+            file_storage_key=f"tests/page-{offset}.pdf",
+            parse_status="parsed",
+        )
+        for offset in range(3)
+    ]
+    db_session.add_all(documents)
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/documents?offset=1&limit=1",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == 1
+    assert response.headers["x-total-count"] == "3"
+    assert response.headers["x-page-offset"] == "1"
+    assert response.headers["x-page-limit"] == "1"
+
+
+def test_documents_list_without_pagination_fails_instead_of_silent_truncation(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import documents as documents_endpoint
+
+    user = user_factory("documents-unpaged-bound@example.com")
+    db_session.add_all(
+        [
+            PdfDocument(
+                user_id=user.id,
+                file_name=f"unpaged-{offset}.pdf",
+                source="value_line",
+                file_storage_key=f"tests/unpaged-{offset}.pdf",
+                parse_status="parsed",
+            )
+            for offset in range(3)
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        documents_endpoint,
+        "MAX_ACTIVE_REPORT_AUTHORITY_ITEMS",
+        2,
+    )
+
+    response = client.get("/api/v1/documents", headers=auth_headers(user))
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "active_report_authority_bound_exceeded",
+        "message": "Active report authority exceeds the supported bounded scope.",
+    }
+
+
+def test_documents_page_uses_global_active_report_not_page_local_latest(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-global-active@example.com")
+    stock = Stock(ticker="DOCACT", exchange="NYSE", company_name="Doc Active")
+    db_session.add(stock)
+    db_session.flush()
+    old_document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="old-active.pdf",
+        source="value_line",
+        file_storage_key="tests/old-active.pdf",
+        parse_status="parsed",
+        report_date=date(2025, 1, 9),
+    )
+    db_session.add(old_document)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.old_active_page",
+            value_numeric=1,
+            source_type="parsed",
+            source_document_id=old_document.id,
+            is_current=False,
+        )
+    )
+    new_document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="new-active.pdf",
+        source="value_line",
+        file_storage_key="tests/new-active.pdf",
+        parse_status="parsed",
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(new_document)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.new_active_page",
+            value_numeric=2,
+            source_type="parsed",
+            source_document_id=new_document.id,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/documents?offset=1&limit=1",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()[0]["id"] == old_document.id
+    assert response.json()[0]["is_active_report"] is False
+
+
+def test_documents_list_maps_active_report_bound_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import documents as documents_endpoint
+
+    user = user_factory("documents-active-bound@example.com")
+    stock = Stock(ticker="DOCBOUND", exchange="NYSE", company_name="Doc Bound")
+    db_session.add(stock)
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="bound.pdf",
+        source="value_line",
+        file_storage_key="tests/bound.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    def reject_bound(*_args, **_kwargs):
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="candidates",
+            limit=500,
+        )
+
+    monkeypatch.setattr(documents_endpoint, "resolve_active_reports", reject_bound)
+
+    response = client.get("/api/v1/documents", headers=auth_headers(user))
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "active_report_authority_bound_exceeded",
+        "message": "Active report authority exceeds the supported bounded scope.",
+    }
 
 
 def test_reparse_endpoint_maps_unverifiable_retained_identity_to_typed_conflict(

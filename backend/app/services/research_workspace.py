@@ -27,7 +27,10 @@ from app.services.research_cases import (
 from app.services.research_coverage import serialize_requirements
 from app.services.thirteenf_user_api import build_user_stock_holders
 from app.services.valuation import read_valuation_context
-from app.services.active_report_resolver import resolve_active_reports
+from app.services.active_report_resolver import (
+    ActiveReportAuthorityBoundExceededError,
+    resolve_active_reports,
+)
 from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
@@ -293,7 +296,10 @@ def build_research_workspace(
             current_user_id=user_id,
             knowledge_cutoff=evaluated_at,
         )
-    except ReportIdentityUnverifiableError as error:
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+    ) as error:
         raise ResearchCaseError(
             error.code,
             str(error),

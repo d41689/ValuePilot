@@ -13,6 +13,25 @@ from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 
 
+MAX_ACTIVE_REPORT_AUTHORITY_ITEMS = 500
+ACTIVE_REPORT_AUTHORITY_BOUND_EXCEEDED = (
+    "active_report_authority_bound_exceeded"
+)
+
+
+class ActiveReportAuthorityBoundExceededError(ValueError):
+    """The resolver cannot make a complete choice within its resource bound."""
+
+    code = ACTIVE_REPORT_AUTHORITY_BOUND_EXCEEDED
+
+    def __init__(self, *, dimension: str, limit: int):
+        self.dimension = dimension
+        self.limit = limit
+        super().__init__(
+            "Active report authority exceeds the supported bounded scope."
+        )
+
+
 @dataclass(frozen=True)
 class ActiveReportSelection:
     stock_id: int
@@ -29,27 +48,33 @@ def resolve_active_reports(
     shared_parsed_user_ids: Optional[list[int]] = None,
     knowledge_cutoff: datetime | None = None,
 ) -> dict[int, ActiveReportSelection]:
+    if document_ids is not None:
+        document_ids = _bounded_ids(document_ids, dimension="document_ids")
+    if stock_ids is not None:
+        stock_ids = _bounded_ids(stock_ids, dimension="stock_ids")
+    shared_ids = _bounded_ids(
+        shared_parsed_user_ids or [],
+        dimension="shared_parsed_user_ids",
+    )
+    if knowledge_cutoff is not None and knowledge_cutoff.utcoffset() is None:
+        raise ValueError("knowledge_cutoff must be timezone-aware")
+    if document_ids == [] or stock_ids == []:
+        return {}
+
     if knowledge_cutoff is None:
         knowledge_cutoff = database_evaluation_cutoff(session)
-    elif knowledge_cutoff.utcoffset() is None:
-        raise ValueError("knowledge_cutoff must be timezone-aware")
     scope = [
         MetricFact.source_type == "parsed",
         MetricFact.source_document_id.is_not(None),
     ]
 
     if document_ids is not None:
-        if not document_ids:
-            return {}
         scope.append(MetricFact.source_document_id.in_(document_ids))
 
     if stock_ids is not None:
-        if not stock_ids:
-            return {}
         scope.append(MetricFact.stock_id.in_(stock_ids))
 
     if current_user_id is not None:
-        shared_ids = shared_parsed_user_ids or []
         scope.append(
             or_(
                 MetricFact.user_id == current_user_id,
@@ -116,7 +141,18 @@ def resolve_active_reports(
             ),
         )
         .distinct()
+        .order_by(
+            MetricFact.stock_id,
+            MetricFact.source_document_id,
+            identity.id,
+        )
+        .limit(MAX_ACTIVE_REPORT_AUTHORITY_ITEMS + 1)
     ).all()
+    if len(rows) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="candidates",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
     active_by_stock: dict[int, ActiveReportSelection] = {}
     for row in rows:
         if row.stock_id is None or row.source_document_id is None:
@@ -134,3 +170,13 @@ def resolve_active_reports(
 
 def _selection_rank(selection: ActiveReportSelection) -> tuple[date, int]:
     return (selection.report_date or date.min, selection.document_id)
+
+
+def _bounded_ids(values: list[int], *, dimension: str) -> list[int]:
+    requested = sorted(set(values))
+    if len(requested) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension=dimension,
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
+    return requested

@@ -12,7 +12,12 @@ from app.services.valuation import (
     USER_INTRINSIC_VALUE_KEY,
     quantize_valuation_value,
 )
-from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
+from app.services.active_report_resolver import (
+    MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+    ActiveReportAuthorityBoundExceededError,
+    ActiveReportSelection,
+    resolve_active_reports,
+)
 from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
@@ -929,7 +934,13 @@ def _select_stock_for_ticker(
         select(Stock)
         .where(func.lower(Stock.ticker) == ticker_normalized)
         .order_by(Stock.id.asc())
+        .limit(MAX_ACTIVE_REPORT_AUTHORITY_ITEMS + 1)
     ).all()
+    if len(stocks) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="stock_ids",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
     if not stocks:
         return None
     if len(stocks) == 1:
@@ -994,7 +1005,10 @@ def read_stock_by_ticker(
             admin_user_ids=admin_user_ids,
             knowledge_cutoff=evaluation_cutoff,
         )
-    except ReportIdentityUnverifiableError as error:
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": error.code, "message": str(error)},
@@ -1011,7 +1025,10 @@ def read_stock_by_ticker(
             shared_parsed_user_ids=admin_user_ids,
             knowledge_cutoff=dcf_evaluated_at,
         ).get(stock.id)
-    except ReportIdentityUnverifiableError as error:
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": error.code, "message": str(error)},

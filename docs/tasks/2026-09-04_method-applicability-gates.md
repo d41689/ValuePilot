@@ -613,3 +613,28 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   The shared development database was upgraded forward from 170 to sole head
   180 and contained zero parsed facts, so no retained row was rewritten there.
   Exact canonical closing gates remain pending.
+- 2026-09-05: Strict Terra R17 found that the projected active-report query was
+  still unbounded over distinct stock/document/identity-revision candidates.
+  The resolver now applies one explicit limit of 500 to distinct requested
+  document IDs, stock IDs, shared tenant IDs, and authority candidates. The
+  candidate SQL reads at most 501 rows and raises the stable typed
+  `active_report_authority_bound_exceeded` error when a complete choice cannot
+  be made; it never returns a partial active-report map.
+- 2026-09-05: `GET /documents` retains its list response and legacy unpaged
+  behavior for accounts with at most 500 documents, adds `offset`/`limit`
+  pagination plus total/page headers, and returns typed 409 rather than silently
+  truncating an unpaged larger account. Active status for a page is resolved
+  across the page companies' complete tenant-visible stock history, so an older
+  page does not become active merely because the newer report is on another
+  page. Company discovery is also tenant-filtered and bounded.
+- 2026-09-05: All production callers were re-audited. Documents, duplicate
+  ticker selection/stock summary, and Research Workspace map the new bound to a
+  controlled typed 409 (Workspace via `ResearchCaseError`). The quant coverage
+  audit does not call the active-report resolver and therefore has no resolver
+  exception path to map. Focused tests cover oversized document, stock, shared
+  tenant, and true distinct multi-stock/document/revision candidates; explicit
+  failure instead of partial selection; tenant isolation; cross-page active
+  ranking; pagination; and every HTTP mapping. The four directly affected test
+  files are `88 passed`. The wider 11-file identity-migration, documents,
+  stocks, Workspace, method-consumer, quant-audit, and reconciliation set is
+  `210 passed` in 72.80 seconds. Canonical closing gates remain pending.

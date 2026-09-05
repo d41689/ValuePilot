@@ -9,7 +9,11 @@ from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.models.users import User
-from app.services.active_report_resolver import resolve_active_reports
+from app.services import active_report_resolver
+from app.services.active_report_resolver import (
+    ActiveReportAuthorityBoundExceededError,
+    resolve_active_reports,
+)
 from app.services.actual_conflict_service import detect_actual_conflicts
 from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
@@ -273,3 +277,173 @@ def test_active_report_does_not_hydrate_one_orm_fact_per_duplicate_observation(
 
     assert active[stock_id].document_id == document_id
     assert loaded_metric_facts == 0
+
+
+@pytest.mark.parametrize("scope_name", ["document_ids", "stock_ids"])
+def test_active_report_rejects_oversized_explicit_scope_before_query(
+    db_session, monkeypatch, scope_name
+):
+    monkeypatch.setattr(
+        active_report_resolver,
+        "MAX_ACTIVE_REPORT_AUTHORITY_ITEMS",
+        2,
+    )
+
+    with pytest.raises(ActiveReportAuthorityBoundExceededError) as raised:
+        resolve_active_reports(
+            db_session,
+            **{scope_name: [1, 2, 3]},
+        )
+
+    assert raised.value.code == "active_report_authority_bound_exceeded"
+    assert raised.value.dimension == scope_name
+    assert raised.value.limit == 2
+
+
+def test_active_report_rejects_oversized_shared_tenant_scope_before_query(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        active_report_resolver,
+        "MAX_ACTIVE_REPORT_AUTHORITY_ITEMS",
+        2,
+    )
+
+    with pytest.raises(ActiveReportAuthorityBoundExceededError) as raised:
+        resolve_active_reports(
+            db_session,
+            current_user_id=1,
+            shared_parsed_user_ids=[2, 3, 4],
+        )
+
+    assert raised.value.dimension == "shared_parsed_user_ids"
+    assert raised.value.limit == 2
+
+
+def test_active_report_rejects_distinct_multi_stock_document_revision_candidates(
+    db_session, monkeypatch
+):
+    user = User(email="report-authority-candidate-bound@example.com")
+    db_session.add(user)
+    db_session.flush()
+
+    for offset in range(3):
+        stock = Stock(
+            ticker=f"RIB{offset}",
+            exchange="NYSE",
+            company_name=f"RI Bound {offset}",
+        )
+        db_session.add(stock)
+        db_session.flush()
+        document = _document(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            name=f"ri-bound-{offset}.pdf",
+            report_date=date(2026, offset + 1, 9),
+        )
+        _actual_fact(
+            db_session,
+            user_id=user.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            value=100 + offset,
+            is_current=True,
+        )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    monkeypatch.setattr(
+        active_report_resolver,
+        "MAX_ACTIVE_REPORT_AUTHORITY_ITEMS",
+        2,
+    )
+
+    with pytest.raises(ActiveReportAuthorityBoundExceededError) as raised:
+        resolve_active_reports(
+            db_session,
+            current_user_id=user.id,
+            knowledge_cutoff=cutoff,
+        )
+
+    assert raised.value.dimension == "candidates"
+    assert raised.value.limit == 2
+
+
+def test_active_report_candidate_bound_is_tenant_scoped_without_leakage(
+    db_session, monkeypatch
+):
+    owner = User(email="report-bound-owner@example.com")
+    intruder = User(email="report-bound-intruder@example.com")
+    db_session.add_all([owner, intruder])
+    db_session.flush()
+
+    owner_stock = Stock(
+        ticker="RIOWN",
+        exchange="NYSE",
+        company_name="RI Owner",
+    )
+    db_session.add(owner_stock)
+    db_session.flush()
+    owner_document = _document(
+        db_session,
+        user_id=owner.id,
+        stock_id=owner_stock.id,
+        name="ri-owner.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    _actual_fact(
+        db_session,
+        user_id=owner.id,
+        stock_id=owner_stock.id,
+        document_id=owner_document.id,
+        value=100,
+        is_current=True,
+    )
+
+    intruder_stock_ids = []
+    for offset in range(3):
+        stock = Stock(
+            ticker=f"RIX{offset}",
+            exchange="NYSE",
+            company_name=f"RI Intruder {offset}",
+        )
+        db_session.add(stock)
+        db_session.flush()
+        intruder_stock_ids.append(stock.id)
+        document = _document(
+            db_session,
+            user_id=intruder.id,
+            stock_id=stock.id,
+            name=f"ri-intruder-{offset}.pdf",
+            report_date=date(2026, offset + 1, 9),
+        )
+        _actual_fact(
+            db_session,
+            user_id=intruder.id,
+            stock_id=stock.id,
+            document_id=document.id,
+            value=200 + offset,
+            is_current=True,
+        )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    monkeypatch.setattr(
+        active_report_resolver,
+        "MAX_ACTIVE_REPORT_AUTHORITY_ITEMS",
+        2,
+    )
+
+    active = resolve_active_reports(
+        db_session,
+        current_user_id=owner.id,
+        knowledge_cutoff=cutoff,
+    )
+
+    assert active == {
+        owner_stock.id: active_report_resolver.ActiveReportSelection(
+            stock_id=owner_stock.id,
+            document_id=owner_document.id,
+            report_date=date(2026, 1, 9),
+        )
+    }
+    assert not set(active).intersection(intruder_stock_ids)

@@ -2049,6 +2049,42 @@ def test_stock_excludes_database_stamped_fact_created_after_cutoff(
     assert response.json()["active_report_document_id"] is None
 
 
+def test_stock_maps_active_report_authority_bound_to_typed_conflict(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.active_report_resolver import (
+        ActiveReportAuthorityBoundExceededError,
+    )
+
+    user = User(email="ticker-active-report-bound@example.com")
+    stock = Stock(
+        ticker="AR_BOUND",
+        exchange="NYSE",
+        company_name="Active Report Bound",
+    )
+    db_session.add_all([user, stock])
+    db_session.commit()
+
+    def reject_bound(*_args, **_kwargs):
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="candidates",
+            limit=500,
+        )
+
+    monkeypatch.setattr(stocks_endpoint, "resolve_active_reports", reject_bound)
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/ar_bound",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "active_report_authority_bound_exceeded",
+        "message": "Active report authority exceeds the supported bounded scope.",
+    }
+
+
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     client, db_session, auth_headers, monkeypatch
 ):

@@ -5,7 +5,16 @@ from pathlib import Path
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, status
+from fastapi import (
+    APIRouter,
+    Body,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 import yaml
@@ -26,7 +35,11 @@ from app.ingestion.parsers.v1_value_line.page_json import (
     _build_total_return as _build_value_line_total_return,
     _quarter_month_order as _value_line_quarter_month_order,
 )
-from app.services.active_report_resolver import resolve_active_reports
+from app.services.active_report_resolver import (
+    MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+    ActiveReportAuthorityBoundExceededError,
+    resolve_active_reports,
+)
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
@@ -133,18 +146,43 @@ DOCUMENT_REVIEW_QUARTERLY_TABLE_FIELDS = {
 @router.get("", response_model=list[dict])
 def list_documents(
     *,
+    response: Response,
     session: SessionDep,
     current_user: CurrentUser,
+    offset: int = Query(default=0, ge=0),
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+    ),
 ) -> Any:
     """
     List documents for the authenticated user with page counts and company summary.
     """
     user_id = current_user.id
 
+    total = session.scalar(
+        select(func.count(PdfDocument.id)).where(PdfDocument.user_id == user_id)
+    ) or 0
+    if limit is None and total > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        error = ActiveReportAuthorityBoundExceededError(
+            dimension="document_ids",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    effective_limit = limit or MAX_ACTIVE_REPORT_AUTHORITY_ITEMS
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page-Offset"] = str(offset)
+    response.headers["X-Page-Limit"] = str(effective_limit)
     docs = session.scalars(
         select(PdfDocument)
         .where(PdfDocument.user_id == user_id)
-        .order_by(PdfDocument.upload_time.desc())
+        .order_by(PdfDocument.upload_time.desc(), PdfDocument.id.desc())
+        .offset(offset)
+        .limit(effective_limit)
     ).all()
     if not docs:
         return []
@@ -185,9 +223,20 @@ def list_documents(
         .where(
             MetricFact.source_document_id.in_(doc_ids),
             MetricFact.source_type == "parsed",
+            MetricFact.user_id == user_id,
         )
         .distinct()
+        .limit(MAX_ACTIVE_REPORT_AUTHORITY_ITEMS + 1)
     ).all()
+    if len(company_rows) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        error = ActiveReportAuthorityBoundExceededError(
+            dimension="document_stock_candidates",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     for doc_id, stock_id, ticker, company_name in company_rows:
         if doc_id is None:
             continue
@@ -197,18 +246,34 @@ def list_documents(
         }
 
     # Ensure single-stock docs still show company even if no parsed facts exist.
-    stock_ids = [doc.stock_id for doc in docs if doc.stock_id]
+    stock_ids = sorted(
+        {
+            *[doc.stock_id for doc in docs if doc.stock_id],
+            *[
+                stock_id
+                for companies in companies_map.values()
+                for stock_id in companies
+            ],
+        }
+    )
     stock_lookup = {
         stock.id: stock
         for stock in session.scalars(select(Stock).where(Stock.id.in_(stock_ids))).all()
     }
     try:
-        active_reports_by_stock = resolve_active_reports(
-            session,
-            document_ids=doc_ids,
-            current_user_id=user_id,
+        active_reports_by_stock = (
+            resolve_active_reports(
+                session,
+                stock_ids=stock_ids,
+                current_user_id=user_id,
+            )
+            if stock_ids
+            else {}
         )
-    except ReportIdentityUnverifiableError as error:
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": error.code, "message": str(error)},

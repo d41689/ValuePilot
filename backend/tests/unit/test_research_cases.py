@@ -435,6 +435,40 @@ def test_workspace_excludes_database_stamped_fact_created_after_cutoff(
     assert response.json()["fundamentals"] == []
 
 
+def test_workspace_maps_active_report_authority_bound_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services.active_report_resolver import (
+        ActiveReportAuthorityBoundExceededError,
+    )
+    from app.services import research_workspace
+
+    user = user_factory("workspace-active-report-bound@example.com")
+    stock = _stock(db_session, "RWSBOUND")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_bound(*_args, **_kwargs):
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="candidates",
+            limit=500,
+        )
+
+    monkeypatch.setattr(research_workspace, "resolve_active_reports", reject_bound)
+
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "active_report_authority_bound_exceeded",
+        "message": "Active report authority exceeds the supported bounded scope.",
+    }
+
+
 def _monitoring_revision(expected_head: int = 0) -> dict:
     return {
         "expected_head_revision_number": expected_head,
