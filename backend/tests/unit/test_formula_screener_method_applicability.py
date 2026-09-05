@@ -1,22 +1,32 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import event, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import CalculatedRun, Formula, MetricFact
 from app.models.sec_publication import SecEconomicClassificationReview
 from app.models.stocks import Stock
-from app.services.canonical_financials import UnsupportedSystemMethodError
+from app.services.canonical_financials import (
+    CanonicalUnavailableError,
+    UnsupportedSystemMethodError,
+)
 from app.services.formula_engine import FormulaEngine
 from app.services.method_applicability import (
     RISK_ATTRIBUTES,
     review_company_classification,
     review_company_risk_attribute,
 )
-from app.services.screener_service import ScreenerService
+from app.services.screener_service import (
+    MAX_SCREENER_SQL_BIND_BUDGET,
+    SCREENER_ALLOWED_PAIR_BIND_COUNT,
+    SCREENER_CONDITION_BIND_OVERHEAD,
+    ScreenerService,
+    _ScreenerSourceAuthority,
+)
 
 
 def _stock(db_session, ticker: str) -> Stock:
@@ -491,3 +501,94 @@ def test_screener_allows_reviewed_multistock_multicondition_sources_only(
     )
 
     assert {item.id for item in matched} == {stock.id for stock in stocks}
+
+
+def _synthetic_screen_authority(pair_count: int) -> _ScreenerSourceAuthority:
+    return _ScreenerSourceAuthority(
+        evaluated_at=datetime.now(timezone.utc),
+        allowed_by_stock_metric={
+            (1, "revenue"): tuple(
+                (fact_id, Decimal("100"))
+                for fact_id in range(1, pair_count + 1)
+            )
+        },
+    )
+
+
+def test_screener_rejects_repeated_condition_bind_expansion_before_sql(
+    db_session,
+) -> None:
+    service = ScreenerService(db_session)
+    authority = _synthetic_screen_authority(10_000)
+    service._guard_screen_sources = lambda *_args, **_kwargs: authority
+    statements: list[str] = []
+
+    def before_cursor_execute(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", before_cursor_execute)
+    try:
+        with pytest.raises(CanonicalUnavailableError) as error:
+            service.execute_screen(
+                {
+                    "type": "AND",
+                    "conditions": [
+                        {"metric": "revenue", "operator": ">", "value": 50}
+                        for _ in range(7)
+                    ],
+                },
+                current_user_id=1,
+            )
+    finally:
+        event.remove(
+            db_session.get_bind(), "before_cursor_execute", before_cursor_execute
+        )
+
+    assert error.value.code == "screener_source_guard_bound_exceeded"
+    assert statements == []
+
+
+def test_screener_allows_exact_conservative_bind_budget_boundary(
+    db_session,
+) -> None:
+    service = ScreenerService(db_session)
+    condition_count = 3
+    pair_count = (
+        MAX_SCREENER_SQL_BIND_BUDGET // condition_count
+        - SCREENER_CONDITION_BIND_OVERHEAD
+    ) // SCREENER_ALLOWED_PAIR_BIND_COUNT
+    assert condition_count * (
+        pair_count * SCREENER_ALLOWED_PAIR_BIND_COUNT
+        + SCREENER_CONDITION_BIND_OVERHEAD
+    ) == MAX_SCREENER_SQL_BIND_BUDGET
+    authority = _synthetic_screen_authority(pair_count)
+    service._guard_screen_sources = lambda *_args, **_kwargs: authority
+
+    matched = service.execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {"metric": "revenue", "operator": ">", "value": 50}
+                for _ in range(condition_count)
+            ],
+        },
+        current_user_id=1,
+    )
+
+    assert matched == []
+
+
+def test_screener_empty_authority_remains_fail_closed(db_session) -> None:
+    service = ScreenerService(db_session)
+    authority = _synthetic_screen_authority(0)
+    service._guard_screen_sources = lambda *_args, **_kwargs: authority
+
+    assert service.execute_screen(
+        {
+            "type": "AND",
+            "conditions": [
+                {"metric": "revenue", "operator": ">", "value": 50}
+            ],
+        },
+        current_user_id=1,
+    ) == []

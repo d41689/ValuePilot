@@ -17,6 +17,13 @@ from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
 MAX_SCREENER_GUARD_FACTS = 10_000
+MAX_SCREENER_SQL_BIND_BUDGET = 12_000
+SCREENER_ALLOWED_PAIR_BIND_COUNT = 2
+# Each condition also binds its metric/value, two cutoffs, tenant visibility,
+# and optionally its source type. Keep substantial headroom below PostgreSQL's
+# protocol limit and expression-stack ceiling for the stock predicate and
+# future bounded filters.
+SCREENER_CONDITION_BIND_OVERHEAD = 8
 
 
 @dataclass(frozen=True)
@@ -246,12 +253,29 @@ class ScreenerService:
         selected_source_type: str | None,
         authority: _ScreenerSourceAuthority,
     ):
+        prepared_conditions: list[
+            tuple[Dict[str, Any], str, tuple[tuple[int, Decimal], ...]]
+        ] = []
+        estimated_bind_count = 0
         for cond in conditions:
             metric_key = self._canonical_metric_key(cond["metric"])
+            allowed_pairs = authority.pairs_for_metric(metric_key)
+            estimated_bind_count += (
+                len(allowed_pairs) * SCREENER_ALLOWED_PAIR_BIND_COUNT
+                + SCREENER_CONDITION_BIND_OVERHEAD
+            )
+            if estimated_bind_count > MAX_SCREENER_SQL_BIND_BUDGET:
+                raise CanonicalUnavailableError(
+                    {
+                        "reason_code": "screener_source_guard_bound_exceeded",
+                    }
+                )
+            prepared_conditions.append((cond, metric_key, allowed_pairs))
+
+        for cond, metric_key, allowed_pairs in prepared_conditions:
             operator = cond["operator"]
             target_value = Decimal(str(cond["value"]))
-            allowed_pairs = authority.pairs_for_metric(metric_key)
-            
+
             # Create an alias for MetricFact for this specific condition
             fact_alias = aliased(MetricFact)
             

@@ -427,3 +427,22 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   input creation and using the contract's explicit America/New_York date,
   removing its one-second and container-timezone flake. No migration, retained
   data, or storage changed.
+- 2026-09-04: Strict Terra R11 found that repeated screener conditions expanded
+  the same approved `(fact_id, value_numeric)` pairs once per SQL alias without
+  a query-wide parameter budget. Although each guarded candidate set was
+  bounded, seven conditions over 10,000 pairs could exceed PostgreSQL's bind
+  limit. Query construction now accounts for two binds per approved pair plus
+  eight conservative per-condition binds before creating any alias. Requests
+  above the explicit 12,000-bind budget fail with the existing typed
+  `screener_source_guard_bound_exceeded`; empty authority remains fail-closed.
+  The budget intentionally also leaves expression-stack headroom observed for
+  very large tuple predicates, not merely protocol-limit headroom.
+- 2026-09-04: R11 tests-first reproduced the missing pre-SQL rejection. The
+  exact 12,000-bind boundary (three repeated conditions over 1,996 pairs), the
+  10,000-pair/seven-condition rejection before SQL, and the empty-authority
+  control are green; the full focused file is `18 passed`. A first 29-file run
+  had four unrelated late-suite PIT fixture failures (`767 passed`), all four
+  of which passed in a fresh targeted session. The required complete
+  from-scratch rerun is `771 passed` with only the pre-existing Starlette/httpx
+  and anyio deprecation warnings. No migration, retained data, or storage
+  changed.
