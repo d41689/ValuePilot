@@ -1861,6 +1861,196 @@ def test_lookup_stock_by_ticker_duplicate_selection_ignores_future_report(
     assert response.json()["active_report_document_id"] == known_doc.id
 
 
+def test_duplicate_ticker_selection_ignores_metadata_change_after_cutoff(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = User(email="ticker-selection-identity@example.com")
+    first = Stock(
+        ticker="DUP_RI", exchange="NYSE", company_name="First identity", is_active=True
+    )
+    second = Stock(
+        ticker="DUP_RI", exchange="NASDAQ", company_name="Second identity", is_active=True
+    )
+    db_session.add_all([user, first, second])
+    db_session.flush()
+    first_doc = PdfDocument(
+        user_id=user.id,
+        file_name="dup-ri-first.pdf",
+        source="value_line",
+        file_storage_key="tests/dup-ri-first.pdf",
+        parse_status="parsed",
+        stock_id=first.id,
+        report_date=date(2026, 1, 9),
+    )
+    second_doc = PdfDocument(
+        user_id=user.id,
+        file_name="dup-ri-second.pdf",
+        source="value_line",
+        file_storage_key="tests/dup-ri-second.pdf",
+        parse_status="parsed",
+        stock_id=second.id,
+        report_date=date(2026, 4, 9),
+    )
+    db_session.add_all([first_doc, second_doc])
+    db_session.flush()
+    for stock, document, value in (
+        (first, first_doc, 100),
+        (second, second_doc, 200),
+    ):
+        db_session.add(
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="custom.duplicate_identity",
+                value_json={"fact_nature": "snapshot"},
+                value_numeric=value,
+                period_type="AS_OF",
+                period_end_date=document.report_date,
+                source_type="parsed",
+                source_document_id=document.id,
+                is_current=True,
+            )
+        )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    first_doc.report_date = date(2026, 7, 9)
+    db_session.commit()
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: cutoff,
+    )
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/dup_ri", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == second.id
+    assert response.json()["active_report_date"] == "2026-04-09"
+
+
+def test_stock_provenance_uses_fact_bound_report_date_after_metadata_change(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = User(email="ticker-provenance-identity@example.com")
+    stock = Stock(
+        ticker="PROV_RI", exchange="NYSE", company_name="Provenance identity"
+    )
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="provenance-ri.pdf",
+        source="value_line",
+        file_storage_key="tests/provenance-ri.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(document)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="mkt.price",
+            value_json={"fact_nature": "snapshot"},
+            value_numeric=100,
+            unit="USD",
+            period_type="AS_OF",
+            period_end_date=date(2026, 1, 9),
+            source_type="parsed",
+            source_document_id=document.id,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    document.report_date = date(2026, 7, 9)
+    db_session.commit()
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: cutoff,
+    )
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/prov_ri", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["active_report_date"] == "2026-01-09"
+    assert response.json()["report_price_reference"]["provenance"] == {
+        "source_type": "parsed",
+        "source_document_id": document.id,
+        "source_report_date": "2026-01-09",
+        "period_end_date": "2026-01-09",
+        "is_active_report": True,
+    }
+
+
+def test_stock_returns_typed_conflict_when_report_identity_was_unknown_at_cutoff(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = User(email="ticker-unverifiable-identity@example.com")
+    stock = Stock(
+        ticker="UNVER_RI", exchange="NYSE", company_name="Unverifiable identity"
+    )
+    db_session.add_all([user, stock])
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="unverifiable-ri.pdf",
+        source="value_line",
+        file_storage_key="tests/unverifiable-ri.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(document)
+    db_session.flush()
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="custom.unverifiable_identity",
+        value_json={"fact_nature": "actual"},
+        value_numeric=100,
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        source_document_id=document.id,
+        is_current=True,
+        created_at=cutoff - timedelta(minutes=1),
+        updated_at=cutoff - timedelta(minutes=1),
+    )
+    db_session.add(fact)
+    db_session.commit()
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: cutoff,
+    )
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/unver_ri", headers=auth_headers(user)
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "historical_report_identity_unverifiable"
+    )
+
+
 def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     client, db_session, auth_headers, monkeypatch
 ):

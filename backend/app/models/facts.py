@@ -44,6 +44,17 @@ class MetricFact(Base):
     value_line_legacy_revision: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    # DB-bound immutable report identity for parsed Value Line facts. The
+    # migration binds provably consistent retained rows; an explicit document
+    # stock must agree, while NULL is the supported multi-company-container
+    # identity. Tenant or explicit-stock mismatches remain null and fail closed.
+    value_line_report_identity_revision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(
+            "value_line_document_report_identity_revisions.id", ondelete="RESTRICT"
+        ),
+        nullable=True,
+        index=True,
+    )
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

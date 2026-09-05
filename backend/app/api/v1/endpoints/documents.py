@@ -27,6 +27,7 @@ from app.ingestion.parsers.v1_value_line.page_json import (
     _quarter_month_order as _value_line_quarter_month_order,
 )
 from app.services.active_report_resolver import resolve_active_reports
+from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
 from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
@@ -201,7 +202,17 @@ def list_documents(
         stock.id: stock
         for stock in session.scalars(select(Stock).where(Stock.id.in_(stock_ids))).all()
     }
-    active_reports_by_stock = resolve_active_reports(session, document_ids=doc_ids)
+    try:
+        active_reports_by_stock = resolve_active_reports(
+            session,
+            document_ids=doc_ids,
+            current_user_id=user_id,
+        )
+    except ReportIdentityUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     active_tickers_by_doc: dict[int, list[str]] = {}
     for stock_id, active in active_reports_by_stock.items():
         stock = stock_lookup.get(stock_id)

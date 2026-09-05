@@ -263,6 +263,126 @@ def test_workspace_actual_conflicts_exclude_reports_learned_after_cutoff(
     assert workspace["actual_conflicts"] == []
 
 
+def test_workspace_provenance_uses_fact_bound_report_identity_after_reparse_reset(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    user = user_factory("research-workspace-report-identity@example.com")
+    stock = _stock(db_session, "RWSIDENT")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-identity.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-identity.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add_all([case, document])
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.report_identity",
+            value_json={"fact_nature": "actual"},
+            value_numeric=100,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=document.id,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    IngestionService(db_session)._reset_document_parse_projection(document)
+    db_session.commit()
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=evaluation_business_date(cutoff),
+        evaluated_at=cutoff,
+    )
+    fact = next(
+        item
+        for item in workspace["fundamentals"]
+        if item["metric_key"] == "custom.report_identity"
+    )
+    assert fact["source_report_date"] == "2026-01-09"
+    assert workspace["actual_conflicts"] == []
+
+
+def test_workspace_endpoint_returns_typed_conflict_for_unverifiable_report_identity(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import research as research_endpoint
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = user_factory("workspace-unverifiable-report-identity@example.com")
+    stock = _stock(db_session, "RWSUNVER")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-unverifiable.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-unverifiable.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(document)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.workspace_unverifiable",
+            value_json={"fact_nature": "actual"},
+            value_numeric=100,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=document.id,
+            is_current=True,
+            created_at=cutoff - timedelta(minutes=1),
+            updated_at=cutoff - timedelta(minutes=1),
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        research_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: cutoff,
+    )
+
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "historical_report_identity_unverifiable",
+        "message": (
+            "Value Line report identity cannot be reconstructed at the requested "
+            "knowledge cutoff."
+        ),
+    }
+
+
 def _monitoring_revision(expected_head: int = 0) -> dict:
     return {
         "expected_head_revision_number": expected_head,

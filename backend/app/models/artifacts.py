@@ -42,6 +42,28 @@ class PdfDocument(Base):
     parser_template: Mapped[Optional["ParserTemplate"]] = relationship("ParserTemplate")
     pages: Mapped[list["DocumentPage"]] = relationship(back_populates="document")
 
+
+class ValueLineDocumentReportIdentityRevision(Base):
+    """Append-only point-in-time identity for one Value Line document."""
+
+    __tablename__ = "value_line_document_report_identity_revisions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("pdf_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    stock_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("stocks.id", ondelete="RESTRICT"), nullable=True
+    )
+    report_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    known_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
 class DocumentPage(Base):
     __tablename__ = "document_pages"
 

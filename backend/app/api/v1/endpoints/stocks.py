@@ -6,7 +6,6 @@ from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.core.currencies import normalize_iso4217_currency
-from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
 from app.services.valuation import (
@@ -15,6 +14,10 @@ from app.services.valuation import (
 )
 from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.value_line_report_identity import (
+    ReportIdentityUnverifiableError,
+    resolve_fact_report_identities,
+)
 from app.services.canonical_financials import (
     CanonicalUnavailableError,
     CanonicalSourceConflictError,
@@ -210,12 +213,12 @@ def _fact_provenance(
     fact: MetricFact | None,
     *,
     active_report: ActiveReportSelection | None,
-    report_dates_by_doc: dict[int, date | None],
+    report_dates_by_fact: dict[int, date | None],
 ) -> dict[str, Any] | None:
     if fact is None:
         return None
     document_id = fact.source_document_id
-    report_date = report_dates_by_doc.get(document_id) if document_id is not None else None
+    report_date = report_dates_by_fact.get(fact.id)
     return {
         "source_type": fact.source_type,
         "source_document_id": document_id,
@@ -983,24 +986,36 @@ def read_stock_by_ticker(
     # uploader convention.
     admin_user_ids: list[int] = []
     evaluation_cutoff = database_evaluation_cutoff(session)
-    stock = _select_stock_for_ticker(
-        session,
-        ticker_normalized,
-        current_user_id=current_user.id,
-        admin_user_ids=admin_user_ids,
-        knowledge_cutoff=evaluation_cutoff,
-    )
+    try:
+        stock = _select_stock_for_ticker(
+            session,
+            ticker_normalized,
+            current_user_id=current_user.id,
+            admin_user_ids=admin_user_ids,
+            knowledge_cutoff=evaluation_cutoff,
+        )
+    except ReportIdentityUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
     dcf_clock = dcf_evaluation_clock(evaluated_at=evaluation_cutoff)
     dcf_evaluated_at = dcf_clock.evaluated_at
-    active_report = resolve_active_reports(
-        session,
-        stock_ids=[stock.id],
-        current_user_id=current_user.id,
-        shared_parsed_user_ids=admin_user_ids,
-        knowledge_cutoff=dcf_evaluated_at,
-    ).get(stock.id)
+    try:
+        active_report = resolve_active_reports(
+            session,
+            stock_ids=[stock.id],
+            current_user_id=current_user.id,
+            shared_parsed_user_ids=admin_user_ids,
+            knowledge_cutoff=dcf_evaluated_at,
+        ).get(stock.id)
+    except ReportIdentityUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
 
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
@@ -1223,25 +1238,21 @@ def read_stock_by_ticker(
             growth_fact_by_metric_key[fact.metric_key] = fact
 
     provenance_facts = [*facts, *oeps_facts, *dcf_input_facts, *growth_facts]
-    source_document_ids = sorted(
-        {
-            fact.source_document_id
-            for fact in provenance_facts
-            if fact.source_document_id is not None
-        }
-    )
-    report_dates_by_doc: dict[int, date | None] = {}
-    if source_document_ids:
-        report_dates_by_doc = dict(
-            session.execute(
-                select(PdfDocument.id, PdfDocument.report_date).where(
-                    PdfDocument.id.in_(source_document_ids),
-                    PdfDocument.user_id.in_(
-                        sorted(set([current_user.id, *admin_user_ids]))
-                    ),
-                )
-            ).all()
+    try:
+        report_identities_by_fact = resolve_fact_report_identities(
+            session,
+            facts=provenance_facts,
+            knowledge_cutoff=dcf_evaluated_at,
         )
+    except ReportIdentityUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    report_dates_by_fact = {
+        fact_id: identity.report_date
+        for fact_id, identity in report_identities_by_fact.items()
+    }
 
     oeps_series = []
     for fact in oeps_facts:
@@ -1258,7 +1269,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     fact,
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_dates_by_fact=report_dates_by_fact,
                 ),
             }
         )
@@ -1283,7 +1294,7 @@ def read_stock_by_ticker(
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
-                report_dates_by_doc=report_dates_by_doc,
+                report_dates_by_fact=report_dates_by_fact,
             ),
         )
         dcf_inputs_series.append({"year": period_end.year, **entry})
@@ -1299,7 +1310,7 @@ def read_stock_by_ticker(
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
-                report_dates_by_doc=report_dates_by_doc,
+                report_dates_by_fact=report_dates_by_fact,
             ),
         )
         if dcf_selection_oeps_facts
@@ -1317,7 +1328,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.sales.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_dates_by_fact=report_dates_by_fact,
                 ),
             }
         )
@@ -1330,7 +1341,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.revenues.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_dates_by_fact=report_dates_by_fact,
                 ),
             }
         )
@@ -1344,7 +1355,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.cash_flow.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_dates_by_fact=report_dates_by_fact,
                 ),
             }
         )
@@ -1357,25 +1368,31 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.earnings.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_dates_by_fact=report_dates_by_fact,
                 ),
             }
         )
 
-    actual_conflicts = detect_actual_conflicts(
-        session,
-        stock_id=stock.id,
-        active_report=active_report,
-        current_user_id=current_user.id,
-        shared_parsed_user_ids=admin_user_ids,
-        knowledge_cutoff=dcf_evaluated_at,
-    )
+    try:
+        actual_conflicts = detect_actual_conflicts(
+            session,
+            stock_id=stock.id,
+            active_report=active_report,
+            current_user_id=current_user.id,
+            shared_parsed_user_ids=admin_user_ids,
+            knowledge_cutoff=dcf_evaluated_at,
+        )
+    except ReportIdentityUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
 
     report_price_fact = facts_by_key.get("mkt.price")
     report_price_provenance = _fact_provenance(
         report_price_fact,
         active_report=active_report,
-        report_dates_by_doc=report_dates_by_doc,
+        report_dates_by_fact=report_dates_by_fact,
     )
     report_price_as_of = (
         report_price_provenance.get("source_report_date")
@@ -1411,7 +1428,7 @@ def read_stock_by_ticker(
         "pe_provenance": _fact_provenance(
             facts_by_key.get("val.pe"),
             active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
+            report_dates_by_fact=report_dates_by_fact,
         ),
         "oeps_normalized": _stock_summary_wire_number(
             facts_by_key.get("owners_earnings_per_share_normalized").value_numeric
@@ -1421,7 +1438,7 @@ def read_stock_by_ticker(
         "oeps_normalized_provenance": _fact_provenance(
             facts_by_key.get("owners_earnings_per_share_normalized"),
             active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
+            report_dates_by_fact=report_dates_by_fact,
         ),
         "oeps_series": oeps_series,
         "dcf_inputs": dcf_inputs,

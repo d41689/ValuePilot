@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
@@ -113,6 +113,7 @@ def test_ratio_does_not_reclassify_a_document_manual_correction_as_parsed():
 
 def test_value_line_ratio_calculator_explicitly_selects_parsed_source():
     db = MagicMock()
+    db.scalar.return_value = datetime(2026, 9, 5, tzinfo=timezone.utc)
     db.scalars.return_value.all.return_value = []
 
     with patch(

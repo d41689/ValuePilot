@@ -29,6 +29,11 @@ from app.services.thirteenf_user_api import build_user_stock_holders
 from app.services.valuation import read_valuation_context
 from app.services.active_report_resolver import resolve_active_reports
 from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.value_line_report_identity import (
+    ReportIdentityUnverifiableError,
+    resolve_document_report_identities,
+    resolve_fact_report_identities,
+)
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
@@ -183,20 +188,24 @@ def build_research_workspace(
         .limit(100)
         .all()
     )
-    documents = (
-        session.query(PdfDocument)
-        .filter(
-            PdfDocument.user_id == user_id,
-            PdfDocument.stock_id == stock.id,
-        )
-        .order_by(
-            PdfDocument.report_date.desc().nullslast(),
-            PdfDocument.upload_time.desc(),
-            PdfDocument.id.desc(),
-        )
-        .limit(20)
-        .all()
+    document_identities = resolve_document_report_identities(
+        session,
+        knowledge_cutoff=evaluated_at,
+        user_id=user_id,
+        stock_id=stock.id,
     )
+    documents = session.scalars(
+        select(PdfDocument).where(PdfDocument.id.in_(document_identities))
+    ).all()
+    documents = sorted(
+        documents,
+        key=lambda document: (
+            document_identities[document.id].report_date or date.min,
+            document.upload_time,
+            document.id,
+        ),
+        reverse=True,
+    )[:20]
     facts = session.scalars(
         select(MetricFact)
         .where(
@@ -289,19 +298,31 @@ def build_research_workspace(
         stock_id=stock.id,
         knowledge_cutoff=evaluated_at,
     )
-    active_report = resolve_active_reports(
-        session,
-        stock_ids=[stock.id],
-        current_user_id=user_id,
-        knowledge_cutoff=evaluated_at,
-    ).get(stock.id)
-    actual_conflicts = detect_actual_conflicts(
-        session,
-        stock_id=stock.id,
-        active_report=active_report,
-        current_user_id=user_id,
-        knowledge_cutoff=evaluated_at,
-    )
+    try:
+        active_report = resolve_active_reports(
+            session,
+            stock_ids=[stock.id],
+            current_user_id=user_id,
+            knowledge_cutoff=evaluated_at,
+        ).get(stock.id)
+        actual_conflicts = detect_actual_conflicts(
+            session,
+            stock_id=stock.id,
+            active_report=active_report,
+            current_user_id=user_id,
+            knowledge_cutoff=evaluated_at,
+        )
+        report_identities_by_fact = resolve_fact_report_identities(
+            session,
+            facts=facts,
+            knowledge_cutoff=evaluated_at,
+        )
+    except ReportIdentityUnverifiableError as error:
+        raise ResearchCaseError(
+            error.code,
+            str(error),
+            status_code=409,
+        ) from error
     try:
         if reconciliation_bound_exceeded:
             source_reconciliation = {
@@ -395,7 +416,11 @@ def build_research_workspace(
                 "id": document.id,
                 "file_name": document.file_name,
                 "source": document.source,
-                "report_date": document.report_date.isoformat() if document.report_date else None,
+                "report_date": (
+                    document_identities[document.id].report_date.isoformat()
+                    if document_identities[document.id].report_date
+                    else None
+                ),
                 "parse_status": document.parse_status,
                 "identity_needs_review": document.identity_needs_review,
                 "uploaded_at": document.upload_time.isoformat(),
@@ -415,15 +440,11 @@ def build_research_workspace(
                 "source_type": fact.source_type,
                 "source_document_id": fact.source_document_id,
                 "source_ref_id": fact.source_ref_id,
-                "source_report_date": next(
-                    (
-                        document.report_date.isoformat()
-                        if document.report_date
-                        else None
-                        for document in documents
-                        if document.id == fact.source_document_id
-                    ),
-                    None,
+                "source_report_date": (
+                    report_identities_by_fact[fact.id].report_date.isoformat()
+                    if fact.id in report_identities_by_fact
+                    and report_identities_by_fact[fact.id].report_date
+                    else None
                 ),
                 "original_evidence_route": (
                     f"/documents/{fact.source_document_id}/review"

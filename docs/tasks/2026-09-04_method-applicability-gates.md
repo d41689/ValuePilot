@@ -541,3 +541,41 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   with each suspected prefix. No epsilon, policy rewrite, or fail-open behavior
   was introduced for this environmental clock reversal, and all temporary
   diagnostics were removed.
+- 2026-09-05: Strict Terra R15 found that report selection and provenance still
+  joined retained parsed facts to mutable `pdf_documents.user_id`, `stock_id`,
+  and `report_date`, so a later metadata edit could relabel earlier evidence at
+  a captured cutoff. Fresh migration `20260904170000` creates one append-only,
+  database-stamped report-identity revision per retained document and captures
+  every later identity change. Each new parsed fact is bound by an immutable FK
+  to the exact revision current while its creating transaction holds a share
+  lock on the document; caller-supplied revision IDs/timestamps, top-level or
+  unrelated nested revision inserts, later rebinding, and explicit tenant/stock
+  mismatches are rejected at the database boundary.
+- 2026-09-05: Migration backfill binds retained parsed facts only when document
+  tenant and explicit stock identity agree. A NULL document stock remains the
+  existing multi-company-container contract, where each already-immutable fact
+  stock is authoritative; it is not treated as an identity mismatch. Retained
+  mismatches remain unbound and readers return typed
+  `historical_report_identity_unverifiable`. A revision first learned during
+  migration likewise cannot make itself visible at a pre-migration cutoff.
+- 2026-09-05: Active report ranking, actual-conflict comparison, duplicate ticker
+  selection, stock provenance, Research Workspace documents/fundamentals, and
+  parsed-slot reconciliation now consume the fact-bound identity rather than
+  current document metadata. Parsed fact content was already immutable under
+  the Value Line legacy/run triggers; those historical evidence reads therefore
+  use fact creation plus exact revision knowledge, and do not erase a retained
+  fact merely because a later allowed `is_current` demotion advanced its
+  `updated_at`. Stock and Research Workspace HTTP boundaries translate
+  unverifiable identity to a stable typed 409 instead of a server error.
+- 2026-09-05: Before revising the uncommitted 170 migration, the shared
+  development schema was confirmed to contain zero identity revisions and zero
+  bound facts, downgraded safely to 160, and upgraded back to the final 170.
+  Inspection confirmed the exact trigger-depth insert guard and document row
+  lock. R15 focused identity/consumer verification is `12 passed`; the complete
+  document, stock, workspace, migration and deletion set is `132 passed`; and
+  the upload, reparse, multi-page, legacy-ingestion, annual/time-series and ratio
+  supplement is `47 passed`. Their final combined 19-file affected superset is
+  `179 passed` in 173.13 seconds. The only intermediate supplement failure was a pre-existing
+  MagicMock fixture that did not return the aware database cutoff introduced in
+  R12; the fixture now supplies an explicit aware timestamp without changing
+  production behavior. Exact canonical closing gates remain pending.

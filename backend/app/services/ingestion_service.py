@@ -31,7 +31,12 @@ from app.services.owners_earnings import (
     build_normalized_owners_earnings_fact,
     build_owners_earnings_facts,
 )
-from app.services.canonical_financials import MethodGateDecision, reviewed_method_gate
+from app.services.canonical_financials import (
+    MethodGateDecision,
+    database_evaluation_cutoff,
+    reviewed_method_gate,
+)
+from app.services.value_line_report_identity import resolve_fact_report_identities
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 
@@ -1401,19 +1406,16 @@ class IngestionService:
         if not facts:
             return
 
-        doc_ids = sorted({fact.source_document_id for fact in facts if fact.source_document_id is not None})
-        report_dates_by_doc: dict[int, Optional[date]] = {}
-        if doc_ids:
-            report_dates_by_doc = dict(
-                self.db.execute(
-                    select(PdfDocument.id, PdfDocument.report_date).where(PdfDocument.id.in_(doc_ids))
-                ).all()
-            )
+        identities = resolve_fact_report_identities(
+            self.db,
+            facts=facts,
+            knowledge_cutoff=database_evaluation_cutoff(self.db),
+        )
 
         winner = max(
             facts,
             key=lambda fact: (
-                report_dates_by_doc.get(fact.source_document_id or -1) or date.min,
+                identities[fact.id].report_date or date.min,
                 fact.source_document_id or -1,
                 fact.id or -1,
             ),

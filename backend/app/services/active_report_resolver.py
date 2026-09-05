@@ -7,8 +7,9 @@ from typing import Optional
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
+from app.services.canonical_financials import database_evaluation_cutoff
+from app.services.value_line_report_identity import resolve_fact_report_identities
 
 
 @dataclass(frozen=True)
@@ -27,32 +28,23 @@ def resolve_active_reports(
     shared_parsed_user_ids: Optional[list[int]] = None,
     knowledge_cutoff: datetime | None = None,
 ) -> dict[int, ActiveReportSelection]:
-    if knowledge_cutoff is not None and knowledge_cutoff.utcoffset() is None:
+    if knowledge_cutoff is None:
+        knowledge_cutoff = database_evaluation_cutoff(session)
+    elif knowledge_cutoff.utcoffset() is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
     stmt = (
-        select(
-            MetricFact.stock_id,
-            PdfDocument.id,
-            PdfDocument.report_date,
-        )
-        .join(PdfDocument, PdfDocument.id == MetricFact.source_document_id)
+        select(MetricFact)
         .where(
             MetricFact.source_type == "parsed",
             MetricFact.source_document_id.is_not(None),
-        )
-        .distinct()
-    )
-
-    if knowledge_cutoff is not None:
-        stmt = stmt.where(
             MetricFact.created_at <= knowledge_cutoff,
-            MetricFact.updated_at <= knowledge_cutoff,
         )
+    )
 
     if document_ids is not None:
         if not document_ids:
             return {}
-        stmt = stmt.where(PdfDocument.id.in_(document_ids))
+        stmt = stmt.where(MetricFact.source_document_id.in_(document_ids))
 
     if stock_ids is not None:
         if not stock_ids:
@@ -71,19 +63,25 @@ def resolve_active_reports(
             )
         )
 
-    rows = session.execute(stmt).all()
+    facts = session.scalars(stmt).all()
+    identities = resolve_fact_report_identities(
+        session,
+        facts=facts,
+        knowledge_cutoff=knowledge_cutoff,
+    )
     active_by_stock: dict[int, ActiveReportSelection] = {}
-    for stock_id, document_id, report_date in rows:
-        if stock_id is None or document_id is None:
+    for fact in facts:
+        if fact.stock_id is None or fact.source_document_id is None:
             continue
+        identity = identities[fact.id]
         candidate = ActiveReportSelection(
-            stock_id=stock_id,
-            document_id=document_id,
-            report_date=report_date,
+            stock_id=fact.stock_id,
+            document_id=fact.source_document_id,
+            report_date=identity.report_date,
         )
-        current = active_by_stock.get(stock_id)
+        current = active_by_stock.get(fact.stock_id)
         if current is None or _selection_rank(candidate) > _selection_rank(current):
-            active_by_stock[stock_id] = candidate
+            active_by_stock[fact.stock_id] = candidate
     return active_by_stock
 
 
