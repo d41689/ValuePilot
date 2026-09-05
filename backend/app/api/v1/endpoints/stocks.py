@@ -19,11 +19,13 @@ from app.services.active_report_resolver import (
     resolve_active_reports,
 )
 from app.services.actual_conflict_service import (
+    ActualConflictAuthorityAmbiguousError,
     ActualConflictAuthorityBoundExceededError,
     detect_actual_conflicts,
 )
 from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
+    ResolvedValueLineReportIdentity,
     resolve_fact_report_identities,
 )
 from app.services.canonical_financials import (
@@ -221,21 +223,30 @@ def _fact_provenance(
     fact: MetricFact | None,
     *,
     active_report: ActiveReportSelection | None,
-    report_dates_by_fact: dict[int, date | None],
+    report_identities_by_fact: dict[int, ResolvedValueLineReportIdentity],
 ) -> dict[str, Any] | None:
     if fact is None:
         return None
     document_id = fact.source_document_id
-    report_date = report_dates_by_fact.get(fact.id)
+    report_identity = report_identities_by_fact.get(fact.id)
+    report_date = report_identity.report_date if report_identity else None
     return {
         "source_type": fact.source_type,
         "source_document_id": document_id,
+        **(
+            {"source_report_identity_revision_id": report_identity.revision_id}
+            if report_identity
+            else {}
+        ),
         "source_report_date": report_date.isoformat() if report_date else None,
         "period_end_date": fact.period_end_date.isoformat() if fact.period_end_date else None,
         "is_active_report": bool(
             active_report is not None
             and document_id is not None
             and active_report.document_id == document_id
+            and report_identity is not None
+            and active_report.report_identity_revision_id
+            == report_identity.revision_id
         ),
     }
 
@@ -1269,11 +1280,6 @@ def read_stock_by_ticker(
             status_code=409,
             detail={"code": error.code, "message": str(error)},
         ) from error
-    report_dates_by_fact = {
-        fact_id: identity.report_date
-        for fact_id, identity in report_identities_by_fact.items()
-    }
-
     oeps_series = []
     for fact in oeps_facts:
         period_end = fact.period_end_date
@@ -1289,7 +1295,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     fact,
                     active_report=active_report,
-                    report_dates_by_fact=report_dates_by_fact,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1314,7 +1320,7 @@ def read_stock_by_ticker(
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
-                report_dates_by_fact=report_dates_by_fact,
+                report_identities_by_fact=report_identities_by_fact,
             ),
         )
         dcf_inputs_series.append({"year": period_end.year, **entry})
@@ -1330,7 +1336,7 @@ def read_stock_by_ticker(
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
-                report_dates_by_fact=report_dates_by_fact,
+                report_identities_by_fact=report_identities_by_fact,
             ),
         )
         if dcf_selection_oeps_facts
@@ -1348,7 +1354,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.sales.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_fact=report_dates_by_fact,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1361,7 +1367,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.revenues.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_fact=report_dates_by_fact,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1375,7 +1381,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.cash_flow.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_fact=report_dates_by_fact,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1388,7 +1394,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.earnings.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_fact=report_dates_by_fact,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1405,6 +1411,7 @@ def read_stock_by_ticker(
     except (
         ReportIdentityUnverifiableError,
         ActualConflictAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
     ) as error:
         raise HTTPException(
             status_code=409,
@@ -1415,7 +1422,7 @@ def read_stock_by_ticker(
     report_price_provenance = _fact_provenance(
         report_price_fact,
         active_report=active_report,
-        report_dates_by_fact=report_dates_by_fact,
+        report_identities_by_fact=report_identities_by_fact,
     )
     report_price_as_of = (
         report_price_provenance.get("source_report_date")
@@ -1432,6 +1439,9 @@ def read_stock_by_ticker(
         "listing_exchange": stock.listing_exchange,
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
+        "active_report_identity_revision_id": (
+            active_report.report_identity_revision_id if active_report else None
+        ),
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
         "current_price": serialize_canonical_eod_price(current_price),
         "report_price_reference": {
@@ -1451,7 +1461,7 @@ def read_stock_by_ticker(
         "pe_provenance": _fact_provenance(
             facts_by_key.get("val.pe"),
             active_report=active_report,
-            report_dates_by_fact=report_dates_by_fact,
+            report_identities_by_fact=report_identities_by_fact,
         ),
         "oeps_normalized": _stock_summary_wire_number(
             facts_by_key.get("owners_earnings_per_share_normalized").value_numeric
@@ -1461,7 +1471,7 @@ def read_stock_by_ticker(
         "oeps_normalized_provenance": _fact_provenance(
             facts_by_key.get("owners_earnings_per_share_normalized"),
             active_report=active_report,
-            report_dates_by_fact=report_dates_by_fact,
+            report_identities_by_fact=report_identities_by_fact,
         ),
         "oeps_series": oeps_series,
         "dcf_inputs": dcf_inputs,

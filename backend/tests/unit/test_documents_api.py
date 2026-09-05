@@ -2651,6 +2651,21 @@ def test_documents_list_requires_auth(client, db_session):
     assert resp.status_code == 401, resp.text
 
 
+def test_documents_openapi_describes_authoritative_cursor_headers(client):
+    operation = client.get("/openapi.json").json()["paths"][
+        "/api/v1/documents"
+    ]["get"]
+    headers = operation["responses"]["200"]["headers"]
+
+    assert headers["X-Pagination-Mode"]["schema"]["enum"] == [
+        "cursor",
+        "offset",
+        "unpaged",
+    ]
+    assert headers["X-Next-Cursor"]["schema"]["type"] == "string"
+    assert headers["X-Snapshot-Cutoff"]["schema"]["format"] == "date-time"
+
+
 def test_documents_list_supports_bounded_pagination_with_total_headers(
     client, db_session, user_factory, auth_headers
 ):
@@ -2743,6 +2758,256 @@ def test_documents_pages_concatenate_in_stable_upload_order_with_id_tiebreak(
         assert response.headers["x-total-count"] == "4"
         assert response.headers["x-page-offset"] == str(offset)
         assert response.headers["x-page-limit"] == "2"
+
+
+def test_documents_cursor_snapshot_excludes_concurrent_insert_without_duplicates(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-cursor-concurrent@example.com")
+    other = user_factory("documents-cursor-concurrent-other@example.com")
+    transferred_after_snapshot = PdfDocument(
+        user_id=other.id,
+        file_name="cursor-transferred.pdf",
+        source="value_line",
+        file_storage_key="tests/cursor-transferred.pdf",
+        parse_status="parsed",
+        upload_time=datetime(2026, 5, 2, 18, 0),
+    )
+    db_session.add(transferred_after_snapshot)
+    db_session.flush()
+    documents = [
+        PdfDocument(
+            user_id=user.id,
+            file_name=f"cursor-{day}.pdf",
+            source="value_line",
+            file_storage_key=f"tests/cursor-{day}.pdf",
+            parse_status="parsed",
+            upload_time=datetime(2026, 5, day, 12, 0),
+        )
+        for day in range(1, 5)
+    ]
+    db_session.add_all(documents)
+    db_session.commit()
+
+    first_page = client.get(
+        "/api/v1/documents?limit=2",
+        headers=auth_headers(user),
+    )
+    assert first_page.status_code == 200, first_page.text
+    assert first_page.headers["x-snapshot-cutoff"]
+    cursor = first_page.headers["x-next-cursor"]
+
+    concurrent = PdfDocument(
+        user_id=user.id,
+        file_name="cursor-concurrent.pdf",
+        source="value_line",
+        file_storage_key="tests/cursor-concurrent.pdf",
+        parse_status="parsed",
+        upload_time=datetime(2026, 6, 1, 12, 0),
+    )
+    db_session.add(concurrent)
+    transferred_after_snapshot.user_id = user.id
+    db_session.commit()
+
+    second_page = client.get(
+        "/api/v1/documents",
+        params={"cursor": cursor},
+        headers=auth_headers(user),
+    )
+    assert second_page.status_code == 200, second_page.text
+    concatenated = [
+        item["id"] for item in [*first_page.json(), *second_page.json()]
+    ]
+    assert concatenated == [
+        documents[3].id,
+        documents[2].id,
+        documents[1].id,
+        documents[0].id,
+    ]
+    assert concurrent.id not in concatenated
+    assert transferred_after_snapshot.id not in concatenated
+    assert len(concatenated) == len(set(concatenated))
+    assert second_page.headers.get("x-next-cursor") is None
+
+
+def test_documents_cursor_excludes_insert_uncommitted_at_snapshot_then_committed(
+    client, db_session, auth_headers
+):
+    engine = db_session.get_bind().engine
+    email = "documents-cursor-pending@example.com"
+    with engine.begin() as setup:
+        user_id = setup.execute(
+            sa.text(
+                "INSERT INTO users (email,hashed_password,is_active) "
+                "VALUES (:email,'fixture',true) RETURNING id"
+            ),
+            {"email": email},
+        ).scalar_one()
+
+    pending_connection = engine.connect()
+    pending_transaction = pending_connection.begin()
+    try:
+        pending_id = pending_connection.execute(
+            sa.text(
+                "INSERT INTO pdf_documents "
+                "(user_id,file_name,source,upload_time,file_storage_key,"
+                "parse_status,identity_needs_review) VALUES "
+                "(:user,'pending.pdf','value_line','2026-05-02T12:00:00Z',"
+                "'tests/pending.pdf','parsed',false) RETURNING id"
+            ),
+            {"user": user_id},
+        ).scalar_one()
+        with engine.begin() as committed:
+            committed_ids = committed.execute(
+                sa.text(
+                    "INSERT INTO pdf_documents "
+                    "(user_id,file_name,source,upload_time,file_storage_key,"
+                    "parse_status,identity_needs_review) VALUES "
+                    "(:user,'newer.pdf','value_line','2026-05-03T12:00:00Z',"
+                    "'tests/newer.pdf','parsed',false),"
+                    "(:user,'older.pdf','value_line','2026-05-01T12:00:00Z',"
+                    "'tests/older.pdf','parsed',false) RETURNING id"
+                ),
+                {"user": user_id},
+            ).scalars().all()
+
+        user = db_session.get(User, user_id)
+        assert user is not None
+        first_page = client.get(
+            "/api/v1/documents?limit=1",
+            headers=auth_headers(user),
+        )
+        assert first_page.status_code == 200, first_page.text
+        assert first_page.headers["x-total-count"] == "2"
+        assert [item["id"] for item in first_page.json()] == [committed_ids[0]]
+        cursor = first_page.headers["x-next-cursor"]
+
+        pending_transaction.commit()
+        second_page = client.get(
+            "/api/v1/documents",
+            params={"cursor": cursor},
+            headers=auth_headers(user),
+        )
+
+        assert second_page.status_code == 200, second_page.text
+        assert [item["id"] for item in second_page.json()] == [committed_ids[1]]
+        assert pending_id not in {
+            item["id"] for item in [*first_page.json(), *second_page.json()]
+        }
+    finally:
+        if pending_transaction.is_active:
+            pending_transaction.rollback()
+        pending_connection.close()
+
+
+def test_documents_cursor_handles_ties_and_deletion(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-cursor-null@example.com")
+    tied = [
+        PdfDocument(
+            user_id=user.id,
+            file_name=f"cursor-tied-{index}.pdf",
+            source="value_line",
+            file_storage_key=f"tests/cursor-tied-{index}.pdf",
+            parse_status="parsed",
+            upload_time=datetime(2026, 5, 1, 12, 0),
+        )
+        for index in range(2)
+    ]
+    oldest = PdfDocument(
+        user_id=user.id,
+        file_name="cursor-oldest.pdf",
+        source="value_line",
+        file_storage_key="tests/cursor-oldest.pdf",
+        parse_status="parsed",
+        upload_time=datetime(2026, 4, 1, 12, 0),
+    )
+    db_session.add_all([*tied, oldest])
+    db_session.commit()
+
+    first_page = client.get(
+        "/api/v1/documents?limit=1",
+        headers=auth_headers(user),
+    )
+    cursor = first_page.headers["x-next-cursor"]
+    # Deleting an unseen snapshot member must not shift another row across the
+    # cursor boundary or cause a duplicate.
+    db_session.delete(oldest)
+    db_session.commit()
+    second_page = client.get(
+        "/api/v1/documents",
+        params={"cursor": cursor},
+        headers=auth_headers(user),
+    )
+
+    assert first_page.status_code == 200, first_page.text
+    assert second_page.status_code == 200, second_page.text
+    assert [first_page.json()[0]["id"], second_page.json()[0]["id"]] == [
+        tied[1].id,
+        tied[0].id,
+    ]
+
+
+def test_documents_cursor_rejects_tampering_cross_user_replay_and_limit_change(
+    client, db_session, user_factory, auth_headers
+):
+    owner = user_factory("documents-cursor-owner@example.com")
+    other = user_factory("documents-cursor-other@example.com")
+    db_session.add_all(
+        [
+            PdfDocument(
+                user_id=owner.id,
+                file_name=f"cursor-owner-{index}.pdf",
+                source="value_line",
+                file_storage_key=f"tests/cursor-owner-{index}.pdf",
+                parse_status="parsed",
+            )
+            for index in range(2)
+        ]
+    )
+    db_session.commit()
+    first_page = client.get(
+        "/api/v1/documents?limit=1",
+        headers=auth_headers(owner),
+    )
+    cursor = first_page.headers["x-next-cursor"]
+    tampered = f"{cursor[:-1]}{'A' if cursor[-1] != 'A' else 'B'}"
+
+    for response in (
+        client.get(
+            "/api/v1/documents",
+            params={"cursor": tampered},
+            headers=auth_headers(owner),
+        ),
+        client.get(
+            "/api/v1/documents",
+            params={"cursor": cursor},
+            headers=auth_headers(other),
+        ),
+        client.get(
+            "/api/v1/documents",
+            params={"cursor": cursor, "limit": 2},
+            headers=auth_headers(owner),
+        ),
+        client.get(
+            "/api/v1/documents",
+            params={"cursor": cursor, "offset": 1},
+            headers=auth_headers(owner),
+        ),
+        client.get(
+            "/api/v1/documents",
+            params={"cursor": ""},
+            headers=auth_headers(owner),
+        ),
+        client.get(
+            "/api/v1/documents",
+            params={"cursor": "A" * 4097},
+            headers=auth_headers(owner),
+        ),
+    ):
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"]["code"] == "invalid_documents_cursor"
 
 
 def test_documents_list_without_pagination_fails_instead_of_silent_truncation(

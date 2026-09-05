@@ -32,6 +32,7 @@ from app.services.active_report_resolver import (
     resolve_active_reports,
 )
 from app.services.actual_conflict_service import (
+    ActualConflictAuthorityAmbiguousError,
     ActualConflictAuthorityBoundExceededError,
     detect_actual_conflicts,
 )
@@ -303,6 +304,7 @@ def build_research_workspace(
         ReportIdentityUnverifiableError,
         ActiveReportAuthorityBoundExceededError,
         ActualConflictAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
     ) as error:
         raise ResearchCaseError(
             error.code,
@@ -444,6 +446,9 @@ def build_research_workspace(
                     if document_identities[document.id].report_date
                     else None
                 ),
+                "report_identity_revision_id": document_identities[
+                    document.id
+                ].revision_id,
                 "parse_status": document.parse_status,
                 "identity_needs_review": document.identity_needs_review,
                 "uploaded_at": document.upload_time.isoformat(),
@@ -467,6 +472,11 @@ def build_research_workspace(
                     report_identities_by_fact[fact.id].report_date.isoformat()
                     if fact.id in report_identities_by_fact
                     and report_identities_by_fact[fact.id].report_date
+                    else None
+                ),
+                "source_report_identity_revision_id": (
+                    report_identities_by_fact[fact.id].revision_id
+                    if fact.id in report_identities_by_fact
                     else None
                 ),
                 "original_evidence_route": (

@@ -4,10 +4,13 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.artifacts import ValueLineDocumentReportIdentityRevision
+from app.models.artifacts import (
+    ValueLineDocumentReportIdentityRevision,
+    ValueLineParseRun,
+)
 from app.models.facts import MetricFact
 from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
@@ -36,6 +39,7 @@ class ActiveReportAuthorityBoundExceededError(ValueError):
 class ActiveReportSelection:
     stock_id: int
     document_id: int
+    report_identity_revision_id: int
     report_date: Optional[date]
 
 
@@ -131,6 +135,10 @@ def resolve_active_reports(
             identity,
             identity.id == MetricFact.value_line_report_identity_revision_id,
         )
+        .outerjoin(
+            ValueLineParseRun,
+            ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
+        )
         .where(
             *scope,
             MetricFact.value_line_fact_known_at <= knowledge_cutoff,
@@ -138,6 +146,18 @@ def resolve_active_reports(
             or_(
                 MetricFact.value_line_created_txid.is_(None),
                 MetricFact.created_at <= knowledge_cutoff,
+            ),
+            or_(
+                MetricFact.value_line_parse_run_id.is_(None),
+                and_(
+                    ValueLineParseRun.status == "succeeded",
+                    ValueLineParseRun.completed_at.is_not(None),
+                    ValueLineParseRun.completed_at <= knowledge_cutoff,
+                ),
+                and_(
+                    ValueLineParseRun.status == "running",
+                    ValueLineParseRun.created_txid == func.txid_current(),
+                ),
             ),
         )
         .distinct()
@@ -160,6 +180,7 @@ def resolve_active_reports(
         candidate = ActiveReportSelection(
             stock_id=row.stock_id,
             document_id=row.source_document_id,
+            report_identity_revision_id=row.revision_id,
             report_date=row.report_date,
         )
         current = active_by_stock.get(row.stock_id)
@@ -168,8 +189,12 @@ def resolve_active_reports(
     return active_by_stock
 
 
-def _selection_rank(selection: ActiveReportSelection) -> tuple[date, int]:
-    return (selection.report_date or date.min, selection.document_id)
+def _selection_rank(selection: ActiveReportSelection) -> tuple[date, int, int]:
+    return (
+        selection.report_date or date.min,
+        selection.document_id,
+        selection.report_identity_revision_id,
+    )
 
 
 def _bounded_ids(values: list[int], *, dimension: str) -> list[int]:

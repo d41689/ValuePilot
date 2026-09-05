@@ -832,6 +832,7 @@ def test_lookup_stock_by_ticker_returns_summary(
     )
     db_session.flush()
     db_session.commit()
+    report_revision_id = facts[0].value_line_report_identity_revision_id
 
     response = client.get(
         "/api/v1/stocks/by_ticker/coco_test", headers=auth_headers(user)
@@ -848,12 +849,14 @@ def test_lookup_stock_by_ticker_returns_summary(
     assert payload["current_price"]["status"] == "unavailable"
     assert payload["current_price"]["value"] is None
     assert payload["active_report_document_id"] == doc.id
+    assert payload["active_report_identity_revision_id"] == report_revision_id
     assert payload["active_report_date"] == "2026-01-09"
     assert payload["pe"] == 43.3
     assert isinstance(payload["pe"], (int, float))
     assert payload["report_price_reference"]["provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
+        "source_report_identity_revision_id": report_revision_id,
         "source_report_date": "2026-01-09",
         "period_end_date": "2026-01-09",
         "is_active_report": True,
@@ -861,6 +864,7 @@ def test_lookup_stock_by_ticker_returns_summary(
     assert payload["pe_provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
+        "source_report_identity_revision_id": report_revision_id,
         "source_report_date": "2026-01-09",
         "period_end_date": "2026-01-09",
         "is_active_report": True,
@@ -870,6 +874,7 @@ def test_lookup_stock_by_ticker_returns_summary(
     assert payload["oeps_normalized_provenance"] == {
         "source_type": "parsed",
         "source_document_id": doc.id,
+        "source_report_identity_revision_id": report_revision_id,
         "source_report_date": "2026-01-09",
         "period_end_date": "2026-01-09",
         "is_active_report": True,
@@ -881,6 +886,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2026-12-31",
                 "is_active_report": True,
@@ -892,6 +898,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2025-12-31",
                 "is_active_report": True,
@@ -903,6 +910,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2024-12-31",
                 "is_active_report": True,
@@ -914,6 +922,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2023-12-31",
                 "is_active_report": True,
@@ -925,6 +934,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2022-12-31",
                 "is_active_report": True,
@@ -936,6 +946,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2021-12-31",
                 "is_active_report": True,
@@ -1001,6 +1012,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2024-12-31",
                 "is_active_report": True,
@@ -1015,6 +1027,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                         "metric_key": "is.depreciation",
                         "source_type": "parsed",
                         "source_document_id": doc.id,
+                        "source_report_identity_revision_id": report_revision_id,
                         "source_report_date": "2026-01-09",
                         "period_end_date": "2024-12-31",
                         "is_active_report": True,
@@ -1023,6 +1036,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                         "metric_key": "equity.shares_outstanding",
                         "source_type": "parsed",
                         "source_document_id": doc.id,
+                        "source_report_identity_revision_id": report_revision_id,
                         "source_report_date": "2026-01-09",
                         "period_end_date": "2024-12-31",
                         "is_active_report": True,
@@ -1036,6 +1050,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2024-12-31",
                 "is_active_report": True,
@@ -1074,6 +1089,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2026-12-31",
                     "is_active_report": True,
@@ -1088,6 +1104,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "is.depreciation",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2026-12-31",
                             "is_active_report": True,
@@ -1096,6 +1113,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "equity.shares_outstanding",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2026-12-31",
                             "is_active_report": True,
@@ -1109,6 +1127,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2026-12-31",
                     "is_active_report": True,
@@ -1123,6 +1142,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2025-12-31",
                     "is_active_report": True,
@@ -1137,6 +1157,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "is.depreciation",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2025-12-31",
                             "is_active_report": True,
@@ -1145,6 +1166,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "equity.shares_outstanding",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2025-12-31",
                             "is_active_report": True,
@@ -1158,6 +1180,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2025-12-31",
                     "is_active_report": True,
@@ -1172,6 +1195,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2024-12-31",
                     "is_active_report": True,
@@ -1186,6 +1210,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "is.depreciation",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2024-12-31",
                             "is_active_report": True,
@@ -1194,6 +1219,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "equity.shares_outstanding",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2024-12-31",
                             "is_active_report": True,
@@ -1207,6 +1233,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2024-12-31",
                     "is_active_report": True,
@@ -1221,6 +1248,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2023-12-31",
                     "is_active_report": True,
@@ -1235,6 +1263,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "is.depreciation",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2023-12-31",
                             "is_active_report": True,
@@ -1243,6 +1272,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "equity.shares_outstanding",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2023-12-31",
                             "is_active_report": True,
@@ -1256,6 +1286,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2023-12-31",
                     "is_active_report": True,
@@ -1270,6 +1301,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2022-12-31",
                     "is_active_report": True,
@@ -1284,6 +1316,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "is.depreciation",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2022-12-31",
                             "is_active_report": True,
@@ -1292,6 +1325,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "equity.shares_outstanding",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2022-12-31",
                             "is_active_report": True,
@@ -1305,6 +1339,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2022-12-31",
                     "is_active_report": True,
@@ -1319,6 +1354,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2021-12-31",
                     "is_active_report": True,
@@ -1333,6 +1369,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "is.depreciation",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2021-12-31",
                             "is_active_report": True,
@@ -1341,6 +1378,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                             "metric_key": "equity.shares_outstanding",
                             "source_type": "parsed",
                             "source_document_id": doc.id,
+                            "source_report_identity_revision_id": report_revision_id,
                             "source_report_date": "2026-01-09",
                             "period_end_date": "2021-12-31",
                             "is_active_report": True,
@@ -1354,6 +1392,7 @@ def test_lookup_stock_by_ticker_returns_summary(
                 "provenance": {
                     "source_type": "parsed",
                     "source_document_id": doc.id,
+                    "source_report_identity_revision_id": report_revision_id,
                     "source_report_date": "2026-01-09",
                     "period_end_date": "2021-12-31",
                     "is_active_report": True,
@@ -1369,6 +1408,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
                 "is_active_report": True,
@@ -1381,6 +1421,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
                 "is_active_report": True,
@@ -1393,6 +1434,7 @@ def test_lookup_stock_by_ticker_returns_summary(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
                 "is_active_report": True,
@@ -1635,6 +1677,15 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
     )
     db_session.commit()
 
+    old_conflict_fact = db_session.query(MetricFact).filter(
+        MetricFact.source_document_id == old_doc.id,
+        MetricFact.metric_key == "is.net_income",
+    ).one()
+    new_conflict_fact = db_session.query(MetricFact).filter(
+        MetricFact.source_document_id == new_doc.id,
+        MetricFact.metric_key == "is.net_income",
+    ).one()
+
     response = client.get(
         "/api/v1/stocks/by_ticker/conf_test", headers=auth_headers(user)
     )
@@ -1651,21 +1702,35 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
             "current_value_numeric": 120.0,
             "current_value_text": None,
             "current_source_document_id": new_doc.id,
+            "current_report_identity_revision_id": (
+                new_conflict_fact.value_line_report_identity_revision_id
+            ),
             "current_report_date": "2026-04-09",
             "previous_value_numeric": 100.0,
             "previous_value_text": None,
             "previous_source_document_id": old_doc.id,
+            "previous_report_identity_revision_id": (
+                old_conflict_fact.value_line_report_identity_revision_id
+            ),
             "previous_report_date": "2026-01-09",
             "observations": [
                 {
+                    "fact_id": new_conflict_fact.id,
                     "source_document_id": new_doc.id,
+                    "source_report_identity_revision_id": (
+                        new_conflict_fact.value_line_report_identity_revision_id
+                    ),
                     "source_report_date": "2026-04-09",
                     "value_numeric": 120.0,
                     "value_text": None,
                     "is_active_report": True,
                 },
                 {
+                    "fact_id": old_conflict_fact.id,
                     "source_document_id": old_doc.id,
+                    "source_report_identity_revision_id": (
+                        old_conflict_fact.value_line_report_identity_revision_id
+                    ),
                     "source_report_date": "2026-01-09",
                     "value_numeric": 100.0,
                     "value_text": None,
@@ -1710,6 +1775,45 @@ def test_stock_maps_actual_conflict_observation_bound_to_typed_conflict(
     assert response.json()["detail"] == {
         "code": "actual_conflict_authority_bound_exceeded",
         "message": "Actual conflict authority exceeds the supported bounded scope.",
+    }
+
+
+def test_stock_maps_ambiguous_actual_conflict_authority_to_typed_conflict(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.actual_conflict_service import (
+        ActualConflictAuthorityAmbiguousError,
+    )
+
+    user = User(email="ticker-conflict-ambiguous@example.com")
+    stock = Stock(
+        ticker="CONF_AMBIG",
+        exchange="NYSE",
+        company_name="Conflict Ambiguous",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.commit()
+
+    def reject_ambiguous(*_args, **_kwargs):
+        raise ActualConflictAuthorityAmbiguousError(fact_ids=[7, 9])
+
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "detect_actual_conflicts",
+        reject_ambiguous,
+    )
+    response = client.get(
+        "/api/v1/stocks/by_ticker/conf_ambig",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "actual_conflict_authority_ambiguous",
+        "message": (
+            "Actual conflict authority cannot identify a unique canonical fact."
+        ),
     }
 
 
@@ -1992,21 +2096,20 @@ def test_stock_provenance_uses_fact_bound_report_date_after_metadata_change(
     )
     db_session.add(document)
     db_session.flush()
-    db_session.add(
-        MetricFact(
-            user_id=user.id,
-            stock_id=stock.id,
-            metric_key="mkt.price",
-            value_json={"fact_nature": "snapshot"},
-            value_numeric=100,
-            unit="USD",
-            period_type="AS_OF",
-            period_end_date=date(2026, 1, 9),
-            source_type="parsed",
-            source_document_id=document.id,
-            is_current=True,
-        )
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="mkt.price",
+        value_json={"fact_nature": "snapshot"},
+        value_numeric=100,
+        unit="USD",
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 9),
+        source_type="parsed",
+        source_document_id=document.id,
+        is_current=True,
     )
+    db_session.add(fact)
     db_session.commit()
     cutoff = database_evaluation_cutoff(db_session)
 
@@ -2024,9 +2127,15 @@ def test_stock_provenance_uses_fact_bound_report_date_after_metadata_change(
 
     assert response.status_code == 200, response.text
     assert response.json()["active_report_date"] == "2026-01-09"
+    assert response.json()["active_report_identity_revision_id"] == (
+        fact.value_line_report_identity_revision_id
+    )
     assert response.json()["report_price_reference"]["provenance"] == {
         "source_type": "parsed",
         "source_document_id": document.id,
+        "source_report_identity_revision_id": (
+            fact.value_line_report_identity_revision_id
+        ),
         "source_report_date": "2026-01-09",
         "period_end_date": "2026-01-09",
         "is_active_report": True,
@@ -2190,6 +2299,13 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
     )
     db_session.commit()
 
+    report_revision_id = db_session.query(
+        MetricFact.value_line_report_identity_revision_id
+    ).filter(
+        MetricFact.source_document_id == doc.id,
+        MetricFact.metric_key == "rates.revenues.cagr_est",
+    ).scalar()
+
     response = client.get(
         "/api/v1/stocks/by_ticker/rev_test", headers=auth_headers(user)
     )
@@ -2205,6 +2321,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
                 "is_active_report": True,
@@ -2217,6 +2334,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
                 "is_active_report": True,
@@ -2229,6 +2347,7 @@ def test_lookup_stock_by_ticker_uses_revenues_growth_when_sales_missing(
             "provenance": {
                 "source_type": "parsed",
                 "source_document_id": doc.id,
+                "source_report_identity_revision_id": report_revision_id,
                 "source_report_date": "2026-01-09",
                 "period_end_date": "2026-01-09",
                 "is_active_report": True,

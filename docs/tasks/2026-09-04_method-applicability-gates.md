@@ -667,3 +667,42 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   multiple identity revisions, both HTTP error mappings, stable cross-page
   concatenation, equal-upload-time ID tie-breaking, paging headers, no-argument
   behavior and global active status. Canonical closing gates remain pending.
+- 2026-09-05: Strict Terra R19 found two remaining authority defects. First,
+  an active report retained only a document ID, so an older fact bound to a
+  prior report-identity revision of that same document was incorrectly labelled
+  active. Conflict projection also kept every retained reparse fact and could
+  silently let ascending fact ID choose an old value. `ActiveReportSelection`
+  now retains the exact identity revision. Actual observations carry the exact
+  fact and revision IDs, compare active authority by revision, and collapse one
+  `(document, revision, metric, period)` slot only through a unique current fact
+  from the canonical `metric_facts` projection. Parse-run timestamps and row
+  IDs are not supersession edges; same-run, separate-run, or runless duplicates
+  without a unique canonical winner therefore fail closed as typed
+  `actual_conflict_authority_ambiguous`; fact ID is never a winner rule. Stock
+  provenance and conflict responses expose the exact revision, and stock and
+  Workspace HTTP boundaries map ambiguity to identifier-free 409 responses.
+- 2026-09-05: R19 replaced offset as the authoritative document traversal
+  protocol. `limit` without `offset` starts a signed HMAC keyset snapshot whose
+  token binds the user, database cutoff and MVCC visibility snapshot, fixed
+  maximum document ID, initial total, page size and last `(upload_time, id)`
+  key. Snapshot membership uses both PostgreSQL tuple visibility and the latest
+  database-owned report-identity revision at that cutoff. Consequently, an
+  insert that allocated an ID before page one but committed afterward, as well
+  as a pre-existing document transferred into the tenant later, is excluded.
+  Continuations preserve
+  `upload_time DESC NULLS LAST, id DESC`, exclude later inserts, tolerate
+  deletions without shifting rows, and reject token tampering, cross-tenant
+  replay, page-size changes and cursor/offset mixing. Cursor response headers
+  are CORS-exposed. Explicit `offset` remains compatible but is documented as
+  best-effort only and is not used for internal complete traversal.
+- 2026-09-05: R19 began test-first with the expected missing authority type and
+  cursor behavior. The directly affected identity/documents files are
+  `55 passed`; the wider stock, Workspace, identity and documents set was
+  `99 passed`. After MVCC snapshot hardening, all six directly affected
+  identity, documents, cursor/CORS, stock and Workspace files are `106 passed`.
+  A 17-file method, identity/migration, documents, stock, Workspace, quant,
+  reconciliation, pool and calculation regression set is `332 passed` in
+  98.57 seconds after final self-review added a separate-successful-reparse
+  ambiguity regression and canonical-base64/oversized-cursor rejection. The
+  six directly affected files are `110 passed` in 33.62 seconds.
+  Exact canonical closing gates remain pending for the post-review gate.

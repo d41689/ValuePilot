@@ -503,6 +503,42 @@ def test_workspace_maps_actual_conflict_observation_bound_to_typed_conflict(
     }
 
 
+def test_workspace_maps_ambiguous_actual_conflict_authority_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import research_workspace
+    from app.services.actual_conflict_service import (
+        ActualConflictAuthorityAmbiguousError,
+    )
+
+    user = user_factory("workspace-actual-conflict-ambiguous@example.com")
+    stock = _stock(db_session, "RWSACAMB")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_ambiguous(*_args, **_kwargs):
+        raise ActualConflictAuthorityAmbiguousError(fact_ids=[11, 12])
+
+    monkeypatch.setattr(
+        research_workspace,
+        "detect_actual_conflicts",
+        reject_ambiguous,
+    )
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "actual_conflict_authority_ambiguous",
+        "message": (
+            "Actual conflict authority cannot identify a unique canonical fact."
+        ),
+    }
+
+
 def _monitoring_revision(expected_head: int = 0) -> dict:
     return {
         "expected_head_revision_number": expected_head,

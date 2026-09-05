@@ -16,6 +16,7 @@ from app.services.active_report_resolver import (
 )
 from app.services import actual_conflict_service
 from app.services.actual_conflict_service import (
+    ActualConflictAuthorityAmbiguousError,
     ActualConflictAuthorityBoundExceededError,
     detect_actual_conflicts,
 )
@@ -321,9 +322,279 @@ def test_conflict_ranking_uses_fact_bound_identity_before_metadata_change(
     )
 
     assert active.document_id == new_document.id
+    assert active.report_identity_revision_id == (
+        new_fact.value_line_report_identity_revision_id
+    )
     assert conflicts[0]["current_source_document_id"] == new_document.id
+    assert conflicts[0]["current_report_identity_revision_id"] == (
+        new_fact.value_line_report_identity_revision_id
+    )
     assert conflicts[0]["current_report_date"] == "2026-04-09"
     assert conflicts[0]["previous_report_date"] == "2026-01-09"
+
+
+def test_same_document_reparse_uses_only_current_canonical_observation(db_session):
+    user = User(email="report-identity-reparse-canonical@example.com")
+    stock = Stock(ticker="RIREP", exchange="NYSE", company_name="RI Reparse")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    prior_document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="ri-reparse-prior.pdf",
+        report_date=date(2025, 10, 9),
+    )
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="ri-reparse-current.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=prior_document.id,
+        value=90,
+        is_current=False,
+    )
+    stale = _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        value=100,
+        is_current=False,
+    )
+    current = _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        value=120,
+        is_current=True,
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    active = resolve_active_reports(
+        db_session,
+        stock_ids=[stock.id],
+        current_user_id=user.id,
+        knowledge_cutoff=cutoff,
+    )[stock.id]
+    conflicts = detect_actual_conflicts(
+        db_session,
+        stock_id=stock.id,
+        active_report=active,
+        current_user_id=user.id,
+        knowledge_cutoff=cutoff,
+    )
+
+    assert active.report_identity_revision_id == (
+        current.value_line_report_identity_revision_id
+    )
+    observations = conflicts[0]["observations"]
+    assert [item["value_numeric"] for item in observations] == [120.0, 90.0]
+    assert stale.id not in [item["fact_id"] for item in observations]
+    assert observations[0]["fact_id"] == current.id
+    assert observations[0]["is_active_report"] is True
+
+
+def test_old_identity_revision_on_same_document_is_not_active(db_session):
+    user = User(email="report-identity-same-document-revision@example.com")
+    stock = Stock(ticker="RIREV", exchange="NYSE", company_name="RI Revision")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="ri-revision.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    old_fact = _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        value=100,
+        is_current=False,
+    )
+    db_session.commit()
+    document.report_date = date(2026, 4, 9)
+    db_session.flush()
+    new_fact = _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=document.id,
+        value=120,
+        is_current=True,
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    active = resolve_active_reports(
+        db_session,
+        stock_ids=[stock.id],
+        current_user_id=user.id,
+        knowledge_cutoff=cutoff,
+    )[stock.id]
+    conflicts = detect_actual_conflicts(
+        db_session,
+        stock_id=stock.id,
+        active_report=active,
+        current_user_id=user.id,
+        knowledge_cutoff=cutoff,
+    )
+
+    assert old_fact.value_line_report_identity_revision_id != (
+        new_fact.value_line_report_identity_revision_id
+    )
+    assert active.report_identity_revision_id == (
+        new_fact.value_line_report_identity_revision_id
+    )
+    by_revision = {
+        item["source_report_identity_revision_id"]: item
+        for item in conflicts[0]["observations"]
+    }
+    assert by_revision[old_fact.value_line_report_identity_revision_id][
+        "is_active_report"
+    ] is False
+    assert by_revision[new_fact.value_line_report_identity_revision_id][
+        "is_active_report"
+    ] is True
+
+
+def test_same_report_duplicate_without_canonical_winner_fails_closed(db_session):
+    user = User(email="report-identity-ambiguous-canonical@example.com")
+    stock = Stock(ticker="RIAMB", exchange="NYSE", company_name="RI Ambiguous")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="ri-ambiguous.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    policy_id = db_session.scalar(
+        text(
+            "SELECT id FROM value_line_mapping_policies "
+            "WHERE status='approved' ORDER BY effective_from DESC LIMIT 1"
+        )
+    )
+    run_id = db_session.scalar(
+        text(
+            "INSERT INTO value_line_parse_runs "
+            "(user_id,document_id,parser_version,source_mapping_version,status,"
+            "created_txid) VALUES (:user,:document,'value-line-v1',:policy,"
+            "'running',0) RETURNING id"
+        ),
+        {"user": user.id, "document": document.id, "policy": policy_id},
+    )
+    for value in (100, 120):
+        db_session.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_json,value_numeric,period_type,"
+                "period_end_date,source_type,source_document_id,is_current,"
+                "value_line_parse_run_id) VALUES "
+                "(:user,:stock,'is.net_income','{\"fact_nature\":\"actual\"}',"
+                ":value,'FY','2025-12-31','parsed',:document,false,:run)"
+            ),
+            {
+                "user": user.id,
+                "stock": stock.id,
+                "value": value,
+                "document": document.id,
+                "run": run_id,
+            },
+        )
+    db_session.execute(
+        text("UPDATE value_line_parse_runs SET status='succeeded' WHERE id=:id"),
+        {"id": run_id},
+    )
+    db_session.commit()
+
+    with pytest.raises(ActualConflictAuthorityAmbiguousError) as raised:
+        detect_actual_conflicts(
+            db_session,
+            stock_id=stock.id,
+            active_report=None,
+            current_user_id=user.id,
+            knowledge_cutoff=database_evaluation_cutoff(db_session),
+        )
+
+    assert raised.value.code == "actual_conflict_authority_ambiguous"
+
+
+def test_separate_successful_reparses_without_current_winner_fail_closed(db_session):
+    user = User(email="report-identity-ambiguous-reparses@example.com")
+    stock = Stock(ticker="RIAMBR", exchange="NYSE", company_name="RI Reparses")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="ri-ambiguous-reparses.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    policy_id = db_session.scalar(
+        text(
+            "SELECT id FROM value_line_mapping_policies "
+            "WHERE status='approved' ORDER BY effective_from DESC LIMIT 1"
+        )
+    )
+    db_session.commit()
+
+    for value in (100, 120):
+        run_id = db_session.scalar(
+            text(
+                "INSERT INTO value_line_parse_runs "
+                "(user_id,document_id,parser_version,source_mapping_version,status,"
+                "created_txid) VALUES (:user,:document,'value-line-v1',:policy,"
+                "'running',0) RETURNING id"
+            ),
+            {"user": user.id, "document": document.id, "policy": policy_id},
+        )
+        db_session.execute(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_json,value_numeric,period_type,"
+                "period_end_date,source_type,source_document_id,is_current,"
+                "value_line_parse_run_id) VALUES "
+                "(:user,:stock,'is.net_income','{\"fact_nature\":\"actual\"}',"
+                ":value,'FY','2025-12-31','parsed',:document,false,:run)"
+            ),
+            {
+                "user": user.id,
+                "stock": stock.id,
+                "value": value,
+                "document": document.id,
+                "run": run_id,
+            },
+        )
+        db_session.execute(
+            text("UPDATE value_line_parse_runs SET status='succeeded' WHERE id=:id"),
+            {"id": run_id},
+        )
+        db_session.commit()
+
+    with pytest.raises(ActualConflictAuthorityAmbiguousError) as raised:
+        detect_actual_conflicts(
+            db_session,
+            stock_id=stock.id,
+            active_report=None,
+            current_user_id=user.id,
+            knowledge_cutoff=database_evaluation_cutoff(db_session),
+        )
+
+    assert raised.value.code == "actual_conflict_authority_ambiguous"
 
 
 def test_database_stamped_future_fact_is_absent_at_earlier_cutoff(db_session):
@@ -551,7 +822,7 @@ def test_active_report_candidate_bound_is_tenant_scoped_without_leakage(
         name="ri-owner.pdf",
         report_date=date(2026, 1, 9),
     )
-    _actual_fact(
+    owner_fact = _actual_fact(
         db_session,
         user_id=owner.id,
         stock_id=owner_stock.id,
@@ -603,6 +874,9 @@ def test_active_report_candidate_bound_is_tenant_scoped_without_leakage(
         owner_stock.id: active_report_resolver.ActiveReportSelection(
             stock_id=owner_stock.id,
             document_id=owner_document.id,
+            report_identity_revision_id=(
+                owner_fact.value_line_report_identity_revision_id
+            ),
             report_date=date(2026, 1, 9),
         )
     }

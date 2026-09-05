@@ -153,6 +153,15 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "X-Total-Count",
+        "X-Page-Offset",
+        "X-Page-Limit",
+        "X-Pagination-Mode",
+        "X-Snapshot-Cutoff",
+        "X-Snapshot-Max-Id",
+        "X-Next-Cursor",
+    ],
 )
 
 

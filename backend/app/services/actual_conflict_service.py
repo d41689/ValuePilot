@@ -4,10 +4,13 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.artifacts import ValueLineDocumentReportIdentityRevision
+from app.models.artifacts import (
+    ValueLineDocumentReportIdentityRevision,
+    ValueLineParseRun,
+)
 from app.models.facts import MetricFact
 from app.services.active_report_resolver import ActiveReportSelection
 from app.services.canonical_financials import database_evaluation_cutoff
@@ -30,6 +33,18 @@ class ActualConflictAuthorityBoundExceededError(ValueError):
         self.limit = limit
         super().__init__(
             "Actual conflict authority exceeds the supported bounded scope."
+        )
+
+
+class ActualConflictAuthorityAmbiguousError(ValueError):
+    """No unique canonical fact exists for one report/metric/period slot."""
+
+    code = "actual_conflict_authority_ambiguous"
+
+    def __init__(self, *, fact_ids: list[int]):
+        self.fact_ids = tuple(sorted(set(fact_ids)))
+        super().__init__(
+            "Actual conflict authority cannot identify a unique canonical fact."
         )
 
 
@@ -117,13 +132,33 @@ def detect_actual_conflicts(
             MetricFact.source_document_id,
             MetricFact.value_numeric,
             MetricFact.value_text,
+            MetricFact.is_current,
+            identity.id.label("report_identity_revision_id"),
             identity.report_date.label("source_report_date"),
         )
         .join(
             identity,
             identity.id == MetricFact.value_line_report_identity_revision_id,
         )
+        .outerjoin(
+            ValueLineParseRun,
+            ValueLineParseRun.id == MetricFact.value_line_parse_run_id,
+        )
         .where(*scope)
+        .where(
+            or_(
+                MetricFact.value_line_parse_run_id.is_(None),
+                and_(
+                    ValueLineParseRun.status == "succeeded",
+                    ValueLineParseRun.completed_at.is_not(None),
+                    ValueLineParseRun.completed_at <= knowledge_cutoff,
+                ),
+                and_(
+                    ValueLineParseRun.status == "running",
+                    ValueLineParseRun.created_txid == func.txid_current(),
+                ),
+            )
+        )
         .order_by(MetricFact.id.asc())
         .limit(MAX_ACTUAL_CONFLICT_OBSERVATIONS + 1)
     ).all()
@@ -133,8 +168,26 @@ def detect_actual_conflicts(
             limit=MAX_ACTUAL_CONFLICT_OBSERVATIONS,
         )
 
-    grouped: dict[tuple[str, str | None, date | None], list[dict[str, Any]]] = defaultdict(list)
+    canonical_groups: dict[
+        tuple[int, int, str, str | None, date | None], list[Any]
+    ] = defaultdict(list)
     for observation in observations:
+        canonical_groups[
+            (
+                observation.source_document_id,
+                observation.report_identity_revision_id,
+                observation.metric_key,
+                observation.period_type,
+                observation.period_end_date,
+            )
+        ].append(observation)
+
+    canonical_observations = [
+        _canonical_observation(rows)
+        for rows in canonical_groups.values()
+    ]
+    grouped: dict[tuple[str, str | None, date | None], list[dict[str, Any]]] = defaultdict(list)
+    for observation in canonical_observations:
         grouped[
             (
                 observation.metric_key,
@@ -143,7 +196,11 @@ def detect_actual_conflicts(
             )
         ].append(
             {
+                "fact_id": observation.id,
                 "source_document_id": observation.source_document_id,
+                "source_report_identity_revision_id": (
+                    observation.report_identity_revision_id
+                ),
                 "source_report_date": (
                     observation.source_report_date.isoformat()
                     if observation.source_report_date
@@ -159,6 +216,8 @@ def detect_actual_conflicts(
                     active_report is not None
                     and observation.source_document_id is not None
                     and active_report.document_id == observation.source_document_id
+                    and active_report.report_identity_revision_id
+                    == observation.report_identity_revision_id
                 ),
             }
         )
@@ -176,6 +235,7 @@ def detect_actual_conflicts(
             key=lambda obs: (
                 obs["source_report_date"] or "",
                 obs["source_document_id"] or -1,
+                obs["source_report_identity_revision_id"] or -1,
             ),
             reverse=True,
         )
@@ -188,10 +248,16 @@ def detect_actual_conflicts(
                 "current_value_numeric": ranked[0]["value_numeric"],
                 "current_value_text": ranked[0]["value_text"],
                 "current_source_document_id": ranked[0]["source_document_id"],
+                "current_report_identity_revision_id": ranked[0][
+                    "source_report_identity_revision_id"
+                ],
                 "current_report_date": ranked[0]["source_report_date"],
                 "previous_value_numeric": ranked[1]["value_numeric"],
                 "previous_value_text": ranked[1]["value_text"],
                 "previous_source_document_id": ranked[1]["source_document_id"],
+                "previous_report_identity_revision_id": ranked[1][
+                    "source_report_identity_revision_id"
+                ],
                 "previous_report_date": ranked[1]["source_report_date"],
                 "observations": ranked,
             }
@@ -204,4 +270,27 @@ def detect_actual_conflicts(
             item["metric_key"],
         ),
         reverse=True,
+    )
+
+
+def _canonical_observation(rows: list[Any]) -> Any:
+    """Select one fact only from explicit canonical/supersession authority.
+
+    The live ``is_current`` projection is the only canonical winner recorded by
+    the metric-facts contract. Parse-run completion time and row identifiers do
+    not establish a supersession edge, so duplicate retained rows without one
+    unique current fact are not provably ordered and fail closed.
+    """
+
+    if len(rows) == 1:
+        return rows[0]
+    current = [row for row in rows if row.is_current is True]
+    if len(current) == 1:
+        return current[0]
+    if len(current) > 1:
+        raise ActualConflictAuthorityAmbiguousError(
+            fact_ids=[row.id for row in rows]
+        )
+    raise ActualConflictAuthorityAmbiguousError(
+        fact_ids=[row.id for row in rows]
     )
