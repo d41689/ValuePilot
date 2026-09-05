@@ -18,7 +18,10 @@ from app.services.active_report_resolver import (
     ActiveReportSelection,
     resolve_active_reports,
 )
-from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.actual_conflict_service import (
+    ActualConflictAuthorityBoundExceededError,
+    detect_actual_conflicts,
+)
 from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
     resolve_fact_report_identities,
@@ -1399,7 +1402,10 @@ def read_stock_by_ticker(
             shared_parsed_user_ids=admin_user_ids,
             knowledge_cutoff=dcf_evaluated_at,
         )
-    except ReportIdentityUnverifiableError as error:
+    except (
+        ReportIdentityUnverifiableError,
+        ActualConflictAuthorityBoundExceededError,
+    ) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": error.code, "message": str(error)},

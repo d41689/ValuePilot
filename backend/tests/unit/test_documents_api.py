@@ -196,7 +196,7 @@ def test_documents_list_returns_companies_and_page_count(client, db_session, use
     assert two["active_for_tickers"] == ["MSFT"]
 
 
-def test_documents_list_orders_by_ticker_then_report_date(
+def test_documents_list_orders_by_newest_upload_then_id(
     client, db_session, user_factory, auth_headers
 ):
     user = user_factory("documents_order@example.com")
@@ -244,7 +244,10 @@ def test_documents_list_orders_by_ticker_then_report_date(
     assert resp.status_code == 200, resp.text
 
     payload = resp.json()
-    assert [doc["id"] for doc in payload] == [aos.id, fico_older.id, fico_newer.id]
+    assert [doc["id"] for doc in payload] == [fico_newer.id, aos.id, fico_older.id]
+    assert resp.headers["x-total-count"] == "3"
+    assert resp.headers["x-page-offset"] == "0"
+    assert resp.headers["x-page-limit"] == "500"
 
 
 def test_documents_list_marks_latest_report_as_active_per_company(
@@ -2675,6 +2678,71 @@ def test_documents_list_supports_bounded_pagination_with_total_headers(
     assert response.headers["x-total-count"] == "3"
     assert response.headers["x-page-offset"] == "1"
     assert response.headers["x-page-limit"] == "1"
+
+
+def test_documents_pages_concatenate_in_stable_upload_order_with_id_tiebreak(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("documents-stable-pages@example.com")
+    older = PdfDocument(
+        user_id=user.id,
+        file_name="older.pdf",
+        source="value_line",
+        file_storage_key="tests/older.pdf",
+        parse_status="parsed",
+        upload_time=datetime(2026, 5, 1, 12, 0),
+    )
+    tied_first = PdfDocument(
+        user_id=user.id,
+        file_name="tied-first.pdf",
+        source="value_line",
+        file_storage_key="tests/tied-first.pdf",
+        parse_status="parsed",
+        upload_time=datetime(2026, 5, 2, 12, 0),
+    )
+    tied_second = PdfDocument(
+        user_id=user.id,
+        file_name="tied-second.pdf",
+        source="value_line",
+        file_storage_key="tests/tied-second.pdf",
+        parse_status="parsed",
+        upload_time=datetime(2026, 5, 2, 12, 0),
+    )
+    newest = PdfDocument(
+        user_id=user.id,
+        file_name="newest.pdf",
+        source="value_line",
+        file_storage_key="tests/newest.pdf",
+        parse_status="parsed",
+        upload_time=datetime(2026, 5, 3, 12, 0),
+    )
+    db_session.add_all([older, tied_first, tied_second, newest])
+    db_session.commit()
+
+    first_page = client.get(
+        "/api/v1/documents?offset=0&limit=2",
+        headers=auth_headers(user),
+    )
+    second_page = client.get(
+        "/api/v1/documents?offset=2&limit=2",
+        headers=auth_headers(user),
+    )
+
+    assert first_page.status_code == 200, first_page.text
+    assert second_page.status_code == 200, second_page.text
+    concatenated = [
+        item["id"] for item in [*first_page.json(), *second_page.json()]
+    ]
+    assert concatenated == [
+        newest.id,
+        tied_second.id,
+        tied_first.id,
+        older.id,
+    ]
+    for response, offset in ((first_page, 0), (second_page, 2)):
+        assert response.headers["x-total-count"] == "4"
+        assert response.headers["x-page-offset"] == str(offset)
+        assert response.headers["x-page-limit"] == "2"
 
 
 def test_documents_list_without_pagination_fails_instead_of_silent_truncation(

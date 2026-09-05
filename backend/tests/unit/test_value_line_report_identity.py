@@ -14,7 +14,11 @@ from app.services.active_report_resolver import (
     ActiveReportAuthorityBoundExceededError,
     resolve_active_reports,
 )
-from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services import actual_conflict_service
+from app.services.actual_conflict_service import (
+    ActualConflictAuthorityBoundExceededError,
+    detect_actual_conflicts,
+)
 from app.services.canonical_financials import database_evaluation_cutoff
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 
@@ -44,11 +48,12 @@ def _actual_fact(
     is_current: bool,
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
+    metric_key: str = "is.net_income",
 ):
     fact = MetricFact(
         user_id=user_id,
         stock_id=stock_id,
-        metric_key="is.net_income",
+        metric_key=metric_key,
         value_json={"fact_nature": "actual"},
         value_numeric=value,
         period_type="FY",
@@ -62,6 +67,161 @@ def _actual_fact(
     db_session.add(fact)
     db_session.flush()
     return fact
+
+
+def test_actual_conflicts_reject_501_observations_without_orm_hydration(
+    db_session,
+):
+    user = User(email="actual-conflict-observation-bound@example.com")
+    stock = Stock(ticker="ACBOUND", exchange="NYSE", company_name="AC Bound")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="actual-conflict-bound.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add_all(
+        [
+            MetricFact(
+                user_id=user.id,
+                stock_id=stock.id,
+                metric_key="custom.repeated_actual",
+                value_json={"fact_nature": "actual"},
+                value_numeric=100,
+                period_type="FY",
+                period_end_date=date(2025, 12, 31),
+                source_type="parsed",
+                source_document_id=document.id,
+                is_current=False,
+            )
+            for _ in range(501)
+        ]
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    stock_id = stock.id
+    user_id = user.id
+    db_session.expunge_all()
+
+    active_report = resolve_active_reports(
+        db_session,
+        stock_ids=[stock_id],
+        current_user_id=user_id,
+        knowledge_cutoff=cutoff,
+    )[stock_id]
+
+    loaded_metric_facts = 0
+
+    def count_metric_fact_load(_session, instance):
+        nonlocal loaded_metric_facts
+        if isinstance(instance, MetricFact):
+            loaded_metric_facts += 1
+
+    event.listen(db_session, "loaded_as_persistent", count_metric_fact_load)
+    try:
+        with pytest.raises(ActualConflictAuthorityBoundExceededError) as raised:
+            detect_actual_conflicts(
+                db_session,
+                stock_id=stock_id,
+                active_report=active_report,
+                current_user_id=user_id,
+                knowledge_cutoff=cutoff,
+            )
+    finally:
+        event.remove(db_session, "loaded_as_persistent", count_metric_fact_load)
+
+    assert raised.value.code == "actual_conflict_authority_bound_exceeded"
+    assert raised.value.dimension == "observations"
+    assert raised.value.limit == 500
+    assert loaded_metric_facts == 0
+
+
+def test_actual_conflict_bound_counts_duplicate_multi_revision_observations_and_is_tenant_scoped(
+    db_session, monkeypatch
+):
+    owner = User(email="actual-conflict-owner@example.com")
+    intruder = User(email="actual-conflict-intruder@example.com")
+    stock = Stock(ticker="ACREV", exchange="NYSE", company_name="AC Revisions")
+    db_session.add_all([owner, intruder, stock])
+    db_session.flush()
+    owner_document = _document(
+        db_session,
+        user_id=owner.id,
+        stock_id=stock.id,
+        name="actual-conflict-revisions.pdf",
+        report_date=date(2026, 1, 9),
+    )
+    _actual_fact(
+        db_session,
+        user_id=owner.id,
+        stock_id=stock.id,
+        document_id=owner_document.id,
+        value=100,
+        is_current=False,
+    )
+    db_session.commit()
+    owner_document.report_date = date(2026, 4, 9)
+    db_session.flush()
+    _actual_fact(
+        db_session,
+        user_id=owner.id,
+        stock_id=stock.id,
+        document_id=owner_document.id,
+        value=100,
+        is_current=False,
+    )
+    intruder_document = _document(
+        db_session,
+        user_id=intruder.id,
+        stock_id=stock.id,
+        name="actual-conflict-intruder.pdf",
+        report_date=date(2026, 7, 9),
+    )
+    _actual_fact(
+        db_session,
+        user_id=intruder.id,
+        stock_id=stock.id,
+        document_id=intruder_document.id,
+        value=999,
+        is_current=False,
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    monkeypatch.setattr(
+        actual_conflict_service,
+        "MAX_ACTUAL_CONFLICT_OBSERVATIONS",
+        2,
+    )
+
+    assert detect_actual_conflicts(
+        db_session,
+        stock_id=stock.id,
+        active_report=None,
+        current_user_id=owner.id,
+        knowledge_cutoff=cutoff,
+    ) == []
+
+    _actual_fact(
+        db_session,
+        user_id=owner.id,
+        stock_id=stock.id,
+        document_id=owner_document.id,
+        value=100,
+        is_current=False,
+    )
+    db_session.commit()
+
+    with pytest.raises(ActualConflictAuthorityBoundExceededError):
+        detect_actual_conflicts(
+            db_session,
+            stock_id=stock.id,
+            active_report=None,
+            current_user_id=owner.id,
+            knowledge_cutoff=database_evaluation_cutoff(db_session),
+        )
 
 
 def test_active_report_binds_fact_to_identity_known_when_fact_was_created(

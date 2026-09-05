@@ -1676,6 +1676,43 @@ def test_lookup_stock_by_ticker_returns_actual_conflicts(
     ]
 
 
+def test_stock_maps_actual_conflict_observation_bound_to_typed_conflict(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.actual_conflict_service import (
+        ActualConflictAuthorityBoundExceededError,
+    )
+
+    user = User(email="ticker-actual-conflict-bound@example.com")
+    stock = Stock(
+        ticker="ACT_BOUND",
+        exchange="NYSE",
+        company_name="Actual Conflict Bound",
+        is_active=True,
+    )
+    db_session.add_all([user, stock])
+    db_session.commit()
+
+    def reject_bound(*_args, **_kwargs):
+        raise ActualConflictAuthorityBoundExceededError(
+            dimension="observations",
+            limit=500,
+        )
+
+    monkeypatch.setattr(stocks_endpoint, "detect_actual_conflicts", reject_bound)
+
+    response = client.get(
+        "/api/v1/stocks/by_ticker/act_bound",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "actual_conflict_authority_bound_exceeded",
+        "message": "Actual conflict authority exceeds the supported bounded scope.",
+    }
+
+
 def test_lookup_stock_by_ticker_excludes_reports_and_conflicts_learned_after_cutoff(
     client, db_session, auth_headers, monkeypatch
 ):

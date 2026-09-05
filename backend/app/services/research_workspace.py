@@ -31,7 +31,10 @@ from app.services.active_report_resolver import (
     ActiveReportAuthorityBoundExceededError,
     resolve_active_reports,
 )
-from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.actual_conflict_service import (
+    ActualConflictAuthorityBoundExceededError,
+    detect_actual_conflicts,
+)
 from app.services.value_line_report_identity import (
     ReportIdentityUnverifiableError,
     resolve_fact_report_identities,
@@ -299,6 +302,7 @@ def build_research_workspace(
     except (
         ReportIdentityUnverifiableError,
         ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityBoundExceededError,
     ) as error:
         raise ResearchCaseError(
             error.code,

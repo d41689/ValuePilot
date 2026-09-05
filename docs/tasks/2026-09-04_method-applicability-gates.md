@@ -638,3 +638,32 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   files are `88 passed`. The wider 11-file identity-migration, documents,
   stocks, Workspace, method-consumer, quant-audit, and reconciliation set is
   `210 passed` in 72.80 seconds. Canonical closing gates remain pending.
+- 2026-09-05: Strict Terra R18 found that actual-conflict detection still
+  hydrated every tenant-visible parsed actual fact even when active-report
+  candidates were bounded. The service now validates exact fact-bound report
+  identity with a one-row sentinel, projects only the eight columns needed for
+  conflict comparison, and reads at most 501 observations. More than 500
+  observations, including duplicate values or facts spanning multiple identity
+  revisions, raises stable typed
+  `actual_conflict_authority_bound_exceeded`; no partial conflict list is
+  returned. The shared-tenant input is bounded by the same limit. Stock overview
+  and Research Workspace translate the error to a generic typed 409 without
+  identifiers or counts. The only production call sites are those two surfaces;
+  the adjacent active-report and Workspace fact materializations already have
+  their own max-plus-one bounds.
+- 2026-09-05: R18 also made `GET /documents` pagination and response order one
+  contract: `upload_time DESC NULLS LAST, id DESC`. The API no longer re-sorts
+  each SQL page by derived ticker/report metadata, so concatenating pages cannot
+  overlap or omit rows. The no-parameter list response remains compatible for
+  accounts at or below 500 documents and continues to publish total, offset and
+  effective-limit headers; global active-report selection remains independent
+  of page membership.
+- 2026-09-05: R18 tests-first stopped at the expected missing typed-error import.
+  The six new focused regressions then passed, the four directly affected files
+  are `93 passed`, and a 12-file identity-migration, documents, stocks,
+  Workspace, method-consumer, quant-audit and reconciliation set is
+  `256 passed` in 88.41 seconds. These tests cover 501 repeated observations
+  with zero `MetricFact` ORM hydration, tenant isolation, duplicate facts across
+  multiple identity revisions, both HTTP error mappings, stable cross-page
+  concatenation, equal-upload-time ID tie-breaking, paging headers, no-argument
+  behavior and global active status. Canonical closing gates remain pending.

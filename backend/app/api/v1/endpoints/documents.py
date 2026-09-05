@@ -180,7 +180,10 @@ def list_documents(
     docs = session.scalars(
         select(PdfDocument)
         .where(PdfDocument.user_id == user_id)
-        .order_by(PdfDocument.upload_time.desc(), PdfDocument.id.desc())
+        .order_by(
+            PdfDocument.upload_time.desc().nulls_last(),
+            PdfDocument.id.desc(),
+        )
         .offset(offset)
         .limit(effective_limit)
     ).all()
@@ -326,14 +329,9 @@ def list_documents(
             }
         )
 
-    return sorted(
-        output,
-        key=lambda item: (
-            _document_sort_ticker(item),
-            item["report_date"] or "",
-            item["id"],
-        ),
-    )
+    # Preserve the exact stable order used by the SQL page. Re-sorting a page by
+    # derived ticker/report metadata would make offset pages overlap or skip rows.
+    return output
 
 @router.post("/upload", response_model=dict)
 def upload_document(
@@ -833,17 +831,6 @@ def _iso_date(value: Any) -> Optional[str]:
         return None
     iso = getattr(value, "isoformat", None)
     return iso() if callable(iso) else str(value)
-
-
-def _document_sort_ticker(document_row: dict[str, Any]) -> str:
-    companies = document_row.get("companies")
-    if isinstance(companies, list) and companies:
-        first_company = companies[0]
-        if isinstance(first_company, dict):
-            ticker = first_company.get("ticker")
-            if ticker:
-                return str(ticker).upper()
-    return "~"
 
 
 def _document_review_selected_facts(

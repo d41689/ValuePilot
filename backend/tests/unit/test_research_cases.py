@@ -469,6 +469,40 @@ def test_workspace_maps_active_report_authority_bound_to_typed_conflict(
     }
 
 
+def test_workspace_maps_actual_conflict_observation_bound_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import research_workspace
+    from app.services.actual_conflict_service import (
+        ActualConflictAuthorityBoundExceededError,
+    )
+
+    user = user_factory("workspace-actual-conflict-bound@example.com")
+    stock = _stock(db_session, "RWSACBOUND")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_bound(*_args, **_kwargs):
+        raise ActualConflictAuthorityBoundExceededError(
+            dimension="observations",
+            limit=500,
+        )
+
+    monkeypatch.setattr(research_workspace, "detect_actual_conflicts", reject_bound)
+
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "actual_conflict_authority_bound_exceeded",
+        "message": "Actual conflict authority exceeds the supported bounded scope.",
+    }
+
+
 def _monitoring_revision(expected_head: int = 0) -> dict:
     return {
         "expected_head_revision_number": expected_head,

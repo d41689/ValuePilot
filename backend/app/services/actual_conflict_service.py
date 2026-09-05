@@ -7,10 +7,30 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from app.models.artifacts import ValueLineDocumentReportIdentityRevision
 from app.models.facts import MetricFact
 from app.services.active_report_resolver import ActiveReportSelection
 from app.services.canonical_financials import database_evaluation_cutoff
-from app.services.value_line_report_identity import resolve_fact_report_identities
+from app.services.value_line_report_identity import ReportIdentityUnverifiableError
+
+
+MAX_ACTUAL_CONFLICT_OBSERVATIONS = 500
+ACTUAL_CONFLICT_AUTHORITY_BOUND_EXCEEDED = (
+    "actual_conflict_authority_bound_exceeded"
+)
+
+
+class ActualConflictAuthorityBoundExceededError(ValueError):
+    """A complete conflict result cannot be produced within its resource bound."""
+
+    code = ACTUAL_CONFLICT_AUTHORITY_BOUND_EXCEEDED
+
+    def __init__(self, *, dimension: str, limit: int):
+        self.dimension = dimension
+        self.limit = limit
+        super().__init__(
+            "Actual conflict authority exceeds the supported bounded scope."
+        )
 
 
 def detect_actual_conflicts(
@@ -26,53 +46,119 @@ def detect_actual_conflicts(
         knowledge_cutoff = database_evaluation_cutoff(session)
     elif knowledge_cutoff.utcoffset() is None:
         raise ValueError("knowledge_cutoff must be timezone-aware")
-    fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
-    stmt = (
-        select(MetricFact)
-        .where(
-            MetricFact.stock_id == stock_id,
-            MetricFact.source_type == "parsed",
-            MetricFact.source_document_id.is_not(None),
-            fact_nature_expr == "actual",
-            MetricFact.created_at <= knowledge_cutoff,
+    shared_ids = sorted(set(shared_parsed_user_ids or []))
+    if len(shared_ids) > MAX_ACTUAL_CONFLICT_OBSERVATIONS:
+        raise ActualConflictAuthorityBoundExceededError(
+            dimension="shared_parsed_user_ids",
+            limit=MAX_ACTUAL_CONFLICT_OBSERVATIONS,
         )
-    )
+    fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
+    scope = [
+        MetricFact.stock_id == stock_id,
+        MetricFact.source_type == "parsed",
+        MetricFact.source_document_id.is_not(None),
+        fact_nature_expr == "actual",
+        MetricFact.created_at <= knowledge_cutoff,
+    ]
     if current_user_id is not None:
-        stmt = stmt.where(
+        scope.append(
             or_(
                 MetricFact.user_id == current_user_id,
                 and_(
                     MetricFact.source_type == "parsed",
-                    MetricFact.user_id.in_(shared_parsed_user_ids or []),
+                    MetricFact.user_id.in_(shared_ids),
                 ),
             )
         )
-    facts = session.scalars(stmt).all()
-    identities = resolve_fact_report_identities(
-        session,
-        facts=facts,
-        knowledge_cutoff=knowledge_cutoff,
+
+    identity = ValueLineDocumentReportIdentityRevision
+    identity_mismatch = or_(
+        MetricFact.value_line_report_identity_revision_id.is_(None),
+        MetricFact.value_line_fact_known_at.is_(None),
+        identity.id.is_(None),
+        identity.known_at > knowledge_cutoff,
+        identity.document_id != MetricFact.source_document_id,
+        identity.user_id != MetricFact.user_id,
+        and_(identity.stock_id.is_not(None), identity.stock_id != MetricFact.stock_id),
+        and_(
+            MetricFact.value_line_created_txid.is_(None),
+            MetricFact.value_line_fact_known_at > knowledge_cutoff,
+        ),
+        and_(
+            MetricFact.value_line_created_txid.is_not(None),
+            or_(
+                MetricFact.created_at.is_(None),
+                MetricFact.value_line_fact_known_at != MetricFact.created_at,
+                MetricFact.created_at > knowledge_cutoff,
+            ),
+        ),
     )
+    unverifiable = session.execute(
+        select(MetricFact.id, MetricFact.source_document_id)
+        .outerjoin(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
+        )
+        .where(*scope, identity_mismatch)
+        .limit(1)
+    ).first()
+    if unverifiable is not None:
+        raise ReportIdentityUnverifiableError(
+            fact_ids=[unverifiable.id],
+            document_ids=[unverifiable.source_document_id],
+        )
+
+    observations = session.execute(
+        select(
+            MetricFact.id,
+            MetricFact.metric_key,
+            MetricFact.period_type,
+            MetricFact.period_end_date,
+            MetricFact.source_document_id,
+            MetricFact.value_numeric,
+            MetricFact.value_text,
+            identity.report_date.label("source_report_date"),
+        )
+        .join(
+            identity,
+            identity.id == MetricFact.value_line_report_identity_revision_id,
+        )
+        .where(*scope)
+        .order_by(MetricFact.id.asc())
+        .limit(MAX_ACTUAL_CONFLICT_OBSERVATIONS + 1)
+    ).all()
+    if len(observations) > MAX_ACTUAL_CONFLICT_OBSERVATIONS:
+        raise ActualConflictAuthorityBoundExceededError(
+            dimension="observations",
+            limit=MAX_ACTUAL_CONFLICT_OBSERVATIONS,
+        )
 
     grouped: dict[tuple[str, str | None, date | None], list[dict[str, Any]]] = defaultdict(list)
-    for fact in facts:
-        identity = identities[fact.id]
-        grouped[(fact.metric_key, fact.period_type, fact.period_end_date)].append(
+    for observation in observations:
+        grouped[
+            (
+                observation.metric_key,
+                observation.period_type,
+                observation.period_end_date,
+            )
+        ].append(
             {
-                "source_document_id": fact.source_document_id,
+                "source_document_id": observation.source_document_id,
                 "source_report_date": (
-                    identity.report_date.isoformat() if identity.report_date else None
-                ),
-                "value_numeric": (
-                    float(fact.value_numeric)
-                    if fact.value_numeric is not None
+                    observation.source_report_date.isoformat()
+                    if observation.source_report_date
                     else None
                 ),
-                "value_text": fact.value_text,
+                "value_numeric": (
+                    float(observation.value_numeric)
+                    if observation.value_numeric is not None
+                    else None
+                ),
+                "value_text": observation.value_text,
                 "is_active_report": bool(
                     active_report is not None
-                    and fact.source_document_id is not None
-                    and active_report.document_id == fact.source_document_id
+                    and observation.source_document_id is not None
+                    and active_report.document_id == observation.source_document_id
                 ),
             }
         )
