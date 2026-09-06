@@ -12,6 +12,9 @@ from app.services.oracles_lens.dashboard import build_oracles_lens_dashboard
 from app.services.oracles_lens.manager_universe import (
     resolve_manager_id_allowlist,
 )
+from app.services.metric_fact_currentness import (
+    HistoricalCurrentnessUnverifiableError,
+)
 
 router = APIRouter()
 
@@ -104,6 +107,11 @@ def read_oracles_lens_dashboard(
             market_cap_focus=market_cap_list,
             superinvestor_only=superinvestor_only,
         )
+    except HistoricalCurrentnessUnverifiableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -137,5 +145,10 @@ def read_oracles_lens_dashboard(
             universe_metadata=universe_metadata,
             user_id=current_user.id if current_user else None,
         )
+    except HistoricalCurrentnessUnverifiableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

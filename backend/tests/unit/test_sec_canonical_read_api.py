@@ -203,7 +203,7 @@ def test_reviewed_method_policy_defaults_system_outputs_to_typed_unsupported(
     from datetime import datetime, timedelta, timezone
     from sqlalchemy import text
 
-    reviewer = user_factory("method-gate-reader@example.com")
+    reviewer = user_factory("method-gate-reader@example.com", role="admin")
     from app.models.stocks import Stock
     from datetime import date
 
@@ -218,7 +218,7 @@ def test_reviewed_method_policy_defaults_system_outputs_to_typed_unsupported(
     )
     assert decision.status == "unsupported"
     assert decision.reason_code == "classification_unreviewed"
-    assert decision.method_policy_version_id == "sec-method-gate-v1"
+    assert decision.method_policy_version_id == "analysis-method-applicability-v2"
 
     review_id = db_session.execute(
         text(
@@ -240,7 +240,7 @@ def test_reviewed_method_policy_defaults_system_outputs_to_typed_unsupported(
         knowledge_at=datetime.now(timezone.utc) + timedelta(seconds=1),
     )
     assert reviewed.status == "unsupported"
-    assert reviewed.reason_code == "method_unsupported"
+    assert reviewed.reason_code == "risk_review_incomplete"
     assert reviewed.economic_class == "ordinary"
     assert reviewed.classification_review_id == review_id
 
@@ -263,7 +263,7 @@ def test_reviewed_method_policy_defaults_system_outputs_to_typed_unsupported(
     user_formula = MetricFact(
         user_id=reviewer.id,
         stock_id=company.id,
-        metric_key="owners_earnings_per_share_custom",
+        metric_key="custom.owners_earnings_per_share",
         value_numeric=1,
         value_json={"user_authored_formula": True},
         source_type="calculated",

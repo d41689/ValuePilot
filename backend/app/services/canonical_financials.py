@@ -6,21 +6,60 @@ typed unavailable publication decision.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from decimal import Decimal, DecimalException
 import re
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+)
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 
 
 CANONICAL_SOURCE_TYPES = frozenset({"sec", "parsed", "manual", "calculated"})
 SYSTEM_METHOD_KEYS = frozenset(
     {"owner_earnings", "roic", "per_share_trend", "system_valuation"}
 )
+PIOTROSKI_PREFIX = "score.piotroski."
+PIOTROSKI_TOTAL_CAPITAL_KEY = "returns.total_capital"
+PIOTROSKI_TOTAL_KEY = "score.piotroski.total"
+MAX_PIOTROSKI_REQUEST_FACTS = 500
+MAX_PIOTROSKI_PERIOD_GROUPS = 50
+MAX_PIOTROSKI_MANIFEST_INPUTS = 32
+MAX_PIOTROSKI_UNIQUE_INPUT_IDS = 1_000
+MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD = 10
+PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE = (
+    "piotroski_current_projection_unverifiable"
+)
+HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE = (
+    "historical_current_projection_unverifiable"
+)
+ANALYSIS_BUSINESS_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def database_evaluation_cutoff(
+    session: Session, supplied: datetime | None = None
+) -> datetime:
+    """Compatibility wrapper; current-truth code should retain the snapshot."""
+
+    return database_evaluation_snapshot(session, supplied).cutoff
+
+
+def evaluation_business_date(evaluated_at: datetime) -> date:
+    """Derive the analysis business date from an aware evaluation instant."""
+
+    if evaluated_at.tzinfo is None:
+        raise ValueError("evaluation instant must be timezone-aware")
+    return evaluated_at.astimezone(ANALYSIS_BUSINESS_TIMEZONE).date()
 
 
 class CanonicalSourceConflictError(ValueError):
@@ -50,14 +89,46 @@ class CanonicalUnavailableError(ValueError):
         super().__init__(f"canonical SEC facts are unavailable: {self.code}")
 
 
+class PiotroskiMethodAuthorityError(ValueError):
+    def __init__(self, state: dict[str, Any]):
+        self.state = state
+        self.code = str(state["reason_code"])
+        super().__init__(f"Piotroski input authority is unavailable: {self.code}")
+
+
+@dataclass(frozen=True)
+class RiskReviewSnapshot:
+    risk_attribute: str
+    review_id: int
+    is_present: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "risk_attribute": self.risk_attribute,
+            "review_id": self.review_id,
+            "is_present": self.is_present,
+        }
+
+
 @dataclass(frozen=True)
 class MethodGateDecision:
     method_key: str
     status: str
     reason_code: str
     method_policy_version_id: str | None
+    policy_sha256: str | None
     economic_class: str
     classification_review_id: int | None
+    method_version_id: str | None
+    required_evidence: tuple[str, ...]
+    required_adjustments: tuple[str, ...]
+    required_outputs: tuple[str, ...]
+    required_risk_reviews: tuple[str, ...]
+    risk_review_ids: tuple[int, ...]
+    risk_reviews: tuple[RiskReviewSnapshot, ...]
+    risk_attributes: tuple[str, ...]
+    missing_risk_reviews: tuple[str, ...]
+    unsupported_reasons: tuple[str, ...]
     effective_as_of: date
     knowledge_at: datetime
 
@@ -67,11 +138,73 @@ class MethodGateDecision:
             "status": self.status,
             "reason_code": self.reason_code,
             "method_policy_version_id": self.method_policy_version_id,
+            "policy_sha256": self.policy_sha256,
             "economic_class": self.economic_class,
             "classification_review_id": self.classification_review_id,
+            "method_version_id": self.method_version_id,
+            "required_evidence": list(self.required_evidence),
+            "required_adjustments": list(self.required_adjustments),
+            "required_outputs": list(self.required_outputs),
+            "required_risk_reviews": list(self.required_risk_reviews),
+            "risk_review_ids": list(self.risk_review_ids),
+            "risk_reviews": [review.as_dict() for review in self.risk_reviews],
+            "risk_attributes": list(self.risk_attributes),
+            "missing_risk_reviews": list(self.missing_risk_reviews),
+            "unsupported_reasons": list(self.unsupported_reasons),
             "effective_as_of": self.effective_as_of.isoformat(),
             "knowledge_at": self.knowledge_at.isoformat(),
         }
+
+
+def _method_decision(
+    *,
+    method_key: str,
+    status: str,
+    reason_code: str,
+    method_policy_version_id: str | None,
+    policy_sha256: str | None,
+    economic_class: str,
+    classification_review_id: int | None,
+    effective_as_of: date,
+    knowledge_at: datetime,
+    method_version_id: str | None = None,
+    required_evidence: tuple[str, ...] = (),
+    required_adjustments: tuple[str, ...] = (),
+    required_outputs: tuple[str, ...] = (),
+    required_risk_reviews: tuple[str, ...] = (),
+    risk_review_ids: tuple[int, ...] = (),
+    risk_reviews: tuple[RiskReviewSnapshot, ...] = (),
+    risk_attributes: tuple[str, ...] = (),
+    missing_risk_reviews: tuple[str, ...] = (),
+    unsupported_reasons: tuple[str, ...] = (),
+) -> MethodGateDecision:
+    return MethodGateDecision(
+        method_key=method_key,
+        status=status,
+        reason_code=reason_code,
+        method_policy_version_id=method_policy_version_id,
+        policy_sha256=policy_sha256,
+        economic_class=economic_class,
+        classification_review_id=classification_review_id,
+        method_version_id=method_version_id,
+        required_evidence=required_evidence,
+        required_adjustments=required_adjustments,
+        required_outputs=required_outputs,
+        required_risk_reviews=required_risk_reviews,
+        risk_review_ids=risk_review_ids,
+        risk_reviews=risk_reviews,
+        risk_attributes=risk_attributes,
+        missing_risk_reviews=missing_risk_reviews,
+        unsupported_reasons=unsupported_reasons,
+        effective_as_of=effective_as_of,
+        knowledge_at=knowledge_at,
+    )
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return ()
+    return tuple(value)
 
 
 def visible_metric_fact_predicate(fact_entity: Any, *, user_id: int):
@@ -131,19 +264,24 @@ def reviewed_method_gate(
 
     if method_key not in SYSTEM_METHOD_KEYS:
         raise ValueError("unsupported method_key")
-    cutoff = knowledge_at or datetime.now(timezone.utc)
-    if cutoff.tzinfo is None:
-        raise ValueError("knowledge_at must be timezone-aware")
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
+    cutoff = evaluation_snapshot.cutoff
+    visibility_snapshot = evaluation_snapshot.visibility_snapshot
     policy = session.execute(
         text(
             """
-            SELECT id
+            SELECT id, policy_sha256
             FROM sec_method_policy_versions
             WHERE status='approved' AND effective_from<=:cutoff AND known_at<=:cutoff
+              AND (created_txid=txid_current() OR txid_visible_in_snapshot(
+                    created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
               AND NOT EXISTS (
                 SELECT 1 FROM sec_method_policy_versions later
                 WHERE later.status='approved' AND later.effective_from<=:cutoff
                   AND later.known_at<=:cutoff
+                  AND (later.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
                   AND (later.effective_from, later.known_at, later.id)>
                       (sec_method_policy_versions.effective_from,
                        sec_method_policy_versions.known_at,
@@ -152,36 +290,94 @@ def reviewed_method_gate(
             LIMIT 1
             """
         ),
-        {"cutoff": cutoff},
+        {"cutoff": cutoff, "visibility_snapshot": visibility_snapshot},
     ).mappings().first()
     if policy is None:
-        return MethodGateDecision(
-            method_key, "unsupported", "method_policy_unavailable", None,
-            "unclassified", None, effective_as_of, cutoff,
+        return _method_decision(
+            method_key=method_key,
+            status="unsupported",
+            reason_code="method_policy_unavailable",
+            method_policy_version_id=None,
+            policy_sha256=None,
+            economic_class="unclassified",
+            classification_review_id=None,
+            effective_as_of=effective_as_of,
+            knowledge_at=cutoff,
+            unsupported_reasons=("method_policy_unavailable",),
         )
-    classification = session.execute(
+    classifications = session.execute(
         text(
             """
+            WITH RECURSIVE review_descendants AS (
+                SELECT root.id AS ancestor_id, root.id AS descendant_id,
+                       root.effective_from AS descendant_effective_from,
+                       root.effective_to AS descendant_effective_to
+                FROM sec_economic_classification_reviews root
+                WHERE root.stock_id=:stock_id
+                  AND root.effective_from<=:as_of
+                  AND (root.effective_to IS NULL OR root.effective_to>=:as_of)
+                  AND root.known_at<=:cutoff
+                  AND (root.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        root.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
+                UNION ALL
+                SELECT path.ancestor_id, later.id, later.effective_from,
+                       later.effective_to
+                FROM review_descendants path
+                JOIN sec_economic_classification_reviews later
+                  ON later.supersedes_review_id=path.descendant_id
+                WHERE later.stock_id=:stock_id AND later.known_at<=:cutoff
+                  AND (later.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
+            )
             SELECT r.id, r.economic_class
             FROM sec_economic_classification_reviews r
             WHERE r.stock_id=:stock_id AND r.effective_from<=:as_of
               AND (r.effective_to IS NULL OR r.effective_to>=:as_of)
               AND r.known_at<=:cutoff
+              AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
               AND NOT EXISTS (
-                SELECT 1 FROM sec_economic_classification_reviews later
-                WHERE later.supersedes_review_id=r.id AND later.known_at<=:cutoff
+                SELECT 1 FROM review_descendants later
+                WHERE later.ancestor_id=r.id AND later.descendant_id<>r.id
+                  AND later.descendant_effective_from<=:as_of
+                  AND (later.descendant_effective_to IS NULL
+                       OR later.descendant_effective_to>=:as_of)
               )
             ORDER BY r.known_at DESC, r.id DESC
-            LIMIT 1
+            LIMIT 2
             """
         ),
-        {"stock_id": stock_id, "as_of": effective_as_of, "cutoff": cutoff},
-    ).mappings().first()
-    economic_class = classification.economic_class if classification else "unclassified"
+        {
+            "stock_id": stock_id,
+            "as_of": effective_as_of,
+            "cutoff": cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
+    ).mappings().all()
+    if len(classifications) != 1:
+        reason = "classification_unreviewed" if not classifications else "classification_conflict"
+        return _method_decision(
+            method_key=method_key,
+            status="unsupported",
+            reason_code=reason,
+            method_policy_version_id=policy.id,
+            policy_sha256=policy.policy_sha256,
+            economic_class="unclassified",
+            classification_review_id=None,
+            effective_as_of=effective_as_of,
+            knowledge_at=cutoff,
+            unsupported_reasons=(reason,),
+        )
+    classification = classifications[0]
+    economic_class = classification.economic_class
     rule = session.execute(
         text(
             """
-            SELECT applicability
+            SELECT applicability, method_version_id, required_evidence_json,
+                   required_outputs_json, required_risk_reviews_json,
+                   required_adjustments_json, unsupported_reason_code
             FROM sec_method_policy_rules
             WHERE method_policy_version_id=:policy_id
               AND method_key=:method_key AND economic_class=:economic_class
@@ -193,25 +389,179 @@ def reviewed_method_gate(
             "economic_class": economic_class,
         },
     ).mappings().first()
-    approved = bool(rule and rule.applicability == "approved" and classification)
-    reason = (
-        "approved"
-        if approved
-        else "classification_unreviewed"
-        if classification is None
-        else "method_not_approved"
-        if rule is None
-        else "method_unsupported"
+    if rule is None:
+        return _method_decision(
+            method_key=method_key,
+            status="unsupported",
+            reason_code="method_rule_unavailable",
+            method_policy_version_id=policy.id,
+            policy_sha256=policy.policy_sha256,
+            economic_class=economic_class,
+            classification_review_id=classification.id,
+            effective_as_of=effective_as_of,
+            knowledge_at=cutoff,
+            unsupported_reasons=("method_rule_unavailable",),
+        )
+    required_evidence = _string_tuple(rule.required_evidence_json)
+    required_outputs = _string_tuple(rule.required_outputs_json)
+    required_risk_reviews = _string_tuple(rule.required_risk_reviews_json)
+    required_adjustments = _string_tuple(rule.required_adjustments_json)
+    decision_fields: dict[str, Any] = {
+        "method_key": method_key,
+        "method_policy_version_id": policy.id,
+        "policy_sha256": policy.policy_sha256,
+        "economic_class": economic_class,
+        "classification_review_id": classification.id,
+        "effective_as_of": effective_as_of,
+        "knowledge_at": cutoff,
+        "required_evidence": required_evidence,
+        "required_adjustments": required_adjustments,
+        "required_outputs": required_outputs,
+        "required_risk_reviews": required_risk_reviews,
+    }
+    risk_rows = session.execute(
+        text(
+            """
+            WITH RECURSIVE review_descendants AS (
+                SELECT root.id AS ancestor_id, root.id AS descendant_id,
+                       root.effective_from AS descendant_effective_from,
+                       root.effective_to AS descendant_effective_to
+                FROM sec_economic_risk_attribute_reviews root
+                WHERE root.stock_id=:stock_id
+                  AND root.effective_from<=:as_of
+                  AND (root.effective_to IS NULL OR root.effective_to>=:as_of)
+                  AND root.known_at<=:cutoff
+                  AND (root.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        root.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
+                UNION ALL
+                SELECT path.ancestor_id, later.id, later.effective_from,
+                       later.effective_to
+                FROM review_descendants path
+                JOIN sec_economic_risk_attribute_reviews later
+                  ON later.supersedes_review_id=path.descendant_id
+                WHERE later.stock_id=:stock_id AND later.known_at<=:cutoff
+                  AND (later.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later.created_txid,
+                        CAST(:visibility_snapshot AS txid_snapshot)))
+            )
+            SELECT r.id, r.risk_attribute, r.is_present
+            FROM sec_economic_risk_attribute_reviews r
+            WHERE r.stock_id=:stock_id AND r.effective_from<=:as_of
+              AND (r.effective_to IS NULL OR r.effective_to>=:as_of)
+              AND r.known_at<=:cutoff
+              AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND NOT EXISTS (
+                SELECT 1 FROM review_descendants later
+                WHERE later.ancestor_id=r.id AND later.descendant_id<>r.id
+                  AND later.descendant_effective_from<=:as_of
+                  AND (later.descendant_effective_to IS NULL
+                       OR later.descendant_effective_to>=:as_of)
+              )
+            ORDER BY r.risk_attribute, r.known_at DESC, r.id DESC
+            """
+        ),
+        {
+            "stock_id": stock_id,
+            "as_of": effective_as_of,
+            "cutoff": cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
+    ).mappings().all()
+    by_risk: dict[str, list[Any]] = {attribute: [] for attribute in required_risk_reviews}
+    for row in risk_rows:
+        if row.risk_attribute in by_risk:
+            by_risk[row.risk_attribute].append(row)
+    risk_reviews = tuple(
+        RiskReviewSnapshot(
+            risk_attribute=attribute,
+            review_id=int(row.id),
+            is_present=row.is_present is True,
+        )
+        for attribute in required_risk_reviews
+        for row in by_risk[attribute]
     )
-    return MethodGateDecision(
-        method_key=method_key,
-        status="approved" if approved else "unsupported",
-        reason_code=reason,
-        method_policy_version_id=policy.id,
-        economic_class=economic_class,
-        classification_review_id=classification.id if classification else None,
-        effective_as_of=effective_as_of,
-        knowledge_at=cutoff,
+    risk_review_ids = tuple(review.review_id for review in risk_reviews)
+    conflicts = tuple(
+        attribute for attribute in required_risk_reviews if len(by_risk[attribute]) > 1
+    )
+    if conflicts:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="risk_review_conflict",
+            method_version_id=rule.method_version_id,
+            risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
+            unsupported_reasons=tuple(f"risk_review_conflict:{item}" for item in conflicts),
+        )
+    missing = tuple(
+        attribute for attribute in required_risk_reviews if not by_risk[attribute]
+    )
+    present = tuple(
+        attribute
+        for attribute in required_risk_reviews
+        if by_risk[attribute] and by_risk[attribute][0].is_present is True
+    )
+    if rule.applicability != "approved":
+        reason = rule.unsupported_reason_code or "method_unsupported"
+        detail_reasons = [reason]
+        detail_reasons.extend(f"risk_review_conflict:{item}" for item in conflicts)
+        detail_reasons.extend(f"risk_review_missing:{item}" for item in missing)
+        detail_reasons.extend(f"reviewed_risk_attribute:{item}" for item in present)
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code=reason,
+            risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
+            risk_attributes=present,
+            missing_risk_reviews=missing,
+            unsupported_reasons=tuple(detail_reasons),
+        )
+    if not isinstance(rule.method_version_id, str) or not rule.method_version_id:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="method_policy_invalid",
+            risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
+            risk_attributes=present,
+            missing_risk_reviews=missing,
+            unsupported_reasons=("method_version_missing",),
+        )
+    if missing:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="risk_review_incomplete",
+            method_version_id=rule.method_version_id,
+            risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
+            missing_risk_reviews=missing,
+            unsupported_reasons=tuple(f"risk_review_missing:{item}" for item in missing),
+        )
+    if present:
+        return _method_decision(
+            **decision_fields,
+            status="unsupported",
+            reason_code="reviewed_risk_attribute_unsupported",
+            method_version_id=rule.method_version_id,
+            risk_review_ids=risk_review_ids,
+            risk_reviews=risk_reviews,
+            risk_attributes=present,
+            unsupported_reasons=tuple(
+                f"reviewed_risk_attribute:{item}" for item in present
+            ),
+        )
+    return _method_decision(
+        **decision_fields,
+        status="approved",
+        reason_code="approved",
+        method_version_id=rule.method_version_id,
+        risk_review_ids=risk_review_ids,
+        risk_reviews=risk_reviews,
     )
 
 
@@ -222,20 +572,973 @@ def require_reviewed_method(*args: Any, **kwargs: Any) -> MethodGateDecision:
     return decision
 
 
-def _system_method_for_fact(fact: MetricFact) -> str | None:
-    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
-    if metadata.get("user_authored_formula") is True:
-        return None
-    key = fact.metric_key
+def system_method_for_metric_key(key: str) -> str | None:
     if key.startswith("owners_earnings_per_share"):
         return "owner_earnings"
-    if key in {"returns.roic", "roic"} or key.startswith("returns.roic."):
+    if key in {
+        "returns.roic",
+        "roic",
+        "returns.total_capital",
+        "bs.return_on_total_capital",
+    } or key.startswith("returns.roic."):
         return "roic"
-    if key.startswith("per_share_trend.") or key.startswith("trend.per_share."):
+    if (
+        key.startswith("per_share_trend.")
+        or key.startswith("trend.per_share.")
+        or (key.startswith("rates.") and ".cagr_" in key)
+    ):
         return "per_share_trend"
-    if key.startswith("system_valuation."):
+    if key == "system_valuation" or key.startswith("system_valuation."):
         return "system_valuation"
     return None
+
+
+def system_method_for_fact(fact: MetricFact) -> str | None:
+    return system_method_for_metric_key(fact.metric_key)
+
+
+def is_reserved_system_output_key(key: str) -> bool:
+    """Return whether users may not publish a formula under this system key."""
+
+    return system_method_for_metric_key(key) is not None or key.startswith(
+        PIOTROSKI_PREFIX
+    )
+
+
+def _owner_earnings_origin_error(
+    session: Session, *, stock_id: int, fact: MetricFact
+) -> str | None:
+    if fact.source_type != "calculated":
+        return None
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    snapshot = metadata.get("analysis_method")
+    if snapshot is None:
+        return "method_authority_snapshot_missing"
+    if not isinstance(snapshot, dict):
+        return "method_authority_snapshot_invalid"
+    try:
+        effective_raw = snapshot.get("effective_as_of")
+        knowledge_raw = snapshot.get("knowledge_at")
+        if not isinstance(effective_raw, str) or not isinstance(knowledge_raw, str):
+            return "method_authority_snapshot_invalid"
+        origin_effective_as_of = date.fromisoformat(effective_raw)
+        origin_knowledge_at = datetime.fromisoformat(knowledge_raw.replace("Z", "+00:00"))
+        if origin_knowledge_at.tzinfo is None:
+            return "method_authority_snapshot_invalid"
+        fact_created_at = fact.created_at
+        if fact_created_at is None or fact_created_at.tzinfo is None:
+            return "method_authority_snapshot_invalid"
+        if origin_knowledge_at > fact_created_at:
+            return "method_authority_snapshot_invalid"
+        replay = reviewed_method_gate(
+            session,
+            stock_id=stock_id,
+            method_key="owner_earnings",
+            effective_as_of=origin_effective_as_of,
+            knowledge_at=origin_knowledge_at,
+        )
+    except (TypeError, ValueError):
+        return "method_authority_snapshot_invalid"
+    if replay.status != "approved" or replay.as_dict() != snapshot:
+        return "method_authority_snapshot_invalid"
+    return None
+
+
+def _piotroski_blocked_state(
+    fact: MetricFact,
+    *,
+    reason_code: str,
+    decision: MethodGateDecision | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": None,
+        "status": "unsupported",
+        "reason_code": reason_code,
+        "method_key": "roic",
+        "metric_key": fact.metric_key,
+        "value_numeric": None,
+        "unit": None,
+        "period": fact.period_type,
+        "period_end_date": fact.period_end_date,
+        "source_type": fact.source_type,
+        "method_gate": decision.as_dict() if decision is not None else None,
+        "evidence_route": None,
+    }
+
+
+PIOTROSKI_STRICT_LINEAGE_FIELDS = frozenset(
+    {
+        "fact_id",
+        "user_id",
+        "stock_id",
+        "metric_key",
+        "period_type",
+        "period_end_date",
+        "value_numeric",
+        "source_type",
+        "fact_nature",
+        "created_at",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _PiotroskiRebuildDecision:
+    status: str
+    reason_code: str
+    economic_class: str | None
+    snapshot: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.snapshot
+
+
+def _finite_decimal(value: Any) -> Decimal | None:
+    try:
+        candidate = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (DecimalException, TypeError, ValueError):
+        return None
+    return candidate if candidate.is_finite() else None
+
+
+def _piotroski_lineage_item(fact: MetricFact) -> dict[str, Any]:
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    numeric = (
+        _finite_decimal(fact.value_numeric)
+        if fact.value_numeric is not None
+        else None
+    )
+    return {
+        "fact_id": fact.id,
+        "user_id": fact.user_id,
+        "stock_id": fact.stock_id,
+        "metric_key": fact.metric_key,
+        "period_type": fact.period_type,
+        "period_end_date": (
+            fact.period_end_date.isoformat()
+            if isinstance(fact.period_end_date, date)
+            else None
+        ),
+        "value_numeric": (
+            format(numeric, "f") if numeric is not None else None
+        ),
+        "source_type": fact.source_type,
+        "fact_nature": metadata.get("fact_nature"),
+        "created_at": (
+            fact.created_at.isoformat()
+            if isinstance(fact.created_at, datetime)
+            else None
+        ),
+    }
+
+
+def _piotroski_origin_decision(
+    session: Session,
+    *,
+    fact: MetricFact,
+    snapshot: Any,
+    expected_status: str,
+    cache: dict[tuple[int, date, datetime], MethodGateDecision],
+) -> MethodGateDecision | None:
+    try:
+        if not isinstance(snapshot, dict):
+            return None
+        effective_raw = snapshot.get("effective_as_of")
+        knowledge_raw = snapshot.get("knowledge_at")
+        if not isinstance(effective_raw, str) or not isinstance(knowledge_raw, str):
+            return None
+        origin_effective = date.fromisoformat(effective_raw)
+        origin_knowledge = datetime.fromisoformat(
+            knowledge_raw.replace("Z", "+00:00")
+        )
+        if (
+            origin_knowledge.tzinfo is None
+            or fact.created_at is None
+            or fact.created_at.tzinfo is None
+            or origin_knowledge > fact.created_at
+            or origin_effective != fact.period_end_date
+        ):
+            return None
+        key = (fact.stock_id, origin_effective, origin_knowledge)
+        decision = cache.get(key)
+        if decision is None:
+            decision = reviewed_method_gate(
+                session,
+                stock_id=fact.stock_id,
+                method_key="roic",
+                effective_as_of=origin_effective,
+                knowledge_at=origin_knowledge,
+            )
+            cache[key] = decision
+    except (TypeError, ValueError):
+        return None
+    if decision.status != expected_status or decision.as_dict() != snapshot:
+        return None
+    return decision
+
+
+def _piotroski_rebuild_matches(
+    fact: MetricFact,
+    *,
+    inputs: list[MetricFact],
+    decision: MethodGateDecision | _PiotroskiRebuildDecision,
+) -> bool:
+    from app.services.calculated_metrics.piotroski_f_score import (
+        build_piotroski_f_score_facts,
+    )
+
+    decisions = {
+        item.period_end_date: decision
+        for item in inputs
+        if item.period_type == "FY" and item.period_end_date is not None
+    }
+    if any(
+        item.value_numeric is not None
+        and _finite_decimal(item.value_numeric) is None
+        for item in inputs
+    ) or (
+        fact.value_numeric is not None
+        and _finite_decimal(fact.value_numeric) is None
+    ):
+        return False
+    try:
+        rebuilt = build_piotroski_f_score_facts(
+            inputs,
+            roic_decisions_by_period=decisions,
+        )
+    except (CanonicalSourceConflictError, DecimalException, TypeError, ValueError):
+        return False
+    expected = next(
+        (
+            item
+            for item in rebuilt
+            if item["metric_key"] == fact.metric_key
+            and item["period_type"] == fact.period_type
+            and item["period_end_date"] == fact.period_end_date
+        ),
+        None,
+    )
+    if expected is None:
+        return False
+    expected_numeric = expected.get("value_numeric")
+    expected_decimal = (
+        _finite_decimal(expected_numeric) if expected_numeric is not None else None
+    )
+    fact_decimal = (
+        _finite_decimal(fact.value_numeric)
+        if fact.value_numeric is not None
+        else None
+    )
+    numeric_matches = (
+        expected_numeric is None and fact.value_numeric is None
+    ) or (
+        expected_numeric is not None
+        and fact.value_numeric is not None
+        and expected_decimal is not None
+        and fact_decimal is not None
+        and expected_decimal == fact_decimal
+    )
+    return bool(
+        numeric_matches
+        and expected.get("value_text") == fact.value_text
+        and expected.get("unit") == fact.unit
+        and expected.get("value_json") == fact.value_json
+    )
+
+
+def _piotroski_period_key(
+    fact: MetricFact,
+) -> tuple[int | None, int, str | None, date | None]:
+    return (
+        fact.user_id,
+        fact.stock_id,
+        fact.period_type,
+        fact.period_end_date,
+    )
+
+
+def _piotroski_projection_snapshot(fact: MetricFact) -> tuple[Any, ...]:
+    return (
+        fact.id,
+        fact.user_id,
+        fact.stock_id,
+        fact.metric_key,
+        deepcopy(fact.value_json),
+        str(fact.value_numeric) if fact.value_numeric is not None else None,
+        fact.value_text,
+        fact.unit,
+        fact.currency,
+        fact.period,
+        fact.period_type,
+        fact.period_end_date,
+        fact.as_of_date,
+        fact.source_document_id,
+        fact.source_type,
+        fact.source_ref_id,
+        fact.value_line_parse_run_id,
+        fact.value_line_legacy_revision,
+        fact.created_at,
+    )
+
+
+def _piotroski_temporal_reason(
+    fact: MetricFact,
+    *,
+    cutoff: datetime,
+) -> str | None:
+    if (
+        fact.created_at is None
+        or fact.created_at.tzinfo is None
+    ):
+        return "piotroski_method_authority_manifest_invalid"
+    if fact.created_at > cutoff:
+        return HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+    return None
+
+
+def _parse_piotroski_manifest(
+    fact: MetricFact,
+) -> tuple[dict[int, dict[str, Any]] | None, str | None]:
+    if fact.source_type != "calculated":
+        return None, "piotroski_method_authority_source_invalid"
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    if (
+        metadata.get("calculation_version") != "piotroski_value_line_v2"
+        or metadata.get("manifest_version") != "piotroski-strict-manifest-v1"
+    ):
+        return None, "piotroski_method_authority_manifest_missing"
+    raw_inputs = metadata.get("inputs")
+    if not isinstance(raw_inputs, list) or not raw_inputs:
+        return None, "piotroski_method_authority_manifest_invalid"
+    if len(raw_inputs) > MAX_PIOTROSKI_MANIFEST_INPUTS:
+        return None, "piotroski_method_authority_bound_exceeded"
+    by_id: dict[int, dict[str, Any]] = {}
+    for item in raw_inputs:
+        fact_id = item.get("fact_id") if isinstance(item, dict) else None
+        if (
+            not isinstance(item, dict)
+            or set(item) != PIOTROSKI_STRICT_LINEAGE_FIELDS
+            or not isinstance(fact_id, int)
+            or isinstance(fact_id, bool)
+            or fact_id <= 0
+            or fact_id in by_id
+        ):
+            return None, "piotroski_method_authority_manifest_invalid"
+        by_id[fact_id] = item
+    return by_id, None
+
+
+def _piotroski_declared_sibling_keys(fact: MetricFact) -> set[str] | None:
+    metadata = fact.value_json if isinstance(fact.value_json, dict) else {}
+    if metadata.get("status") == "unavailable":
+        return {PIOTROSKI_TOTAL_KEY}
+    components = metadata.get("components")
+    if not isinstance(components, list):
+        return None
+    keys = [
+        item.get("metric_key") if isinstance(item, dict) else None
+        for item in components
+    ]
+    if (
+        any(
+            not isinstance(key, str)
+            or not key.startswith(PIOTROSKI_PREFIX)
+            or key == PIOTROSKI_TOTAL_KEY
+            for key in keys
+        )
+        or len(keys) != len(set(keys))
+    ):
+        return None
+    return {PIOTROSKI_TOTAL_KEY, *keys}
+
+
+def guard_piotroski_method_authority(
+    session: Session,
+    *,
+    facts: Iterable[MetricFact],
+    effective_as_of: date,
+    knowledge_at: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
+) -> tuple[list[MetricFact], list[dict[str, Any]]]:
+    """Rebuild strict Piotroski manifests and quarantine unverifiable periods."""
+
+    if evaluation_snapshot is not None:
+        if (
+            knowledge_at is not None
+            and evaluation_snapshot.cutoff != knowledge_at
+        ):
+            raise ValueError("knowledge cutoff conflicts with evaluation snapshot")
+    else:
+        evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
+    cutoff = evaluation_snapshot.cutoff
+    materialized = list(facts)
+    piotroski = [
+        fact for fact in materialized if fact.metric_key.startswith(PIOTROSKI_PREFIX)
+    ]
+    non_piotroski = [
+        fact for fact in materialized if not fact.metric_key.startswith(PIOTROSKI_PREFIX)
+    ]
+    if not piotroski:
+        return materialized, []
+
+    def block_all(reason_code: str) -> tuple[list[MetricFact], list[dict[str, Any]]]:
+        return non_piotroski, [
+            _piotroski_blocked_state(fact, reason_code=reason_code)
+            for fact in piotroski
+        ]
+
+    if len(piotroski) > MAX_PIOTROSKI_REQUEST_FACTS:
+        return block_all("piotroski_method_authority_bound_exceeded")
+
+    requested_by_period: dict[
+        tuple[int | None, int, str | None, date | None], list[MetricFact]
+    ] = {}
+    caller_periods = [_piotroski_period_key(fact) for fact in piotroski]
+    for ordinal, fact in enumerate(piotroski):
+        requested_by_period.setdefault(caller_periods[ordinal], []).append(fact)
+    if len(requested_by_period) > MAX_PIOTROSKI_PERIOD_GROUPS:
+        return block_all("piotroski_method_authority_bound_exceeded")
+
+    # Parse request manifests and enforce every request-side resource bound before
+    # issuing either the sibling expansion or referenced-input query.
+    request_errors: dict[int, str] = {}
+    request_input_ids: set[int] = set()
+    bounded_periods: set[tuple[int | None, int, str | None, date | None]] = set()
+    for ordinal, fact in enumerate(piotroski):
+        lineage, error = _parse_piotroski_manifest(fact)
+        if error is not None:
+            request_errors[ordinal] = error
+            if error == "piotroski_method_authority_bound_exceeded":
+                bounded_periods.add(caller_periods[ordinal])
+            continue
+        assert lineage is not None
+        request_input_ids.update(lineage)
+    if len(request_input_ids) > MAX_PIOTROSKI_UNIQUE_INPUT_IDS:
+        return block_all("piotroski_method_authority_bound_exceeded")
+
+    caller_snapshots = [_piotroski_projection_snapshot(fact) for fact in piotroski]
+    projection_errors: dict[
+        tuple[int | None, int, str | None, date | None], str
+    ] = {}
+
+    def mark_projection_error(
+        period: tuple[int | None, int, str | None, date | None],
+        reason: str,
+    ) -> None:
+        if (
+            projection_errors.get(period)
+            != HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+            or reason == HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+        ):
+            projection_errors[period] = reason
+
+    caller_id_counts: dict[int, int] = {}
+    for ordinal, fact in enumerate(piotroski):
+        if (
+            not isinstance(fact.id, int)
+            or isinstance(fact.id, bool)
+            or fact.id <= 0
+        ):
+            mark_projection_error(
+                caller_periods[ordinal],
+                PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+            )
+            continue
+        caller_id_counts[fact.id] = caller_id_counts.get(fact.id, 0) + 1
+    duplicate_caller_ids = {
+        fact_id for fact_id, count in caller_id_counts.items() if count > 1
+    }
+    for ordinal, fact in enumerate(piotroski):
+        if fact.id in duplicate_caller_ids:
+            mark_projection_error(
+                caller_periods[ordinal],
+                PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+            )
+
+    query_periods = [
+        period
+        for period in requested_by_period
+        if period not in bounded_periods
+        and isinstance(period[0], int)
+        and isinstance(period[1], int)
+        and period[2] == "FY"
+        and isinstance(period[3], date)
+    ]
+    sibling_rows: list[MetricFact] = []
+    if query_periods:
+        period_clauses = [
+            and_(
+                MetricFact.user_id == user_id,
+                MetricFact.stock_id == stock_id,
+                MetricFact.period_type == period_type,
+                MetricFact.period_end_date == period_end,
+            )
+            for user_id, stock_id, period_type, period_end in query_periods
+        ]
+        ranked_siblings = (
+            select(
+                MetricFact.id.label("fact_id"),
+                func.row_number()
+                .over(
+                    partition_by=(
+                        MetricFact.user_id,
+                        MetricFact.stock_id,
+                        MetricFact.period_type,
+                        MetricFact.period_end_date,
+                    ),
+                    order_by=MetricFact.id,
+                )
+                .label("sibling_rank"),
+            )
+            .where(
+                MetricFact.metric_key.like(f"{PIOTROSKI_PREFIX}%"),
+                or_(*period_clauses),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session,
+                        knowledge_cutoff=cutoff,
+                        knowledge_txid_snapshot=(
+                            evaluation_snapshot.visibility_snapshot
+                        ),
+                        scope=CurrentnessScope(
+                            stock_ids=tuple(
+                                sorted({period[1] for period in query_periods})
+                            ),
+                            user_ids=tuple(
+                                sorted({period[0] for period in query_periods})
+                            ),
+                            source_types=("calculated",),
+                        ),
+                    )
+                ),
+            )
+            .subquery()
+        )
+        sibling_rows = list(
+            session.scalars(
+                select(MetricFact)
+                .join(
+                    ranked_siblings,
+                    ranked_siblings.c.fact_id == MetricFact.id,
+                )
+                .where(
+                    ranked_siblings.c.sibling_rank
+                    <= MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1
+                )
+                .limit(
+                    len(query_periods)
+                    * (MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD + 1)
+                )
+                .execution_options(populate_existing=True, autoflush=False)
+            ).all()
+        )
+    siblings_by_period: dict[
+        tuple[int | None, int, str | None, date | None], list[MetricFact]
+    ] = {}
+    for fact in sibling_rows:
+        period = _piotroski_period_key(fact)
+        siblings_by_period.setdefault(period, []).append(fact)
+        temporal_reason = _piotroski_temporal_reason(fact, cutoff=cutoff)
+        if temporal_reason is not None:
+            mark_projection_error(period, temporal_reason)
+    for period, siblings in siblings_by_period.items():
+        if len(siblings) > MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD:
+            # The limit+1 row proves the period exceeds the only valid key set.
+            # The period is malformed, while other tenant/period groups remain usable.
+            request_errors.update(
+                {
+                    ordinal: "piotroski_method_authority_manifest_invalid"
+                    for ordinal, fact in enumerate(piotroski)
+                    if caller_periods[ordinal] == period
+                }
+            )
+
+    canonical_by_id = {fact.id: fact for fact in sibling_rows}
+    canonical_request_rows: dict[int, MetricFact] = {}
+    for ordinal, fact in enumerate(piotroski):
+        period = caller_periods[ordinal]
+        if (
+            period in bounded_periods
+            or ordinal in request_errors
+            or fact.id in duplicate_caller_ids
+        ):
+            continue
+        if (
+            not isinstance(fact.id, int)
+            or isinstance(fact.id, bool)
+            or fact.id <= 0
+        ):
+            continue
+        canonical = canonical_by_id.get(fact.id)
+        if canonical is None:
+            caller_temporal_reason = _piotroski_temporal_reason(
+                fact,
+                cutoff=cutoff,
+            )
+            mark_projection_error(
+                period,
+                (
+                    HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+                    if caller_temporal_reason
+                    == HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE
+                    else PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE
+                ),
+            )
+            continue
+        temporal_reason = _piotroski_temporal_reason(canonical, cutoff=cutoff)
+        if temporal_reason is not None:
+            mark_projection_error(period, temporal_reason)
+            continue
+        if caller_snapshots[ordinal] != _piotroski_projection_snapshot(canonical):
+            mark_projection_error(
+                period,
+                PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+            )
+            continue
+        canonical_request_rows[ordinal] = canonical
+
+    # Only freshly queried, currently canonical rows participate in authority
+    # validation. Detached or stale caller objects are never numeric authority.
+    validation_facts = list(sibling_rows)
+    parsed_lineage: dict[int, dict[int, dict[str, Any]]] = {}
+    preliminary_errors: dict[int, str] = {}
+    all_input_ids: set[int] = set()
+    for ordinal, fact in enumerate(validation_facts):
+        period = _piotroski_period_key(fact)
+        if period in bounded_periods:
+            preliminary_errors[ordinal] = (
+                "piotroski_method_authority_bound_exceeded"
+            )
+            continue
+        lineage, error = _parse_piotroski_manifest(fact)
+        if error is not None:
+            preliminary_errors[ordinal] = error
+            if error == "piotroski_method_authority_bound_exceeded":
+                bounded_periods.add(period)
+            continue
+        assert lineage is not None
+        parsed_lineage[ordinal] = lineage
+        all_input_ids.update(lineage)
+
+    if bounded_periods:
+        all_input_ids = {
+            fact_id
+            for ordinal, lineage in parsed_lineage.items()
+            if _piotroski_period_key(validation_facts[ordinal]) not in bounded_periods
+            for fact_id in lineage
+        }
+    if len(all_input_ids) > MAX_PIOTROSKI_UNIQUE_INPUT_IDS:
+        bounded_periods.update(requested_by_period)
+        all_input_ids.clear()
+        parsed_lineage.clear()
+        preliminary_errors = {
+            ordinal: "piotroski_method_authority_bound_exceeded"
+            for ordinal in range(len(validation_facts))
+        }
+
+    current_input_ids = (
+        current_metric_fact_ids_at(
+            session,
+            knowledge_cutoff=cutoff,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope(fact_ids=tuple(sorted(all_input_ids))),
+        )
+        if all_input_ids
+        else None
+    )
+    referenced = (
+        list(
+            session.scalars(
+                select(MetricFact)
+                .where(
+                    MetricFact.id.in_(all_input_ids),
+                    MetricFact.id.in_(current_input_ids),
+                )
+                .execution_options(populate_existing=True, autoflush=False)
+            ).all()
+        )
+        if all_input_ids
+        else []
+    )
+    referenced_by_id = {fact.id: fact for fact in referenced}
+    origin_cache: dict[tuple[int, date, datetime], MethodGateDecision] = {}
+    current_cache: dict[tuple[int, date, datetime], MethodGateDecision] = {}
+    evaluations: list[tuple[MetricFact, str | None, MethodGateDecision | None]] = []
+    for ordinal, fact in enumerate(validation_facts):
+        if _piotroski_period_key(fact) in bounded_periods:
+            evaluations.append(
+                (fact, "piotroski_method_authority_bound_exceeded", None)
+            )
+            continue
+        error = preliminary_errors.get(ordinal)
+        decision: MethodGateDecision | None = None
+        if error is not None:
+            evaluations.append((fact, error, None))
+            continue
+        temporal_reason = _piotroski_temporal_reason(fact, cutoff=cutoff)
+        if temporal_reason is not None:
+            evaluations.append((fact, temporal_reason, None))
+            continue
+        lineage = parsed_lineage[ordinal]
+        inputs = [referenced_by_id.get(fact_id) for fact_id in lineage]
+        if (
+            fact.user_id is None
+            or fact.period_type != "FY"
+            or fact.period_end_date is None
+            or fact.created_at is None
+            or fact.created_at.tzinfo is None
+            or any(item is None for item in inputs)
+        ):
+            evaluations.append(
+                (fact, "piotroski_method_authority_manifest_invalid", None)
+            )
+            continue
+        typed_inputs = [item for item in inputs if item is not None]
+        input_temporal_reason = next(
+            (
+                reason
+                for item in typed_inputs
+                if (
+                    reason := _piotroski_temporal_reason(item, cutoff=cutoff)
+                )
+                is not None
+            ),
+            None,
+        )
+        if input_temporal_reason is not None:
+            evaluations.append((fact, input_temporal_reason, None))
+            continue
+        if any(
+            item.period_type != "FY"
+            or item.period_end_date is None
+            or item.created_at is None
+            or item.created_at.tzinfo is None
+            or item.created_at > fact.created_at
+            or item.stock_id != fact.stock_id
+            or not (
+                (item.source_type == "sec" and item.user_id is None)
+                or (item.source_type != "sec" and item.user_id == fact.user_id)
+            )
+            or lineage[item.id] != _piotroski_lineage_item(item)
+            for item in typed_inputs
+        ):
+            evaluations.append(
+                (fact, "piotroski_method_authority_manifest_invalid", None)
+            )
+            continue
+
+        metadata = fact.value_json
+        uses_total_capital = any(
+            item.metric_key == PIOTROSKI_TOTAL_CAPITAL_KEY
+            for item in typed_inputs
+        )
+        status = metadata.get("status")
+        rebuild_decision: MethodGateDecision | _PiotroskiRebuildDecision
+        if uses_total_capital and status == "unavailable":
+            method_blocks = metadata.get("method_blocks")
+            snapshots = {
+                str(item.get("method_gate")): item.get("method_gate")
+                for item in method_blocks
+                if isinstance(item, dict)
+            } if isinstance(method_blocks, list) else {}
+            if len(snapshots) != 1:
+                evaluations.append(
+                    (fact, "piotroski_method_authority_manifest_invalid", None)
+                )
+                continue
+            snapshot = next(iter(snapshots.values()))
+            decision = _piotroski_origin_decision(
+                session,
+                fact=fact,
+                snapshot=snapshot,
+                expected_status="unsupported",
+                cache=origin_cache,
+            )
+            if decision is None:
+                evaluations.append(
+                    (fact, "piotroski_method_authority_manifest_invalid", None)
+                )
+                continue
+            rebuild_decision = decision
+        elif uses_total_capital:
+            snapshot = metadata.get("analysis_method")
+            if snapshot is None:
+                evaluations.append(
+                    (fact, "piotroski_method_authority_snapshot_missing", None)
+                )
+                continue
+            decision = _piotroski_origin_decision(
+                session,
+                fact=fact,
+                snapshot=snapshot,
+                expected_status="approved",
+                cache=origin_cache,
+            )
+            if decision is None:
+                evaluations.append(
+                    (fact, "piotroski_method_authority_snapshot_invalid", None)
+                )
+                continue
+            rebuild_decision = decision
+        else:
+            economic_class = metadata.get("economic_class")
+            if economic_class is not None and not isinstance(economic_class, str):
+                evaluations.append(
+                    (fact, "piotroski_method_authority_manifest_invalid", None)
+                )
+                continue
+            rebuild_decision = _PiotroskiRebuildDecision(
+                status="approved",
+                reason_code="approved",
+                economic_class=economic_class,
+                snapshot={},
+            )
+        if not _piotroski_rebuild_matches(
+            fact,
+            inputs=typed_inputs,
+            decision=rebuild_decision,
+        ):
+            evaluations.append(
+                (fact, "piotroski_method_authority_manifest_invalid", decision)
+            )
+            continue
+        if status == "unavailable":
+            reason = metadata.get("reason_code")
+            evaluations.append(
+                (
+                    fact,
+                    reason
+                    if isinstance(reason, str)
+                    else "piotroski_method_authority_manifest_invalid",
+                    decision,
+                )
+            )
+            continue
+        if uses_total_capital:
+            current_key = (fact.stock_id, effective_as_of, cutoff)
+            current = current_cache.get(current_key)
+            if current is None:
+                current = reviewed_method_gate(
+                    session,
+                    stock_id=fact.stock_id,
+                    method_key="roic",
+                    effective_as_of=effective_as_of,
+                    knowledge_at=cutoff,
+                )
+                current_cache[current_key] = current
+            if current.status != "approved":
+                evaluations.append((fact, current.reason_code, current))
+                continue
+        evaluations.append((fact, None, decision))
+
+    evaluation_by_object = {
+        id(fact): (reason, decision)
+        for fact, reason, decision in evaluations
+    }
+    validation_by_period: dict[
+        tuple[int | None, int, str | None, date | None], list[int]
+    ] = {}
+    for index, (fact, _reason, _decision) in enumerate(evaluations):
+        validation_by_period.setdefault(_piotroski_period_key(fact), []).append(index)
+
+    blocked_by_period: dict[
+        tuple[int | None, int, str | None, date | None],
+        tuple[str, MethodGateDecision | None],
+    ] = {}
+    for period in requested_by_period:
+        indexes = validation_by_period.get(period, [])
+        siblings = siblings_by_period.get(period, [])
+        period_error: str | None = None
+        if period in bounded_periods:
+            period_error = "piotroski_method_authority_bound_exceeded"
+        elif period in projection_errors:
+            period_error = projection_errors[period]
+        elif len(siblings) > MAX_PIOTROSKI_CURRENT_SIBLINGS_PER_PERIOD:
+            period_error = "piotroski_method_authority_manifest_invalid"
+        elif not siblings:
+            period_error = "piotroski_method_authority_manifest_invalid"
+        else:
+            sibling_keys = [fact.metric_key for fact in siblings]
+            totals = [
+                fact for fact in siblings if fact.metric_key == PIOTROSKI_TOTAL_KEY
+            ]
+            if len(totals) != 1 or len(sibling_keys) != len(set(sibling_keys)):
+                period_error = "piotroski_method_authority_manifest_invalid"
+            else:
+                declared = _piotroski_declared_sibling_keys(totals[0])
+                total_reason = evaluation_by_object.get(
+                    id(totals[0]), (None, None)
+                )[0]
+                if declared is None and total_reason is None:
+                    period_error = "piotroski_method_authority_manifest_invalid"
+                elif declared is not None and declared != set(sibling_keys):
+                    period_error = "piotroski_method_authority_manifest_invalid"
+
+        if period_error is not None:
+            blocked_by_period[period] = (period_error, None)
+            continue
+
+        root_index = next(
+            (
+                index
+                for index in indexes
+                if evaluations[index][0].metric_key == PIOTROSKI_TOTAL_KEY
+                and evaluations[index][1] is not None
+            ),
+            next(
+                (index for index in indexes if evaluations[index][1] is not None),
+                None,
+            ),
+        )
+        if root_index is None:
+            continue
+        root_reason = evaluations[root_index][1]
+        root_decision = evaluations[root_index][2]
+        assert root_reason is not None
+        blocked_by_period[period] = (root_reason, root_decision)
+
+    kept = list(non_piotroski)
+    blocked: list[dict[str, Any]] = []
+    projection_reason_codes = {
+        PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE,
+        HISTORICAL_CURRENT_PROJECTION_UNVERIFIABLE,
+    }
+    for ordinal, fact in enumerate(piotroski):
+        blocked_entry = blocked_by_period.get(caller_periods[ordinal])
+        if blocked_entry is None:
+            canonical = canonical_request_rows.get(ordinal)
+            if canonical is None:
+                blocked.append(
+                    _piotroski_blocked_state(
+                        fact,
+                        reason_code=(
+                            request_errors.get(ordinal)
+                            or PIOTROSKI_CURRENT_PROJECTION_UNVERIFIABLE
+                        ),
+                    )
+                )
+                continue
+            kept.append(canonical)
+            continue
+        canonical = canonical_request_rows.get(ordinal)
+        own_reason, own_decision = evaluation_by_object.get(
+            id(canonical), (None, None)
+        )
+        request_error = request_errors.get(ordinal)
+        reason, decision = blocked_entry
+        final_reason = (
+            reason
+            if reason in projection_reason_codes
+            else request_error or own_reason or reason
+        )
+        blocked.append(
+            _piotroski_blocked_state(
+                canonical or fact,
+                reason_code=final_reason,
+                decision=own_decision or decision,
+            )
+        )
+    return kept, blocked
 
 
 def apply_reviewed_method_gates(
@@ -245,13 +1548,20 @@ def apply_reviewed_method_gates(
     facts: Iterable[MetricFact],
     effective_as_of: date,
     knowledge_at: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
     precomputed_decisions: dict[str, MethodGateDecision] | None = None,
 ) -> tuple[list[MetricFact], list[dict[str, Any]], dict[str, MethodGateDecision]]:
     """Remove unsupported system outputs while preserving raw and user-authored facts."""
 
-    materialized = list(facts)
+    materialized, piotroski_blocked = guard_piotroski_method_authority(
+        session,
+        facts=list(facts),
+        effective_as_of=effective_as_of,
+        knowledge_at=knowledge_at,
+        evaluation_snapshot=evaluation_snapshot,
+    )
     required_methods = {
-        method for fact in materialized if (method := _system_method_for_fact(fact))
+        method for fact in materialized if (method := system_method_for_fact(fact))
     }
     decisions = {
         method: (
@@ -268,18 +1578,26 @@ def apply_reviewed_method_gates(
         for method in sorted(required_methods)
     }
     kept: list[MetricFact] = []
-    blocked: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = list(piotroski_blocked)
     for fact in materialized:
-        method = _system_method_for_fact(fact)
+        method = system_method_for_fact(fact)
         decision = decisions.get(method) if method else None
-        if decision is None or decision.status == "approved":
+        origin_error = (
+            _owner_earnings_origin_error(session, stock_id=stock_id, fact=fact)
+            if method == "owner_earnings"
+            and decision is not None
+            and decision.status == "approved"
+            else None
+        )
+        if decision is None or (decision.status == "approved" and origin_error is None):
             kept.append(fact)
             continue
+        reason_code = origin_error or decision.reason_code
         blocked.append(
             {
                 "id": None,
                 "status": "unsupported",
-                "reason_code": decision.reason_code,
+                "reason_code": reason_code,
                 "method_key": method,
                 "metric_key": fact.metric_key,
                 "value_numeric": None,
@@ -294,14 +1612,56 @@ def apply_reviewed_method_gates(
     return kept, blocked, decisions
 
 
+def require_applicable_method_facts(
+    session: Session,
+    *,
+    stock_id: int,
+    facts: Iterable[MetricFact],
+    effective_as_of: date,
+    knowledge_at: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
+) -> list[MetricFact]:
+    """Return facts only when every requested system method is authorized."""
+
+    kept, blocked, decisions = apply_reviewed_method_gates(
+        session,
+        stock_id=stock_id,
+        facts=facts,
+        effective_as_of=effective_as_of,
+        knowledge_at=knowledge_at,
+        evaluation_snapshot=evaluation_snapshot,
+    )
+    if not blocked:
+        return kept
+    state = blocked[0]
+    method_key = state.get("method_key")
+    decision = decisions.get(method_key) if isinstance(method_key, str) else None
+    if decision is not None and decision.status != "approved":
+        raise UnsupportedSystemMethodError(decision)
+    if str(state.get("metric_key", "")).startswith(PIOTROSKI_PREFIX):
+        raise PiotroskiMethodAuthorityError(state)
+    raise CanonicalUnavailableError(state)
+
+
 def current_visible_facts(
     session: Session, *, stock_id: int, user_id: int
 ) -> list[MetricFact]:
+    evaluation_snapshot = database_evaluation_snapshot(session)
+    knowledge_cutoff = evaluation_snapshot.cutoff
     return list(
         session.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
-                MetricFact.is_current.is_(True),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session,
+                        knowledge_cutoff=knowledge_cutoff,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(
+                            stock_id, user_ids=(user_id, None)
+                        ),
+                    )
+                ),
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()
@@ -313,13 +1673,28 @@ def active_sec_run_unresolved_states(
     *,
     stock_id: int,
     knowledge_cutoff: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> list[dict[str, Any]]:
     """Return unresolved amendment states bounded by filing-cycle authority."""
 
-    if knowledge_cutoff is not None and knowledge_cutoff.tzinfo is None:
-        raise ValueError("knowledge_cutoff must be timezone-aware")
-    if knowledge_cutoff is not None:
-        knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
+    if evaluation_snapshot is not None:
+        if (
+            knowledge_cutoff is not None
+            and knowledge_cutoff != evaluation_snapshot.cutoff
+        ):
+            raise ValueError("knowledge cutoff conflicts with evaluation snapshot")
+        supplied_cutoff = evaluation_snapshot.cutoff
+    else:
+        supplied_cutoff = knowledge_cutoff
+        evaluation_snapshot = database_evaluation_snapshot(session, supplied_cutoff)
+    # Preserve the established current-mode contract: a publication that has
+    # finalized is current even when its requested source cutoff is slightly
+    # ahead of the wall clock. Historical callers still receive the exact,
+    # strict supplied cutoff. Transaction visibility is bounded in both modes.
+    knowledge_cutoff = (
+        evaluation_snapshot.cutoff if supplied_cutoff is not None else None
+    )
+    visibility_snapshot = evaluation_snapshot.visibility_snapshot
 
     rows = session.execute(
         text(
@@ -354,6 +1729,18 @@ def active_sec_run_unresolved_states(
               AND audit.reason_code='unresolved_amendment_parse_failure'
               AND failed_parse.status='failed' AND failed_filing.is_amendment
               AND mapping.status='approved'
+              AND (mapping.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    mapping.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (availability.finalized_txid=txid_current() OR txid_visible_in_snapshot(
+                    availability.finalized_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (audit.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    audit.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (failed_source.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    failed_source.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+              AND (failed_parse.created_txid=txid_current() OR txid_visible_in_snapshot(
+                    failed_parse.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
               AND (
                 (:knowledge_cutoff IS NULL AND mapping.retired_at IS NULL)
                 OR (
@@ -394,6 +1781,16 @@ def active_sec_run_unresolved_states(
                   AND later_run.requested_cutoff>=r.requested_cutoff
                   AND later_available.available_at>=availability.available_at
                   AND later_mapping.status='approved'
+                  AND (later_mapping.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_mapping.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_run.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_run.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_available.finalized_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_available.finalized_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_source.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_source.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                  AND (later_parse.created_txid=txid_current() OR txid_visible_in_snapshot(
+                        later_parse.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
                   AND (
                     (:knowledge_cutoff IS NULL AND later_mapping.retired_at IS NULL)
                     OR (
@@ -416,7 +1813,11 @@ def active_sec_run_unresolved_states(
             ORDER BY failed_filing.id, availability.available_at DESC, audit.id DESC
             """
         ),
-        {"stock_id": stock_id, "knowledge_cutoff": knowledge_cutoff},
+        {
+            "stock_id": stock_id,
+            "knowledge_cutoff": knowledge_cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
     ).mappings().all()
     return [
         {
@@ -458,10 +1859,19 @@ def active_sec_run_unresolved_state(
 
 
 def guard_sec_run_availability(
-    session: Session, *, stock_id: int, facts: Iterable[Any]
+    session: Session,
+    *,
+    stock_id: int,
+    facts: Iterable[Any],
+    knowledge_cutoff: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> list[Any]:
     materialized, states = partition_sec_run_availability(
-        session, stock_id=stock_id, facts=facts
+        session,
+        stock_id=stock_id,
+        facts=facts,
+        knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
     if states:
         raise CanonicalUnavailableError(states[0])
@@ -539,6 +1949,7 @@ def partition_sec_run_availability(
     stock_id: int,
     facts: Iterable[Any],
     knowledge_cutoff: datetime | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     """Exclude only SEC facts in filing cycles with unresolved amendments."""
 
@@ -546,11 +1957,13 @@ def partition_sec_run_availability(
     sec_facts = [fact for fact in materialized if _fact_source_type(fact) == "sec"]
     if not sec_facts:
         return materialized, []
-    active_states = active_sec_run_unresolved_states(
-        session,
-        stock_id=stock_id,
-        knowledge_cutoff=knowledge_cutoff,
-    )
+    state_arguments: dict[str, Any] = {
+        "stock_id": stock_id,
+        "knowledge_cutoff": knowledge_cutoff,
+    }
+    if evaluation_snapshot is not None:
+        state_arguments["evaluation_snapshot"] = evaluation_snapshot
+    active_states = active_sec_run_unresolved_states(session, **state_arguments)
     if not active_states:
         return materialized, []
     state_by_cycle = {
@@ -820,7 +2233,15 @@ def resolve_sec_publication_evidence(
     }
 
 
-def current_sec_unresolved_states(session: Session, *, stock_id: int) -> list[dict[str, Any]]:
+def current_sec_unresolved_states(
+    session: Session,
+    *,
+    stock_id: int,
+    knowledge_cutoff: datetime | None = None,
+) -> list[dict[str, Any]]:
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_cutoff)
+    cutoff = evaluation_snapshot.cutoff
+    visibility_snapshot = evaluation_snapshot.visibility_snapshot
     rows = session.execute(
         text(
             """
@@ -837,12 +2258,24 @@ def current_sec_unresolved_states(session: Session, *, stock_id: int) -> list[di
               JOIN sec_metric_publication_availabilities a
                 ON a.publication_run_id=r.id
               WHERE p.stock_id=:stock_id AND r.status='succeeded'
+                AND p.known_at <= :knowledge_cutoff
+                AND a.available_at <= :knowledge_cutoff
+                AND (p.created_txid=txid_current() OR txid_visible_in_snapshot(
+                      p.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                AND (r.created_txid=txid_current() OR txid_visible_in_snapshot(
+                      r.created_txid, CAST(:visibility_snapshot AS txid_snapshot)))
+                AND (a.finalized_txid=txid_current() OR txid_visible_in_snapshot(
+                      a.finalized_txid, CAST(:visibility_snapshot AS txid_snapshot)))
             ) ranked
             WHERE ranked.slot_rank=1 AND ranked.status IN ('unresolved','rejected')
             ORDER BY ranked.metric_key, ranked.period_end_date
             """
         ),
-        {"stock_id": stock_id},
+        {
+            "stock_id": stock_id,
+            "knowledge_cutoff": cutoff,
+            "visibility_snapshot": visibility_snapshot,
+        },
     ).mappings().all()
     states = [
         {
@@ -861,5 +2294,9 @@ def current_sec_unresolved_states(session: Session, *, stock_id: int) -> list[di
         }
         for row in rows
     ]
-    states.extend(active_sec_run_unresolved_states(session, stock_id=stock_id))
+    states.extend(
+        active_sec_run_unresolved_states(
+            session, stock_id=stock_id, knowledge_cutoff=cutoff
+        )
+    )
     return states

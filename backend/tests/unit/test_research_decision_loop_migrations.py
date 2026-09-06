@@ -175,13 +175,10 @@ def test_research_decision_loop_migrations_round_trip_with_representative_rows()
                     "stock_id": stock_id,
                 },
             )
-            connection.execute(
-                text(
-                    "INSERT INTO account_erasure_events (user_id, content_hash, summary_json) "
-                    "VALUES (:user_id, :content_hash, '{}'::jsonb)"
-                ),
-                {"user_id": user_id, "content_hash": "a" * 64},
-            )
+            # A completed account erasure is deliberately excluded from this
+            # reversible fixture. Revision 340 makes that barrier permanent;
+            # its authorized write and downgrade-refusal behavior have a
+            # dedicated migration regression.
             connection.execute(
                 text(
                     "INSERT INTO api_rate_limit_events (user_id, operation) "

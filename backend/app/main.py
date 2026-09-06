@@ -5,6 +5,7 @@ from contextlib import suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.api.v1.api import api_router
@@ -12,6 +13,11 @@ from app.rate_guard.routing import (
     reconcile_monitored_rate_guard_route,
     verify_live_rate_guard,
 )
+from app.services.metric_fact_currentness import (
+    CurrentnessScopeError,
+    HistoricalCurrentnessUnverifiableError,
+)
+from app.services.privacy_erasure import PrivacyErasureBarrierError
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +146,47 @@ app = FastAPI(
     ],
 )
 
+
+@app.exception_handler(CurrentnessScopeError)
+async def currentness_scope_error_handler(
+    _request: Request, error: CurrentnessScopeError
+) -> JSONResponse:
+    """Never turn an explicitly bounded fact read into an opaque API 500."""
+
+    return JSONResponse(
+        status_code=409,
+        content={"detail": {"code": error.code, "message": str(error)}},
+    )
+
+
+@app.exception_handler(HistoricalCurrentnessUnverifiableError)
+async def historical_currentness_unverifiable_handler(
+    _request: Request, error: HistoricalCurrentnessUnverifiableError
+) -> JSONResponse:
+    """Every HTTP path exposes the same conservative PIT failure contract."""
+
+    return JSONResponse(
+        status_code=409,
+        content={"detail": {"code": error.code, "message": str(error)}},
+    )
+
+
+@app.exception_handler(PrivacyErasureBarrierError)
+async def privacy_erasure_barrier_error_handler(
+    _request: Request, error: PrivacyErasureBarrierError
+) -> JSONResponse:
+    """A stale authenticated request fails closed after permanent erasure."""
+
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": {
+                "code": "account_permanently_erased",
+                "message": str(error),
+            }
+        },
+    )
+
 origins = [
     "http://localhost:3000",
     "http://localhost:3001",
@@ -153,6 +200,16 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "X-Total-Count",
+        "X-Page-Offset",
+        "X-Page-Limit",
+        "X-Pagination-Mode",
+        "X-Snapshot-Cutoff",
+        "X-Snapshot-Max-Id",
+        "X-Snapshot-Scope",
+        "X-Next-Cursor",
+    ],
 )
 
 

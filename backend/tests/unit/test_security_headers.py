@@ -34,3 +34,25 @@ def test_security_headers_present_on_api_routes(client: TestClient):
     response = client.get("/api/v1/auth/login")
     assert response.status_code == 405
     _assert_security_headers(response)
+
+
+def test_documents_cursor_headers_are_exposed_to_browser_clients(
+    client: TestClient,
+):
+    response = client.get(
+        "/health",
+        headers={"Origin": "http://localhost:3001"},
+    )
+
+    assert response.status_code == 200
+    exposed = {
+        item.strip().lower()
+        for item in response.headers["access-control-expose-headers"].split(",")
+    }
+    assert {
+        "x-next-cursor",
+        "x-pagination-mode",
+        "x-snapshot-cutoff",
+        "x-snapshot-max-id",
+        "x-total-count",
+    }.issubset(exposed)

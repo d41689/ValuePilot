@@ -14,6 +14,7 @@ from app.api.v1.endpoints.stocks_13f import _m3_panel_for_stock
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
 from app.models.users import User
+from tests.piotroski_test_helpers import seed_strict_piotroski_total
 
 
 def _user(db_session, email: str) -> User:
@@ -41,6 +42,17 @@ def _fact(
     period_end: date = date(2024, 12, 31),
     source_type: str = "parsed",
 ) -> MetricFact:
+    if metric_key == "score.piotroski.total":
+        score = value_numeric
+        if score is None:
+            score = (value_json or {}).get("partial_score")
+        return seed_strict_piotroski_total(
+            db_session,
+            user_id=user_id,
+            stock_id=stock_id,
+            score=int(score),
+            period_end=period_end,
+        )
     fact = MetricFact(
         user_id=user_id,
         stock_id=stock_id,

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import func, select, text
 from sqlalchemy.orm.attributes import set_committed_value
 
+from app.api.v1.endpoints import stocks as stocks_endpoint
 from app.models.artifacts import PdfDocument, ValueLineParseRun
 from app.models.facts import Formula, MetricFact
 from app.models.stocks import Stock
 from app.services.formula_engine import FormulaEngine
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.ingestion_service import IngestionService
 from app.services.dcf_inputs import load_canonical_dcf_fact_universe
+from app.services import dcf_inputs
 from app.services.manual_metric_correction import (
     ManualMetricCorrectionError,
     create_manual_metric_correction,
@@ -22,7 +27,15 @@ from app.services.source_reconciliation import (
     guard_reconciled_source_selection,
 )
 from app.services import source_reconciliation
+from app.services.metric_fact_currentness import (
+    HistoricalCurrentnessUnverifiableError,
+)
 from app.services.canonical_financials import CanonicalSourceConflictError
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
 
 
 def _document(*, user_id: int, stock_id: int, suffix: str = "") -> PdfDocument:
@@ -215,6 +228,32 @@ def test_authenticated_reconciliation_is_tenant_safe_and_bounded(
     assert invalid_key.status_code == 422
 
 
+def test_reconciliation_api_maps_historical_currentness_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+) -> None:
+    user = user_factory("r24-reconciliation-currentness@example.com")
+    stock = Stock(ticker="R24HTTP", exchange="NYSE", company_name="R24 HTTP")
+    db_session.add(stock)
+    db_session.commit()
+
+    def unavailable(*_args, **_kwargs):
+        raise HistoricalCurrentnessUnverifiableError()
+
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "build_source_reconciliation_report",
+        unavailable,
+    )
+    response = client.get(
+        f"/api/v1/stocks/{stock.id}/source-reconciliation",
+        headers=auth_headers(user),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "historical_currentness_unverifiable"
+    )
+
+
 def test_deployed_mapping_must_match_database_approved_policy(
     db_session, user_factory, monkeypatch
 ):
@@ -248,14 +287,14 @@ def test_deployed_mapping_must_match_database_approved_policy(
             source_mapping_version=f"value-line-resolved-v2:{unapproved_digest}",
         ),
     )
-    cutoff = datetime.now(timezone.utc)
+    evaluation_snapshot = database_evaluation_snapshot(db_session)
 
     report = build_source_reconciliation_report_from_facts(
         db_session,
         facts=[fact],
         user_id=user.id,
         stock_id=stock.id,
-        knowledge_cutoff=cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
 
     assert report["status"] == "unavailable"
@@ -267,7 +306,7 @@ def test_deployed_mapping_must_match_database_approved_policy(
         guard_reconciled_source_selection(
             [fact],
             consumer="policy-drift-test",
-            knowledge_cutoff=cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             session=db_session,
             user_id=user.id,
         )
@@ -300,12 +339,30 @@ def test_reconciliation_mapping_resolution_observes_warm_process_policy_drift(
 
 
 def test_ingested_owner_earnings_becomes_unavailable_when_input_is_superseded(
-    db_session, user_factory
+    db_session, user_factory, monkeypatch
 ):
-    user = user_factory("owner-earnings-lineage@example.com")
+    user = user_factory("owner-earnings-lineage@example.com", role="admin")
     stock = Stock(ticker="OEL", exchange="NYSE", company_name="Owner Earnings Lineage")
     db_session.add(stock)
     db_session.flush()
+    review_company_classification(
+        db_session,
+        reviewer_user_id=user.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=date(2020, 1, 1),
+        review_reason="Reviewed ordinary operating model for OE lineage test.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=user.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=date(2020, 1, 1),
+            review_reason=f"Reviewed {risk_attribute} for OE lineage test.",
+        )
     document = _document(user_id=user.id, stock_id=stock.id, suffix="-oe")
     db_session.add(document)
     db_session.flush()
@@ -368,6 +425,23 @@ def test_ingested_owner_earnings_becomes_unavailable_when_input_is_superseded(
     )
     db_session.add(replacement)
     db_session.flush()
+
+    original_gate = dcf_inputs.reviewed_method_gate
+
+    def allow_test_system_valuation(session, **kwargs):
+        decision = original_gate(session, **kwargs)
+        if decision.method_key != "system_valuation":
+            return decision
+        return replace(
+            decision,
+            status="approved",
+            reason_code="approved",
+            method_version_id="test-system-valuation-v1",
+        )
+
+    monkeypatch.setattr(
+        dcf_inputs, "reviewed_method_gate", allow_test_system_valuation
+    )
 
     with pytest.raises(CanonicalReconciliationError) as error:
         load_canonical_dcf_fact_universe(
@@ -568,12 +642,6 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     valid = _parsed_fact(
         user_id=user.id, stock_id=stock.id, document_id=valid_doc.id
     )
-    post_cutoff = _parsed_fact(
-        user_id=user.id,
-        stock_id=stock.id,
-        document_id=valid_doc.id,
-        metric_key="bs.total_assets",
-    )
     revoked = _parsed_fact(
         user_id=user.id,
         stock_id=stock.id,
@@ -588,18 +656,36 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     )
     retired.value_json = {**retired.value_json, "authorization_state": "retired"}
     valid.value_line_parse_run_id = valid_run.id
-    post_cutoff.value_line_parse_run_id = valid_run.id
     retired.value_line_parse_run_id = valid_run.id
     revoked.value_line_parse_run_id = revoked_run.id
-    future_known_at = datetime.now(timezone.utc) + timedelta(hours=1)
-    post_cutoff.created_at = future_known_at
-    post_cutoff.updated_at = future_known_at
-    db_session.add_all([valid, post_cutoff, revoked, retired])
+    db_session.add_all([valid, revoked, retired])
     db_session.flush()
     valid_run.status = "succeeded"
     revoked_run.status = "succeeded"
+    db_session.commit()
+
+    cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert cutoff is not None
+    db_session.commit()
+    post_cutoff_run = ValueLineParseRun(
+        user_id=user.id,
+        document_id=valid_doc.id,
+        parser_version="value-line-v1",
+        source_mapping_version=mapping_version,
+        status="running",
+    )
+    db_session.add(post_cutoff_run)
     db_session.flush()
-    cutoff = datetime.now(timezone.utc)
+    post_cutoff = _parsed_fact(
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=valid_doc.id,
+        metric_key="bs.total_assets",
+    )
+    post_cutoff.value_line_parse_run_id = post_cutoff_run.id
+    db_session.add(post_cutoff)
+    db_session.flush()
+    post_cutoff_run.status = "succeeded"
     db_session.commit()
 
     response = client.get(
@@ -729,15 +815,11 @@ def test_formula_persists_exact_input_lineage_for_replay(db_session, user_factor
 def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
     db_session, user_factory
 ):
-    baseline_known_at = datetime.now(timezone.utc) - timedelta(minutes=2)
-    competing_known_at = baseline_known_at + timedelta(minutes=1)
-    historical_cutoff = baseline_known_at + timedelta(seconds=30)
     user = user_factory("reconcile-late-competitor@example.com")
     stock = Stock(ticker="RLATE", exchange="NYSE", company_name="Late Source Co")
     db_session.add(stock)
     db_session.flush()
     document = _document(user_id=user.id, stock_id=stock.id)
-    document.upload_time = baseline_known_at
     db_session.add(document)
     db_session.flush()
     original = _parsed_fact(
@@ -747,8 +829,6 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
         metric_key="is.net_income",
         value=100,
     )
-    original.created_at = baseline_known_at
-    original.updated_at = baseline_known_at
     db_session.add(original)
     db_session.flush()
     output = MetricFact(
@@ -771,24 +851,26 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
         period_end_date=date(2025, 12, 31),
         source_type="calculated",
         is_current=True,
-        created_at=baseline_known_at,
-        updated_at=baseline_known_at,
     )
     db_session.add(output)
     db_session.commit()
 
+    evaluation_snapshot = database_evaluation_snapshot(db_session)
     assert guard_reconciled_source_selection(
         [output],
         consumer="stock_pool_piotroski_display",
-        knowledge_cutoff=datetime.now(timezone.utc),
+        evaluation_snapshot=evaluation_snapshot,
         session=db_session,
         user_id=user.id,
     ) == [output]
 
+    historical_cutoff = db_session.scalar(select(func.clock_timestamp()))
+    assert historical_cutoff is not None
+    db_session.commit()
+
     competing_document = _document(
         user_id=user.id, stock_id=stock.id, suffix="-late"
     )
-    competing_document.upload_time = competing_known_at
     db_session.add(competing_document)
     db_session.flush()
     competing = _parsed_fact(
@@ -802,16 +884,17 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
         **competing.value_json,
         "mapping_id": "is.net_income.alternate",
     }
-    competing.created_at = competing_known_at
-    competing.updated_at = competing_known_at
     db_session.add(competing)
     db_session.commit()
 
+    historical_snapshot = database_evaluation_snapshot(
+        db_session, historical_cutoff
+    )
     try:
         historical_selection = guard_reconciled_source_selection(
             [output],
             consumer="stock_pool_piotroski_display",
-            knowledge_cutoff=historical_cutoff,
+            evaluation_snapshot=historical_snapshot,
             session=db_session,
             user_id=user.id,
         )
@@ -823,10 +906,11 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
     assert historical_selection == [output]
 
     with pytest.raises(CanonicalSourceConflictError):
+        evaluation_snapshot = database_evaluation_snapshot(db_session)
         guard_reconciled_source_selection(
             [output],
             consumer="stock_pool_piotroski_display",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            evaluation_snapshot=evaluation_snapshot,
             session=db_session,
             user_id=user.id,
         )
@@ -834,16 +918,121 @@ def test_later_same_slot_competitor_invalidates_preexisting_calculated_output(
     original.is_current = False
     db_session.commit()
     with pytest.raises(CanonicalReconciliationError) as exc_info:
+        evaluation_snapshot = database_evaluation_snapshot(db_session)
         guard_reconciled_source_selection(
             [output],
             consumer="stock_pool_piotroski_display",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            evaluation_snapshot=evaluation_snapshot,
             session=db_session,
             user_id=user.id,
         )
     assert {
         item["reason_code"] for item in exc_info.value.blocking_items
     } == {"derived_lineage_superseded"}
+
+
+def test_piotroski_lineage_uses_captured_currentness_after_late_demotion(
+    db_session,
+):
+    from sqlalchemy.orm import Session
+
+    engine = db_session.get_bind().engine
+    with engine.begin() as setup:
+        user_id = setup.scalar(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) VALUES "
+                "('piotroski-lineage-snapshot@example.com','x',true) RETURNING id"
+            )
+        )
+        stock_id = setup.scalar(
+            text(
+                "INSERT INTO stocks (ticker,exchange,company_name,is_active) VALUES "
+                "('RPILATE','NYSE','Piot PIT',true) RETURNING id"
+            )
+        )
+        document_id = setup.scalar(
+            text(
+                "INSERT INTO pdf_documents "
+                "(user_id,stock_id,file_name,file_storage_key,source,parse_status,"
+                "identity_needs_review) VALUES "
+                "(:user,:stock,'r23-piot.pdf','r23-piot.pdf','upload','pending',false) "
+                "RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        )
+        source_id = setup.scalar(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+                "source_document_id,period_type,period_end_date,is_current) VALUES "
+                "(:user,:stock,'is.net_income',"
+                "'{\"manual_role\":\"original_input\"}',100,'manual',:document,"
+                "'FY','2025-12-31',true) RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id, "document": document_id},
+        )
+        output_id = setup.scalar(
+            text(
+                "INSERT INTO metric_facts "
+                "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+                "source_document_id,period_type,period_end_date,is_current) VALUES "
+                "(:user,:stock,'score.piotroski.total',"
+                "jsonb_build_object('fact_nature','derived_actual',"
+                "'calculation_version','piotroski-v1','definition_basis','derived',"
+                "'period_start_date','2025-01-01','duration_days',365,'fiscal_year',"
+                "2025,'dimensions_identity','empty','inputs',jsonb_build_array("
+                "jsonb_build_object('fact_id',:source,'metric_key','is.net_income'))),"
+                "7,'calculated',:document,'FY','2025-12-31',true) RETURNING id"
+            ),
+            {
+                "user": user_id,
+                "stock": stock_id,
+                "document": document_id,
+                "source": source_id,
+            },
+        )
+    try:
+        with Session(engine) as reader:
+            output = reader.get(MetricFact, output_id)
+            evaluation_snapshot = database_evaluation_snapshot(reader)
+            with engine.begin() as writer:
+                writer.execute(
+                    text("UPDATE metric_facts SET is_current=false WHERE id=:fact"),
+                    {"fact": source_id},
+                )
+            source = reader.get(MetricFact, source_id)
+            assert source is not None and source.is_current is False
+            assert guard_reconciled_source_selection(
+                [output],
+                consumer="stock_pool_piotroski_display",
+                evaluation_snapshot=evaluation_snapshot,
+                session=reader,
+                user_id=user_id,
+            ) == [output]
+
+        with Session(engine) as reader:
+            output = reader.get(MetricFact, output_id)
+            with pytest.raises(CanonicalReconciliationError) as superseded:
+                guard_reconciled_source_selection(
+                    [output],
+                    consumer="stock_pool_piotroski_display",
+                    evaluation_snapshot=database_evaluation_snapshot(reader),
+                    session=reader,
+                    user_id=user_id,
+                )
+            assert superseded.value.blocking_items[0]["reason_code"] == (
+                "derived_lineage_superseded"
+            )
+    finally:
+        with engine.begin() as cleanup:
+            cleanup.execute(
+                text("DELETE FROM pdf_documents WHERE id=:document"),
+                {"document": document_id},
+            )
+            cleanup.execute(text("DELETE FROM users WHERE id=:user"), {"user": user_id})
+            cleanup.execute(
+                text("DELETE FROM stocks WHERE id=:stock"), {"stock": stock_id}
+            )
 
 
 def test_formula_never_overwrites_periods_in_dependency_dictionary(
@@ -902,7 +1091,10 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
     ]
     db_session.add_all(stocks)
     db_session.flush()
+    first_id = db_session.scalar(text("SELECT nextval('metric_facts_id_seq')"))
+    second_id = db_session.scalar(text("SELECT nextval('metric_facts_id_seq')"))
     first = MetricFact(
+        id=first_id,
         user_id=user.id,
         stock_id=stocks[0].id,
         metric_key="derived.first",
@@ -910,12 +1102,13 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
         value_json={
             "fact_nature": "derived_actual",
             "calculation_version": "test-v1",
-            "inputs": [],
+            "inputs": [{"fact_id": second_id}],
         },
         source_type="calculated",
         is_current=True,
     )
     second = MetricFact(
+        id=second_id,
         user_id=user.id,
         stock_id=stocks[0].id,
         metric_key="derived.second",
@@ -923,7 +1116,7 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
         value_json={
             "fact_nature": "derived_actual",
             "calculation_version": "test-v1",
-            "inputs": [],
+            "inputs": [{"fact_id": first_id}],
         },
         source_type="calculated",
         is_current=True,
@@ -939,21 +1132,14 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
     )
     db_session.add_all([first, second, foreign])
     db_session.flush()
-    first.value_json = {
-        **first.value_json,
-        "inputs": [{"fact_id": second.id}],
-    }
-    second.value_json = {
-        **second.value_json,
-        "inputs": [{"fact_id": first.id}],
-    }
     db_session.commit()
 
     with pytest.raises(CanonicalReconciliationError) as cycle:
+        evaluation_snapshot = database_evaluation_snapshot(db_session)
         guard_reconciled_source_selection(
             [first],
             consumer="stock_pool_piotroski_display",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            evaluation_snapshot=evaluation_snapshot,
             session=db_session,
             user_id=user.id,
         )
@@ -961,16 +1147,27 @@ def test_consumer_guard_rejects_cyclic_and_cross_stock_derived_lineage(
         "lineage_cycle_detected"
     )
 
-    first.value_json = {
-        **first.value_json,
-        "inputs": [{"fact_id": foreign.id}],
-    }
+    cross_stock_fact = MetricFact(
+        user_id=user.id,
+        stock_id=stocks[0].id,
+        metric_key="derived.cross_stock",
+        value_numeric=4,
+        value_json={
+            "fact_nature": "derived_actual",
+            "calculation_version": "test-v1",
+            "inputs": [{"fact_id": foreign.id}],
+        },
+        source_type="calculated",
+        is_current=True,
+    )
+    db_session.add(cross_stock_fact)
     db_session.commit()
     with pytest.raises(CanonicalReconciliationError) as cross_stock:
+        evaluation_snapshot = database_evaluation_snapshot(db_session)
         guard_reconciled_source_selection(
-            [first],
+            [cross_stock_fact],
             consumer="stock_pool_piotroski_display",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            evaluation_snapshot=evaluation_snapshot,
             session=db_session,
             user_id=user.id,
         )
@@ -986,7 +1183,8 @@ def test_original_manual_input_passthrough_still_respects_knowledge_cutoff(
     stock = Stock(ticker="MANPIT", exchange="NYSE", company_name="Manual PIT")
     db_session.add(stock)
     db_session.flush()
-    cutoff = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    cutoff = database_evaluation_snapshot(db_session).cutoff
+    db_session.commit()
     future_input = MetricFact(
         user_id=user.id,
         stock_id=stock.id,
@@ -1007,12 +1205,98 @@ def test_original_manual_input_passthrough_still_respects_knowledge_cutoff(
     guarded = guard_reconciled_source_selection(
         [future_input],
         consumer="formula",
-        knowledge_cutoff=cutoff,
+        evaluation_snapshot=database_evaluation_snapshot(db_session, cutoff),
         session=db_session,
         user_id=user.id,
     )
-
     assert guarded == []
+
+
+def test_stock_reconciliation_get_excludes_writer_committed_after_snapshot(
+    db_session, monkeypatch
+):
+    from sqlalchemy.orm import Session
+    from app.api.v1.endpoints import stocks as stocks_endpoint
+
+    engine = db_session.get_bind().engine
+    with engine.begin() as setup:
+        user_id = setup.scalar(
+            text(
+                "INSERT INTO users (email,hashed_password,is_active) VALUES "
+                "('r23-reconciliation-late@example.com','x',true) RETURNING id"
+            )
+        )
+        stock_id = setup.scalar(
+            text(
+                "INSERT INTO stocks (ticker,exchange,company_name,is_active) VALUES "
+                "('R23RECON','NYSE','R23 Reconciliation',true) RETURNING id"
+            )
+        )
+        document_id = setup.scalar(
+            text(
+                "INSERT INTO pdf_documents "
+                "(user_id,stock_id,file_name,file_storage_key,source,parse_status,"
+                "identity_needs_review) VALUES "
+                "(:user,:stock,'r23-late.pdf','r23-late.pdf','upload','pending',false) "
+                "RETURNING id"
+            ),
+            {"user": user_id, "stock": stock_id},
+        )
+
+    writer = engine.connect()
+    writer_tx = writer.begin()
+    fact_id = writer.scalar(
+        text(
+            "INSERT INTO metric_facts "
+            "(user_id,stock_id,metric_key,value_json,value_numeric,source_type,"
+            "source_document_id,period_type,period_end_date,is_current) VALUES "
+            "(:user,:stock,'score.piotroski.total',"
+            "'{\"fact_nature\":\"derived_actual\","
+            "\"calculation_version\":\"r23-test\",\"inputs\":[]}',7,"
+            "'calculated',:document,'FY','2025-12-31',true) RETURNING id"
+        ),
+        {"user": user_id, "stock": stock_id, "document": document_id},
+    )
+    original_build = stocks_endpoint.build_source_reconciliation_report
+
+    def commit_after_boundary(*args, **kwargs):
+        writer_tx.commit()
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "build_source_reconciliation_report",
+        commit_after_boundary,
+    )
+    try:
+        with Session(engine) as reader:
+            report = stocks_endpoint.read_source_reconciliation(
+                stock_id=stock_id,
+                session=reader,
+                current_user=SimpleNamespace(id=user_id),
+                metric_key=["score.piotroski.total"],
+                knowledge_cutoff=None,
+            )
+        assert report["consumer_gate_status"] == "blocked"
+        assert any(
+            item.get("reason_code")
+            == "fact_currentness_unverifiable_at_snapshot"
+            and fact_id in item.get("fact_ids", [])
+            for item in report["items"]
+        )
+    finally:
+        if writer_tx.is_active:
+            writer_tx.rollback()
+        writer.close()
+        with engine.begin() as cleanup:
+            cleanup.execute(
+                text("DELETE FROM pdf_documents WHERE id=:document"),
+                {"document": document_id},
+            )
+            cleanup.execute(text("DELETE FROM users WHERE id=:user"), {"user": user_id})
+            cleanup.execute(
+                text("DELETE FROM stocks WHERE id=:stock"), {"stock": stock_id}
+            )
 
 
 def test_user_valuation_is_not_reconciled_as_a_financial_manual_correction(

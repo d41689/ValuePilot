@@ -6,23 +6,48 @@ from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 from app.api.deps import SessionDep, CurrentUser
 from app.core.currencies import normalize_iso4217_currency
-from app.models.artifacts import PdfDocument
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.valuation import (
     USER_INTRINSIC_VALUE_KEY,
     quantize_valuation_value,
 )
-from app.services.active_report_resolver import ActiveReportSelection, resolve_active_reports
-from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.active_report_resolver import (
+    MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+    ActiveReportAuthorityBoundExceededError,
+    ActiveReportSelection,
+    resolve_active_reports,
+)
+from app.services.actual_conflict_service import (
+    ActualConflictAuthorityAmbiguousError,
+    ActualConflictAuthorityBoundExceededError,
+    detect_actual_conflicts,
+)
+from app.services.value_line_report_identity import (
+    ReportIdentityUnverifiableError,
+    ResolvedValueLineReportIdentity,
+    resolve_fact_report_identities,
+)
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    CurrentnessScopeError,
+    HistoricalCurrentnessUnverifiableError,
+    current_metric_fact_ids_at,
+)
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.canonical_financials import (
     CanonicalUnavailableError,
     CanonicalSourceConflictError,
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
+    database_evaluation_cutoff,
+    evaluation_business_date,
+    guard_piotroski_method_authority,
     guard_sec_run_availability,
     resolve_sec_publication_evidence,
     reviewed_method_gate,
+    system_method_for_fact,
     visible_metric_fact_predicate,
 )
 from app.schemas.stock import ResearchValuationSave, ResearchValuationSaveResponse
@@ -47,6 +72,7 @@ from app.services.dcf_inputs import (
     load_canonical_dcf_fact_universe,
 )
 from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.services.market_data_service import (
     MarketDataService,
     read_current_eod_price,
@@ -206,21 +232,30 @@ def _fact_provenance(
     fact: MetricFact | None,
     *,
     active_report: ActiveReportSelection | None,
-    report_dates_by_doc: dict[int, date | None],
+    report_identities_by_fact: dict[int, ResolvedValueLineReportIdentity],
 ) -> dict[str, Any] | None:
     if fact is None:
         return None
     document_id = fact.source_document_id
-    report_date = report_dates_by_doc.get(document_id) if document_id is not None else None
+    report_identity = report_identities_by_fact.get(fact.id)
+    report_date = report_identity.report_date if report_identity else None
     return {
         "source_type": fact.source_type,
         "source_document_id": document_id,
+        **(
+            {"source_report_identity_revision_id": report_identity.revision_id}
+            if report_identity
+            else {}
+        ),
         "source_report_date": report_date.isoformat() if report_date else None,
         "period_end_date": fact.period_end_date.isoformat() if fact.period_end_date else None,
         "is_active_report": bool(
             active_report is not None
             and document_id is not None
             and active_report.document_id == document_id
+            and report_identity is not None
+            and active_report.report_identity_revision_id
+            == report_identity.revision_id
         ),
     }
 
@@ -362,6 +397,8 @@ def _build_piotroski_f_score_card(
     current_user_id: int,
     evaluated_at: datetime,
 ) -> dict[str, Any]:
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     metric_keys = [row["metric_key"] for row in PIOTROSKI_CARD_ROWS] + [PIOTROSKI_TOTAL_KEY]
     facts = session.scalars(
         select(MetricFact)
@@ -370,7 +407,19 @@ def _build_piotroski_f_score_card(
             MetricFact.user_id == current_user_id,
             MetricFact.metric_key.in_(metric_keys),
             MetricFact.source_type == "calculated",
-            MetricFact.is_current.is_(True),
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id,
+                        metric_keys=tuple(metric_keys),
+                        user_ids=(current_user_id,),
+                        source_types=("calculated",),
+                    ),
+                )
+            ),
             MetricFact.period_type == "FY",
         )
         .order_by(MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
@@ -392,7 +441,7 @@ def _build_piotroski_f_score_card(
             guard_reconciled_source_selection(
                 facts,
                 consumer="stock_piotroski_card",
-                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
                 session=session,
                 user_id=current_user_id,
             )
@@ -421,6 +470,26 @@ def _build_piotroski_f_score_card(
                 "status": "unavailable",
                 "reason_code": error.code,
                 "blocking_reasons": ["explicit_source_selection_required"],
+            },
+        }
+
+    facts, method_blocked = guard_piotroski_method_authority(
+        session,
+        facts=facts,
+        effective_as_of=evaluation_business_date(evaluated_at),
+        knowledge_at=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
+    )
+    if method_blocked:
+        return {
+            "years": [],
+            "rows": [],
+            "state": {
+                "status": "unavailable",
+                "reason_code": method_blocked[0]["reason_code"],
+                "blocking_reasons": sorted(
+                    {item["reason_code"] for item in method_blocked}
+                ),
             },
         }
 
@@ -596,6 +665,8 @@ def _validated_dcf_save(
     server_evaluated_at: datetime,
     server_effective_as_of: date,
 ) -> tuple[str, list[dict[str, Any]], Decimal]:
+    evaluation_snapshot = database_evaluation_snapshot(session, server_evaluated_at)
+    server_evaluated_at = evaluation_snapshot.cutoff
     dcf_assumptions = [
         item for item in assumptions if isinstance(item, dict) and item.get("source") == "dcf"
     ]
@@ -710,8 +781,20 @@ def _validated_dcf_save(
         select(MetricFact).where(
             MetricFact.id.in_(fact_ids),
             MetricFact.stock_id == stock_id,
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= server_evaluated_at,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=server_evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=(
+                        CurrentnessScope(fact_ids=tuple(fact_ids))
+                        if fact_ids
+                        else CurrentnessScope.one_stock(
+                            stock_id, user_ids=(current_user_id, None)
+                        )
+                    ),
+                )
+            ),
             _visible_fact_predicate(current_user_id, []),
         )
     ).all()
@@ -729,7 +812,9 @@ def _validated_dcf_save(
     except (CanonicalSourceConflictError, CanonicalUnavailableError) as error:
         raise _selection_changed() from error
     except DcfFactUniverseError as error:
-        raise ResearchCaseError(error.code, str(error), status_code=409) from error
+        raise ResearchCaseError(
+            error.reason_code, str(error), status_code=409
+        ) from error
     entry = evaluate_dcf_input_selection(
         stock_id=stock_id,
         dcf_facts=universe.dcf_facts,
@@ -893,12 +978,21 @@ def _select_stock_for_ticker(
     *,
     current_user_id: int,
     admin_user_ids: list[int],
+    knowledge_cutoff: datetime,
 ) -> Stock | None:
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_cutoff)
+    knowledge_cutoff = evaluation_snapshot.cutoff
     stocks = session.scalars(
         select(Stock)
         .where(func.lower(Stock.ticker) == ticker_normalized)
         .order_by(Stock.id.asc())
+        .limit(MAX_ACTIVE_REPORT_AUTHORITY_ITEMS + 1)
     ).all()
+    if len(stocks) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="stock_ids",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
     if not stocks:
         return None
     if len(stocks) == 1:
@@ -910,13 +1004,29 @@ def _select_stock_for_ticker(
         stock_ids=stock_ids,
         current_user_id=current_user_id,
         shared_parsed_user_ids=admin_user_ids,
+        knowledge_cutoff=knowledge_cutoff,
+        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
     )
     fact_counts = dict(
         session.execute(
             select(MetricFact.stock_id, func.count(MetricFact.id))
             .where(
                 MetricFact.stock_id.in_(stock_ids),
-                MetricFact.is_current.is_(True),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session,
+                        knowledge_cutoff=knowledge_cutoff,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope(
+                            stock_ids=tuple(stock_ids),
+                            user_ids=tuple(
+                                dict.fromkeys(
+                                    (current_user_id, *admin_user_ids, None)
+                                )
+                            ),
+                        ),
+                    )
+                ),
                 _visible_fact_predicate(current_user_id, admin_user_ids),
             )
             .group_by(MetricFact.stock_id)
@@ -951,26 +1061,69 @@ def read_stock_by_ticker(
     # shared through the canonical visibility predicate, not through an admin
     # uploader convention.
     admin_user_ids: list[int] = []
-    stock = _select_stock_for_ticker(
-        session,
-        ticker_normalized,
-        current_user_id=current_user.id,
-        admin_user_ids=admin_user_ids,
-    )
+    evaluation_cutoff = database_evaluation_cutoff(session)
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluation_cutoff)
+    evaluation_cutoff = evaluation_snapshot.cutoff
+    try:
+        stock = _select_stock_for_ticker(
+            session,
+            ticker_normalized,
+            current_user_id=current_user.id,
+            admin_user_ids=admin_user_ids,
+            knowledge_cutoff=evaluation_cutoff,
+        )
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        HistoricalCurrentnessUnverifiableError,
+        ValueLineSourceUnavailableError,
+    ) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
-    dcf_clock = dcf_evaluation_clock()
+    dcf_clock = dcf_evaluation_clock(evaluated_at=evaluation_cutoff)
     dcf_evaluated_at = dcf_clock.evaluated_at
-    active_report = resolve_active_reports(
-        session,
-        stock_ids=[stock.id],
-        current_user_id=current_user.id,
-        shared_parsed_user_ids=admin_user_ids,
-    ).get(stock.id)
+    try:
+        active_report = resolve_active_reports(
+            session,
+            stock_ids=[stock.id],
+            current_user_id=current_user.id,
+            shared_parsed_user_ids=admin_user_ids,
+            knowledge_cutoff=dcf_evaluated_at,
+        ).get(stock.id)
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        ValueLineSourceUnavailableError,
+    ) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
 
     facts_stmt = select(MetricFact).where(
         MetricFact.stock_id == stock.id,
-        MetricFact.is_current.is_(True),
+        MetricFact.id.in_(
+            current_metric_fact_ids_at(
+                session,
+                knowledge_cutoff=dcf_evaluated_at,
+                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                scope=CurrentnessScope.one_stock(
+                    stock.id,
+                    metric_keys=(
+                        "mkt.price",
+                        "val.pe",
+                        "owners_earnings_per_share_normalized",
+                    ),
+                    user_ids=(current_user.id, None),
+                ),
+            )
+        ),
         _visible_fact_predicate(current_user.id, admin_user_ids),
         MetricFact.metric_key.in_(
             ["mkt.price", "val.pe", "owners_earnings_per_share_normalized"]
@@ -1018,9 +1171,58 @@ def read_stock_by_ticker(
         canonical_input_status = error.state
     except DcfFactUniverseError as error:
         canonical_input_status = {
-            "status": "unavailable",
-            "reason_code": error.code,
+            "status": "unsupported" if error.code == "unsupported" else "unavailable",
+            "reason_code": error.reason_code,
+            **(
+                {"method_gate": error.method_gate}
+                if error.method_gate is not None
+                else {}
+            ),
         }
+        method_gate_decisions = {
+            method_key: reviewed_method_gate(
+                session,
+                stock_id=stock.id,
+                method_key=method_key,
+                effective_as_of=dcf_clock.effective_as_of,
+                knowledge_at=dcf_evaluated_at,
+            )
+            for method_key in (
+                "owner_earnings",
+                "roic",
+                "per_share_trend",
+                "system_valuation",
+            )
+        }
+        owner_candidates = session.scalars(
+            select(MetricFact).where(
+                MetricFact.stock_id == stock.id,
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        session,
+                        knowledge_cutoff=dcf_evaluated_at,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(
+                            stock.id,
+                            metric_keys=("owners_earnings_per_share",),
+                            user_ids=(current_user.id, None),
+                        ),
+                    )
+                ),
+                _visible_fact_predicate(current_user.id, admin_user_ids),
+                MetricFact.period_type == "FY",
+                MetricFact.metric_key == "owners_earnings_per_share",
+            )
+        ).all()
+        oeps_facts, _, _ = apply_reviewed_method_gates(
+            session,
+            stock_id=stock.id,
+            facts=owner_candidates,
+            effective_as_of=dcf_clock.effective_as_of,
+            knowledge_at=dcf_evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
+            precomputed_decisions=method_gate_decisions,
+        )
     if method_gate_decisions is None:
         method_gate_decisions = {
             method_key: reviewed_method_gate(
@@ -1049,7 +1251,18 @@ def read_stock_by_ticker(
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=dcf_evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock.id,
+                        metric_keys=tuple(growth_metric_keys),
+                        user_ids=(current_user.id, None),
+                    ),
+                )
+            ),
             _visible_fact_predicate(current_user.id, admin_user_ids),
             MetricFact.metric_key.in_(growth_metric_keys),
         )
@@ -1064,12 +1277,23 @@ def read_stock_by_ticker(
         facts=facts,
         effective_as_of=dcf_clock.effective_as_of,
         knowledge_at=dcf_evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
+        precomputed_decisions=method_gate_decisions,
+    )
+    growth_facts, _, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock.id,
+        facts=growth_facts,
+        effective_as_of=dcf_clock.effective_as_of,
+        knowledge_at=dcf_evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
+        precomputed_decisions=method_gate_decisions,
     )
     try:
         summary_facts = guard_reconciled_source_selection(
             [*facts, *oeps_facts, *growth_facts],
             consumer="stock_summary",
-            knowledge_cutoff=dcf_evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
             session=session,
             user_id=current_user.id,
         )
@@ -1077,6 +1301,8 @@ def read_stock_by_ticker(
             session,
             stock_id=stock.id,
             facts=summary_facts,
+            knowledge_cutoff=dcf_evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
     except (
         CanonicalSourceConflictError,
@@ -1136,26 +1362,17 @@ def read_stock_by_ticker(
             growth_fact_by_metric_key[fact.metric_key] = fact
 
     provenance_facts = [*facts, *oeps_facts, *dcf_input_facts, *growth_facts]
-    source_document_ids = sorted(
-        {
-            fact.source_document_id
-            for fact in provenance_facts
-            if fact.source_document_id is not None
-        }
-    )
-    report_dates_by_doc: dict[int, date | None] = {}
-    if source_document_ids:
-        report_dates_by_doc = dict(
-            session.execute(
-                select(PdfDocument.id, PdfDocument.report_date).where(
-                    PdfDocument.id.in_(source_document_ids),
-                    PdfDocument.user_id.in_(
-                        sorted(set([current_user.id, *admin_user_ids]))
-                    ),
-                )
-            ).all()
+    try:
+        report_identities_by_fact = resolve_fact_report_identities(
+            session,
+            facts=provenance_facts,
+            knowledge_cutoff=dcf_evaluated_at,
         )
-
+    except ReportIdentityUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     oeps_series = []
     for fact in oeps_facts:
         period_end = fact.period_end_date
@@ -1171,13 +1388,16 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     fact,
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
 
     seen_dcf_years: set[int] = set()
-    for fact in oeps_facts:
+    dcf_selection_oeps_facts = (
+        oeps_facts if canonical_input_status.get("status") == "available" else []
+    )
+    for fact in dcf_selection_oeps_facts:
         period_end = fact.period_end_date
         if not period_end or period_end.year in seen_dcf_years:
             continue
@@ -1193,7 +1413,7 @@ def read_stock_by_ticker(
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
-                report_dates_by_doc=report_dates_by_doc,
+                report_identities_by_fact=report_identities_by_fact,
             ),
         )
         dcf_inputs_series.append({"year": period_end.year, **entry})
@@ -1209,10 +1429,10 @@ def read_stock_by_ticker(
             provenance_for_fact=lambda input_fact: _fact_provenance(
                 input_fact,
                 active_report=active_report,
-                report_dates_by_doc=report_dates_by_doc,
+                report_identities_by_fact=report_identities_by_fact,
             ),
         )
-        if oeps_facts
+        if dcf_selection_oeps_facts
         else None
     )
 
@@ -1227,7 +1447,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.sales.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1240,7 +1460,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.revenues.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1254,7 +1474,7 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.cash_flow.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
@@ -1267,24 +1487,37 @@ def read_stock_by_ticker(
                 "provenance": _fact_provenance(
                     growth_fact_by_metric_key.get("rates.earnings.cagr_est"),
                     active_report=active_report,
-                    report_dates_by_doc=report_dates_by_doc,
+                    report_identities_by_fact=report_identities_by_fact,
                 ),
             }
         )
 
-    actual_conflicts = detect_actual_conflicts(
-        session,
-        stock_id=stock.id,
-        active_report=active_report,
-        current_user_id=current_user.id,
-        shared_parsed_user_ids=admin_user_ids,
-    )
+    try:
+        actual_conflicts = detect_actual_conflicts(
+            session,
+            stock_id=stock.id,
+            active_report=active_report,
+            current_user_id=current_user.id,
+            shared_parsed_user_ids=admin_user_ids,
+            knowledge_cutoff=dcf_evaluated_at,
+        )
+    except (
+        ReportIdentityUnverifiableError,
+        ActualConflictAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        HistoricalCurrentnessUnverifiableError,
+        ValueLineSourceUnavailableError,
+    ) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
 
     report_price_fact = facts_by_key.get("mkt.price")
     report_price_provenance = _fact_provenance(
         report_price_fact,
         active_report=active_report,
-        report_dates_by_doc=report_dates_by_doc,
+        report_identities_by_fact=report_identities_by_fact,
     )
     report_price_as_of = (
         report_price_provenance.get("source_report_date")
@@ -1301,6 +1534,9 @@ def read_stock_by_ticker(
         "listing_exchange": stock.listing_exchange,
         "company_name": stock.company_name,
         "active_report_document_id": active_report.document_id if active_report else None,
+        "active_report_identity_revision_id": (
+            active_report.report_identity_revision_id if active_report else None
+        ),
         "active_report_date": active_report.report_date.isoformat() if active_report and active_report.report_date else None,
         "current_price": serialize_canonical_eod_price(current_price),
         "report_price_reference": {
@@ -1320,7 +1556,7 @@ def read_stock_by_ticker(
         "pe_provenance": _fact_provenance(
             facts_by_key.get("val.pe"),
             active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
+            report_identities_by_fact=report_identities_by_fact,
         ),
         "oeps_normalized": _stock_summary_wire_number(
             facts_by_key.get("owners_earnings_per_share_normalized").value_numeric
@@ -1330,7 +1566,7 @@ def read_stock_by_ticker(
         "oeps_normalized_provenance": _fact_provenance(
             facts_by_key.get("owners_earnings_per_share_normalized"),
             active_report=active_report,
-            report_dates_by_doc=report_dates_by_doc,
+            report_identities_by_fact=report_identities_by_fact,
         ),
         "oeps_series": oeps_series,
         "dcf_inputs": dcf_inputs,
@@ -1390,14 +1626,18 @@ def read_source_reconciliation(
             status_code=422,
             detail={"code": "reconciliation_filter_limit_exceeded"},
         )
-    cutoff = knowledge_cutoff or datetime.now(timezone.utc)
-    if cutoff.tzinfo is None:
+    if knowledge_cutoff is not None and knowledge_cutoff.tzinfo is None:
         raise HTTPException(
             status_code=422,
             detail={"code": "timezone_aware_knowledge_cutoff_required"},
         )
-    request_clock = datetime.now(timezone.utc)
-    if cutoff > request_clock:
+    request_snapshot = database_evaluation_snapshot(session)
+    evaluation_snapshot = (
+        database_evaluation_snapshot(session, knowledge_cutoff)
+        if knowledge_cutoff is not None
+        else request_snapshot
+    )
+    if evaluation_snapshot.cutoff > request_snapshot.cutoff:
         raise HTTPException(
             status_code=422,
             detail={"code": "future_knowledge_cutoff"},
@@ -1407,10 +1647,20 @@ def read_source_reconciliation(
             session,
             user_id=current_user.id,
             stock_id=stock_id,
-            knowledge_cutoff=cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             metric_keys=metric_key,
             historical_request=knowledge_cutoff is not None,
         )
+    except CurrentnessScopeError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    except HistoricalCurrentnessUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except ValueError as error:
         raise HTTPException(
             status_code=422,
@@ -1433,20 +1683,37 @@ def read_stock_facts(
 
     admin_user_ids: list[int] = []
 
+    evaluation_snapshot = database_evaluation_snapshot(session)
+    evaluation_cutoff = evaluation_snapshot.cutoff
     # Get current facts
+    try:
+        current_fact_ids = current_metric_fact_ids_at(
+            session,
+            knowledge_cutoff=evaluation_cutoff,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope.one_stock(
+                stock_id, user_ids=(current_user.id, None)
+            ),
+        )
+    except (CurrentnessScopeError, HistoricalCurrentnessUnverifiableError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     stmt = select(MetricFact).where(
         MetricFact.stock_id == stock_id,
-        MetricFact.is_current.is_(True),
+        MetricFact.id.in_(current_fact_ids),
         _visible_fact_predicate(current_user.id, admin_user_ids),
     )
     facts = session.scalars(stmt).all()
-    facts, unsupported, _ = apply_reviewed_method_gates(
+    facts, unsupported, method_decisions = apply_reviewed_method_gates(
         session,
         stock_id=stock_id,
         facts=facts,
-        effective_as_of=date.today(),
+        effective_as_of=evaluation_business_date(evaluation_cutoff),
+        knowledge_at=evaluation_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
-    evaluation_cutoff = datetime.now(timezone.utc)
     facts_by_metric: dict[str, list[MetricFact]] = {}
     for fact in facts:
         facts_by_metric.setdefault(fact.metric_key, []).append(fact)
@@ -1460,7 +1727,7 @@ def read_stock_facts(
             session,
             facts=facts_by_metric[metric_key],
             user_id=current_user.id,
-            knowledge_cutoff=evaluation_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
     ]
     for slot_facts in slot_groups:
@@ -1469,7 +1736,7 @@ def read_stock_facts(
                 guard_reconciled_source_selection(
                     slot_facts,
                     consumer="stock_facts",
-                    knowledge_cutoff=evaluation_cutoff,
+                    evaluation_snapshot=evaluation_snapshot,
                     session=session,
                     user_id=current_user.id,
                 )
@@ -1514,8 +1781,12 @@ def read_stock_facts(
                 }
             )
 
-    published = [
-        {
+    published = []
+    for f in reconciled_facts:
+        method_key = system_method_for_fact(f)
+        method_decision = method_decisions.get(method_key) if method_key else None
+        published.append(
+            {
             "id": f.id,
             "status": "published",
             "metric_key": f.metric_key,
@@ -1529,14 +1800,20 @@ def read_stock_facts(
                 if f.source_type == "sec" and f.source_ref_id is not None
                 else None
             ),
-        }
-        for f in reconciled_facts
-    ]
+            **(
+                {"method_gate": method_decision.as_dict()}
+                if method_decision is not None
+                else {}
+            ),
+            }
+        )
     return (
         published
         + unsupported
         + reconciliation_states
-        + current_sec_unresolved_states(session, stock_id=stock_id)
+        + current_sec_unresolved_states(
+            session, stock_id=stock_id, knowledge_cutoff=evaluation_cutoff
+        )
     )
 
 
@@ -1569,6 +1846,8 @@ def upsert_stock_fact(
 ) -> Any:
     user_id = current_user.id
 
+    # Canonical user lock must precede the DCF stock/fact child lock.
+    lock_user_privacy_write(session, user_id=user_id)
     if payload.source == "dcf":
         acquire_metric_fact_stock_lock(session, stock_id=stock_id)
     stock = session.get(Stock, stock_id)
@@ -1577,7 +1856,9 @@ def upsert_stock_fact(
     if payload.metric_key != USER_INTRINSIC_VALUE_KEY:
         raise HTTPException(status_code=400, detail="Unsupported metric_key")
 
-    save_clock = dcf_evaluation_clock()
+    save_clock = dcf_evaluation_clock(
+        evaluated_at=database_evaluation_cutoff(session)
+    )
     now_et = save_clock.evaluated_at.astimezone(ET)
     try:
         valuation_currency = payload.valuation_currency or "USD"

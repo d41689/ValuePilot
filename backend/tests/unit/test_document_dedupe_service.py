@@ -207,7 +207,9 @@ def test_cleanup_duplicates_apply_deletes_dependents_without_resurrecting_histor
     assert db_session.get(DocumentPage, page_id) is None
     assert db_session.get(MetricExtraction, extraction_id) is None
     assert db_session.get(MetricFact, duplicate_fact_id) is None
-    assert db_session.get(MetricFact, stale_calculated_fact_id) is None
+    stale_calculated = db_session.get(MetricFact, stale_calculated_fact_id)
+    assert stale_calculated is not None
+    assert stale_calculated.is_current is False
 
     refreshed_keep_fact = db_session.get(MetricFact, keep_fact_id)
     assert refreshed_keep_fact is not None

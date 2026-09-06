@@ -1,15 +1,28 @@
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Body, status
+from fastapi import (
+    APIRouter,
+    Body,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func
+from sqlalchemy import func, or_, select
 import yaml
-from app.models.artifacts import DocumentPage, ValueLineFactExtractionInput
+from app.models.artifacts import (
+    DocumentPage,
+    ValueLineFactExtractionInput,
+)
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.stocks import Stock
@@ -26,14 +39,42 @@ from app.ingestion.parsers.v1_value_line.page_json import (
     _build_total_return as _build_value_line_total_return,
     _quarter_month_order as _value_line_quarter_month_order,
 )
-from app.services.active_report_resolver import resolve_active_reports
+from app.services.active_report_resolver import (
+    MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+    ActiveReportAuthorityBoundExceededError,
+    ActualConflictAuthorityAmbiguousError,
+    resolve_active_reports,
+    transaction_visible_in_snapshot_predicate,
+)
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    HistoricalCurrentnessUnverifiableError,
+    current_metric_fact_ids_at,
+)
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.value_line_report_identity import ReportIdentityUnverifiableError
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.document_dedupe_service import DocumentDedupeService
 from app.services.ingestion_service import IngestionService
+from app.services.document_cursor import (
+    DocumentCursor,
+    DocumentsCursorExpiredError,
+    DocumentsSnapshotBoundExceededError,
+    DocumentsSnapshotCapacityExceededError,
+    DocumentsSnapshotSourceUnavailableError,
+    InvalidDocumentsCursorError,
+    create_document_snapshot,
+    decode_document_cursor,
+    encode_document_cursor,
+    load_document_snapshot,
+    load_document_snapshot_page,
+)
 from app.services.api_rate_limits import RateLimitExceeded, consume_user_operation
 from app.services.manual_metric_correction import (
     ManualMetricCorrectionError,
     create_manual_metric_correction,
 )
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.models.artifacts import PdfDocument
 
 router = APIRouter()
@@ -128,24 +169,190 @@ DOCUMENT_REVIEW_QUARTERLY_TABLE_FIELDS = {
     "quarterly_dividends_paid_per_share",
 }
 
+DOCUMENT_LIST_RESPONSE_HEADERS = {
+    "X-Total-Count": {
+        "schema": {"type": "integer"},
+        "description": (
+            "Initial snapshot total in cursor mode; current total in legacy mode."
+        ),
+    },
+    "X-Page-Offset": {
+        "schema": {"type": "integer"},
+        "description": "Legacy best-effort offset; always zero in cursor mode.",
+    },
+    "X-Page-Limit": {
+        "schema": {"type": "integer"},
+        "description": "Maximum number of documents returned in this page.",
+    },
+    "X-Pagination-Mode": {
+        "schema": {"type": "string", "enum": ["cursor", "offset", "unpaged"]},
+        "description": "The ordering/traversal contract used for this response.",
+    },
+    "X-Snapshot-Cutoff": {
+        "schema": {"type": "string", "format": "date-time"},
+        "description": "Database cutoff fixed by the first cursor page.",
+    },
+    "X-Snapshot-Max-Id": {
+        "schema": {"type": "integer"},
+        "description": "Immutable document-ID upper boundary for the snapshot.",
+    },
+    "X-Snapshot-Scope": {
+        "schema": {"type": "string"},
+        "description": (
+            "Cursor mode freezes membership, ordering, report date and active-report "
+            "authority. File name, parse/page counts and other display metadata remain "
+            "current and are not historical evidence."
+        ),
+    },
+    "X-Next-Cursor": {
+        "schema": {"type": "string"},
+        "description": "Opaque signed continuation token; omitted on the last page.",
+    },
+}
 
-@router.get("", response_model=list[dict])
+
+@router.get(
+    "",
+    response_model=list[dict],
+    responses={200: {"headers": DOCUMENT_LIST_RESPONSE_HEADERS}},
+)
 def list_documents(
     *,
+    response: Response,
     session: SessionDep,
     current_user: CurrentUser,
+    offset: int | None = Query(default=None, ge=0),
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+    ),
+    cursor: str | None = Query(default=None),
 ) -> Any:
-    """
-    List documents for the authenticated user with page counts and company summary.
+    """List the authenticated user's documents.
+
+    ``limit`` without ``offset`` starts the authoritative cursor protocol.  A
+    signed ``X-Next-Cursor`` continues the fixed ID-bounded snapshot in
+    ``upload_time DESC NULLS LAST, id DESC`` order; the token is tenant- and
+    limit-bound.  ``offset`` remains a backwards-compatible, best-effort page
+    and must not be used to traverse a changing collection.  Supplying cursor
+    with offset, changing its limit, tampering, or replaying it for another
+    user returns typed ``invalid_documents_cursor``.
     """
     user_id = current_user.id
 
-    docs = session.scalars(
-        select(PdfDocument)
-        .where(PdfDocument.user_id == user_id)
-        .order_by(PdfDocument.upload_time.desc())
-    ).all()
+    if cursor is not None and offset is not None:
+        _raise_invalid_documents_cursor()
+
+    cursor_state: DocumentCursor | None = None
+    created_cursor_snapshot = False
+    if cursor is not None:
+        try:
+            cursor_state = decode_document_cursor(cursor, user_id=user_id)
+        except InvalidDocumentsCursorError as error:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
+        if limit is not None and limit != cursor_state.limit:
+            _raise_invalid_documents_cursor()
+
+    cursor_mode = cursor_state is not None or (limit is not None and offset is None)
+    if cursor_mode:
+        effective_limit = cursor_state.limit if cursor_state is not None else limit
+        assert effective_limit is not None
+        try:
+            snapshot = (
+                create_document_snapshot(
+                    session,
+                    user_id=user_id,
+                    limit=effective_limit,
+                )
+                if cursor_state is None
+                else load_document_snapshot(session, cursor=cursor_state)
+            )
+            created_cursor_snapshot = cursor_state is None
+            snapshot_rows, has_next = load_document_snapshot_page(
+                session,
+                snapshot=snapshot,
+                after_ordinal=(cursor_state.last_ordinal if cursor_state else 0),
+            )
+        except InvalidDocumentsCursorError:
+            _raise_invalid_documents_cursor()
+        except (
+            DocumentsCursorExpiredError,
+            DocumentsSnapshotBoundExceededError,
+            DocumentsSnapshotCapacityExceededError,
+            DocumentsSnapshotSourceUnavailableError,
+        ) as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
+        docs = [row.document for row in snapshot_rows]
+        snapshot_upload_times = {
+            row.document.id: row.upload_time for row in snapshot_rows
+        }
+        snapshot_report_dates = {
+            row.document.id: row.report_date for row in snapshot_rows
+        }
+        total = snapshot.snapshot_total
+        response.headers["X-Pagination-Mode"] = "cursor"
+        response.headers["X-Snapshot-Cutoff"] = snapshot.snapshot_cutoff.isoformat()
+        response.headers["X-Snapshot-Max-Id"] = str(snapshot.snapshot_max_id)
+        response.headers["X-Snapshot-Scope"] = "membership-report-authority"
+        response.headers["X-Page-Offset"] = "0"
+        if has_next and docs:
+            last = snapshot_rows[-1]
+            response.headers["X-Next-Cursor"] = encode_document_cursor(
+                DocumentCursor(
+                    user_id=user_id,
+                    limit=effective_limit,
+                    snapshot_id=snapshot.snapshot_id,
+                    last_ordinal=last.ordinal,
+                    last_upload_time=last.upload_time,
+                    last_id=last.document.id,
+                )
+            )
+    else:
+        legacy_offset = offset or 0
+        total = session.scalar(
+            select(func.count(PdfDocument.id)).where(
+                PdfDocument.user_id == user_id
+            )
+        ) or 0
+        effective_limit = limit or MAX_ACTIVE_REPORT_AUTHORITY_ITEMS
+        docs = session.scalars(
+            select(PdfDocument)
+            .where(PdfDocument.user_id == user_id)
+            .order_by(
+                PdfDocument.upload_time.desc().nulls_last(),
+                PdfDocument.id.desc(),
+            )
+            .offset(legacy_offset)
+            .limit(effective_limit)
+        ).all()
+        response.headers["X-Pagination-Mode"] = (
+            "offset" if offset is not None else "unpaged"
+        )
+        response.headers["X-Page-Offset"] = str(legacy_offset)
+        snapshot_upload_times = {}
+        snapshot_report_dates = {}
+
+    if limit is None and not cursor_mode and total > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        error = ActiveReportAuthorityBoundExceededError(
+            dimension="document_ids",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page-Limit"] = str(effective_limit)
     if not docs:
+        if created_cursor_snapshot:
+            session.commit()
         return []
 
     doc_ids = [doc.id for doc in docs]
@@ -178,15 +385,52 @@ def list_documents(
     )
 
     companies_map: dict[int, dict[int, dict[str, str]]] = {}
-    company_rows = session.execute(
+    company_query = (
         select(MetricFact.source_document_id, Stock.id, Stock.ticker, Stock.company_name)
         .join(Stock, Stock.id == MetricFact.stock_id)
         .where(
             MetricFact.source_document_id.in_(doc_ids),
             MetricFact.source_type == "parsed",
+            MetricFact.user_id == user_id,
         )
         .distinct()
-    ).all()
+        .limit(MAX_ACTIVE_REPORT_AUTHORITY_ITEMS + 1)
+    )
+    if cursor_mode:
+        company_query = company_query.where(
+            MetricFact.value_line_fact_known_at.is_not(None),
+            MetricFact.value_line_fact_known_at <= snapshot.snapshot_cutoff,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=snapshot.snapshot_cutoff,
+                    knowledge_txid_snapshot=snapshot.visibility_snapshot,
+                    scope=CurrentnessScope(
+                        source_document_ids=tuple(doc_ids),
+                        user_ids=(user_id,),
+                        source_types=("parsed",),
+                    ),
+                )
+            ),
+            or_(
+                MetricFact.value_line_created_txid.is_(None),
+                transaction_visible_in_snapshot_predicate(
+                    MetricFact.value_line_created_txid,
+                    visibility_snapshot=snapshot.visibility_snapshot,
+                    bind_name="document_company_visibility_snapshot",
+                ),
+            ),
+        )
+    company_rows = session.execute(company_query).all()
+    if len(company_rows) > MAX_ACTIVE_REPORT_AUTHORITY_ITEMS:
+        error = ActiveReportAuthorityBoundExceededError(
+            dimension="document_stock_candidates",
+            limit=MAX_ACTIVE_REPORT_AUTHORITY_ITEMS,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     for doc_id, stock_id, ticker, company_name in company_rows:
         if doc_id is None:
             continue
@@ -196,12 +440,49 @@ def list_documents(
         }
 
     # Ensure single-stock docs still show company even if no parsed facts exist.
-    stock_ids = [doc.stock_id for doc in docs if doc.stock_id]
+    stock_ids = sorted(
+        {
+            *(
+                []
+                if cursor_mode
+                else [doc.stock_id for doc in docs if doc.stock_id]
+            ),
+            *[
+                stock_id
+                for companies in companies_map.values()
+                for stock_id in companies
+            ],
+        }
+    )
     stock_lookup = {
         stock.id: stock
         for stock in session.scalars(select(Stock).where(Stock.id.in_(stock_ids))).all()
     }
-    active_reports_by_stock = resolve_active_reports(session, document_ids=doc_ids)
+    try:
+        active_reports_by_stock = (
+            resolve_active_reports(
+                session,
+                stock_ids=stock_ids,
+                current_user_id=user_id,
+                knowledge_cutoff=(snapshot.snapshot_cutoff if cursor_mode else None),
+                knowledge_txid_snapshot=(
+                    snapshot.visibility_snapshot if cursor_mode else None
+                ),
+            )
+            if stock_ids
+            else {}
+        )
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        HistoricalCurrentnessUnverifiableError,
+        ValueLineSourceUnavailableError,
+    ) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     active_tickers_by_doc: dict[int, list[str]] = {}
     for stock_id, active in active_reports_by_stock.items():
         stock = stock_lookup.get(stock_id)
@@ -215,7 +496,12 @@ def list_documents(
     output = []
     for doc in docs:
         companies_dict = companies_map.get(doc.id, {})
-        if doc.stock_id and doc.stock_id in stock_lookup and doc.stock_id not in companies_dict:
+        if (
+            not cursor_mode
+            and doc.stock_id
+            and doc.stock_id in stock_lookup
+            and doc.stock_id not in companies_dict
+        ):
             stock = stock_lookup[doc.stock_id]
             companies_dict[doc.stock_id] = {
                 "ticker": stock.ticker,
@@ -239,8 +525,18 @@ def list_documents(
                 "source": doc.source,
                 "template_label": template_label,
                 "parse_status": doc.parse_status,
-                "upload_time": doc.upload_time.isoformat() if doc.upload_time else None,
-                "report_date": doc.report_date.isoformat() if doc.report_date else None,
+                "upload_time": (
+                    snapshot_upload_times.get(doc.id, doc.upload_time).isoformat()
+                    if snapshot_upload_times.get(doc.id, doc.upload_time)
+                    else None
+                ),
+                "report_date": (
+                    snapshot_report_dates.get(doc.id)
+                    if cursor_mode
+                    else doc.report_date
+                ).isoformat()
+                if (snapshot_report_dates.get(doc.id) if cursor_mode else doc.report_date)
+                else None,
                 "page_count": page_counts.get(doc.id, 0),
                 "parsed_page_count": parsed_page_counts.get(doc.id, 0),
                 "companies": companies,
@@ -250,14 +546,22 @@ def list_documents(
             }
         )
 
-    return sorted(
-        output,
-        key=lambda item: (
-            _document_sort_ticker(item),
-            item["report_date"] or "",
-            item["id"],
-        ),
-    )
+    # Preserve the exact stable order used by the SQL page. Re-sorting a page by
+    # derived ticker/report metadata would make offset pages overlap or skip rows.
+    if created_cursor_snapshot:
+        # Publish the snapshot only after the first page and all derived
+        # metadata were produced from the same request transaction.
+        session.commit()
+    return output
+
+
+def _raise_invalid_documents_cursor() -> None:
+    error = InvalidDocumentsCursorError()
+    raise HTTPException(
+        status_code=400,
+        detail={"code": error.code, "message": str(error)},
+    ) from error
+
 
 @router.post("/upload", response_model=dict)
 def upload_document(
@@ -289,6 +593,8 @@ def upload_document(
         )
 
     user_id = current_user.id
+    # This must precede the rate-limit event and every document/fact child write.
+    lock_user_privacy_write(session, user_id=user_id)
     try:
         consume_user_operation(
             session,
@@ -316,6 +622,11 @@ def upload_document(
             "page_count": len(doc.pages),
             "page_reports": page_reports,
         }
+    except HistoricalCurrentnessUnverifiableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
@@ -342,6 +653,14 @@ def reparse_document(
     try:
         doc = service.reparse_existing_document(user_id=user_id, document_id=document_id, reextract_pdf=reextract_pdf)
         return {"id": doc.id, "status": doc.parse_status}
+    except (
+        ReportIdentityUnverifiableError,
+        HistoricalCurrentnessUnverifiableError,
+    ) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reparse failed: {str(e)}")
 
@@ -754,26 +1073,29 @@ def _iso_date(value: Any) -> Optional[str]:
     return iso() if callable(iso) else str(value)
 
 
-def _document_sort_ticker(document_row: dict[str, Any]) -> str:
-    companies = document_row.get("companies")
-    if isinstance(companies, list) and companies:
-        first_company = companies[0]
-        if isinstance(first_company, dict):
-            ticker = first_company.get("ticker")
-            if ticker:
-                return str(ticker).upper()
-    return "~"
-
-
 def _document_review_selected_facts(
     session: SessionDep,
     doc: PdfDocument,
 ) -> list[MetricFact]:
+    evaluation_snapshot = database_evaluation_snapshot(session)
     rows = session.scalars(
         select(MetricFact)
         .where(
             MetricFact.user_id == doc.user_id,
             MetricFact.source_document_id == doc.id,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=evaluation_snapshot.cutoff,
+                    knowledge_txid_snapshot=(
+                        evaluation_snapshot.visibility_snapshot
+                    ),
+                    scope=CurrentnessScope(
+                        source_document_ids=(doc.id,),
+                        user_ids=(doc.user_id,),
+                    ),
+                )
+            ),
         )
         .order_by(MetricFact.id.asc())
     ).all()
@@ -798,10 +1120,9 @@ def _document_review_fact_identity(fact: MetricFact) -> tuple[Any, ...]:
     )
 
 
-def _document_review_fact_rank(fact: MetricFact) -> tuple[int, int, int]:
+def _document_review_fact_rank(fact: MetricFact) -> tuple[int, int]:
     manual_rank = 1 if fact.source_type == "manual" else 0
-    current_rank = 1 if fact.is_current else 0
-    return (manual_rank, current_rank, fact.id)
+    return (manual_rank, fact.id)
 
 
 def _document_review_lineage_by_fact_id(
@@ -912,7 +1233,9 @@ def _document_review_item(
         "period_end_date": _iso_date(fact.period_end_date),
         "as_of_date": _iso_date(fact.as_of_date),
         "source_type": fact.source_type,
-        "is_current": fact.is_current,
+        # Every row was selected through the request's retained currentness
+        # timeline; never substitute the mutable live projection here.
+        "is_current": True,
         "lineage_available": lineage is not None,
         "lineage": _document_review_lineage(lineage),
         "editable": True,

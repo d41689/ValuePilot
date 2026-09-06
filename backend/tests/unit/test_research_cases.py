@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy.exc import DBAPIError
@@ -15,6 +16,12 @@ from app.models.research import (
 )
 from app.models.stocks import Stock
 from app.services.ingestion_service import IngestionService
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
+from app.services.research_workspace import build_research_workspace
 
 
 def _stock(db_session, ticker: str = "CASE") -> Stock:
@@ -45,6 +52,518 @@ def _create(client, headers, stock_id: int, *, origin_key: str = "manual"):
             },
         },
     )
+
+
+def test_workspace_endpoint_derives_current_as_of_from_one_database_cutoff(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import research as research_endpoint
+
+    user = user_factory("research-workspace-clock@example.com")
+    evaluated_at = datetime(2026, 9, 4, 0, 30, tzinfo=timezone.utc)
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        research_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: evaluated_at,
+        raising=False,
+    )
+
+    def capture_workspace(_session, **kwargs):
+        observed.update(kwargs)
+        return {"status": "captured"}
+
+    monkeypatch.setattr(
+        research_endpoint, "build_research_workspace", capture_workspace
+    )
+
+    response = client.get(
+        "/api/v1/research/cases/17/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert observed["evaluated_at"] is evaluated_at
+    assert observed["as_of"] == date(2026, 9, 3)
+
+
+def test_workspace_service_uses_supplied_cutoff_for_current_facts_and_gates(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = user_factory("research-workspace-service-clock@example.com", role="admin")
+    stock = _stock(db_session, "RWSCLOCK")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+    effective_date = database_evaluation_cutoff(db_session).date() + timedelta(days=2)
+    review_company_classification(
+        db_session,
+        reviewer_user_id=user.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=effective_date,
+        review_reason="Workspace boundary classification review.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=user.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=effective_date,
+            review_reason=f"Workspace boundary review for {risk_attribute}.",
+        )
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.future",
+            value_numeric=99,
+            period_type="FY",
+            period_end_date=effective_date,
+            source_type="manual",
+            is_current=True,
+            created_at=datetime.combine(
+                effective_date + timedelta(days=1),
+                datetime.min.time(),
+                tzinfo=timezone.utc,
+            ),
+            updated_at=datetime.combine(
+                effective_date + timedelta(days=1),
+                datetime.min.time(),
+                tzinfo=timezone.utc,
+            ),
+        )
+    )
+    db_session.commit()
+    evaluated_at = datetime.combine(
+        effective_date, datetime.min.time(), tzinfo=timezone.utc
+    ) + timedelta(minutes=30)
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=effective_date - timedelta(days=1),
+        evaluated_at=evaluated_at,
+    )
+
+    assert workspace["as_of"] == (effective_date - timedelta(days=1)).isoformat()
+    assert {
+        gate["effective_as_of"]
+        for gate in workspace["system_method_gates"].values()
+    } == {(effective_date - timedelta(days=1)).isoformat()}
+    assert {
+        gate["knowledge_at"]
+        for gate in workspace["system_method_gates"].values()
+    } == {evaluated_at.isoformat()}
+    assert {
+        gate["reason_code"] for gate in workspace["system_method_gates"].values()
+    } == {"classification_unreviewed"}
+    assert not any(
+        fact.get("metric_key") == "custom.future"
+        for fact in workspace["fundamentals"]
+    )
+
+    after_new_york_midnight = datetime.combine(
+        effective_date,
+        datetime.min.time(),
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(timezone.utc) + timedelta(minutes=30)
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=effective_date,
+        evaluated_at=after_new_york_midnight,
+    )
+    assert workspace["system_method_gates"]["roic"]["status"] == "approved"
+
+
+def test_workspace_actual_conflicts_exclude_reports_learned_after_cutoff(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    user = user_factory("research-workspace-report-pit@example.com")
+    stock = _stock(db_session, "RWSREPORT")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    old_doc = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-old.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-old.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add_all([case, old_doc])
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            value_json={"fact_nature": "actual"},
+            value_numeric=100,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=old_doc.id,
+            is_current=False,
+        )
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    new_doc = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-future.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-future.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 4, 9),
+    )
+    db_session.add(new_doc)
+    db_session.flush()
+    future_timestamp = cutoff + timedelta(minutes=1)
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="is.net_income",
+            value_json={"fact_nature": "actual"},
+            value_numeric=120,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=new_doc.id,
+            is_current=True,
+            created_at=future_timestamp,
+            updated_at=future_timestamp,
+        )
+    )
+    db_session.commit()
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=evaluation_business_date(cutoff),
+        evaluated_at=cutoff,
+    )
+
+    assert workspace["actual_conflicts"] == []
+
+
+def test_workspace_provenance_uses_fact_bound_report_identity_after_reparse_reset(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    user = user_factory("research-workspace-report-identity@example.com")
+    stock = _stock(db_session, "RWSIDENT")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-identity.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-identity.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add_all([case, document])
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.report_identity",
+            value_json={"fact_nature": "actual"},
+            value_numeric=100,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=document.id,
+            is_current=True,
+        )
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    IngestionService(db_session)._reset_document_parse_projection(document)
+    db_session.commit()
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=evaluation_business_date(cutoff),
+        evaluated_at=cutoff,
+    )
+    fact = next(
+        item
+        for item in workspace["fundamentals"]
+        if item["metric_key"] == "custom.report_identity"
+    )
+    assert fact["source_report_date"] == "2026-01-09"
+    assert workspace["actual_conflicts"] == []
+
+
+def test_workspace_documents_come_from_visible_multi_company_fact_identity(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    user = user_factory("research-workspace-container@example.com")
+    stock = _stock(db_session, "RWSCONTAINER")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-container.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-container.pdf",
+        parse_status="parsed",
+        stock_id=None,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add_all([case, document])
+    db_session.flush()
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="custom.container_provenance",
+        value_json={"fact_nature": "actual"},
+        value_numeric=100,
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_type="parsed",
+        source_document_id=document.id,
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+    evaluated_at = database_evaluation_cutoff(db_session)
+
+    workspace = build_research_workspace(
+        db_session,
+        user_id=user.id,
+        case_id=case.id,
+        as_of=evaluation_business_date(evaluated_at),
+        evaluated_at=evaluated_at,
+    )
+
+    assert [item["id"] for item in workspace["documents"]] == [document.id]
+    assert workspace["documents"][0]["report_date"] == "2026-01-09"
+    visible_fact = next(
+        item
+        for item in workspace["fundamentals"]
+        if item.get("id") == fact.id
+    )
+    assert visible_fact["source_document_id"] == document.id
+    assert visible_fact["source_report_date"] == "2026-01-09"
+
+
+def test_workspace_excludes_database_stamped_fact_created_after_cutoff(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import research as research_endpoint
+    from app.services.canonical_financials import database_evaluation_cutoff
+
+    user = user_factory("workspace-unverifiable-report-identity@example.com")
+    stock = _stock(db_session, "RWSUNVER")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="workspace-unverifiable.pdf",
+        source="value_line",
+        file_storage_key="tests/workspace-unverifiable.pdf",
+        parse_status="parsed",
+        stock_id=stock.id,
+        report_date=date(2026, 1, 9),
+    )
+    db_session.add(document)
+    db_session.flush()
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="custom.workspace_unverifiable",
+            value_json={"fact_nature": "actual"},
+            value_numeric=100,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_type="parsed",
+            source_document_id=document.id,
+            is_current=True,
+            created_at=cutoff - timedelta(minutes=1),
+            updated_at=cutoff - timedelta(minutes=1),
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        research_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: cutoff,
+    )
+
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["documents"] == []
+    assert response.json()["fundamentals"] == []
+
+
+def test_workspace_maps_active_report_authority_bound_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services.active_report_resolver import (
+        ActiveReportAuthorityBoundExceededError,
+    )
+    from app.services import research_workspace
+
+    user = user_factory("workspace-active-report-bound@example.com")
+    stock = _stock(db_session, "RWSBOUND")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_bound(*_args, **_kwargs):
+        raise ActiveReportAuthorityBoundExceededError(
+            dimension="candidates",
+            limit=500,
+        )
+
+    monkeypatch.setattr(research_workspace, "resolve_active_reports", reject_bound)
+
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "active_report_authority_bound_exceeded",
+        "message": "Active report authority exceeds the supported bounded scope.",
+    }
+
+
+def test_workspace_maps_value_line_source_loss_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import research_workspace
+    from app.services.value_line_source_visibility import (
+        ValueLineSourceUnavailableError,
+    )
+
+    user = user_factory("workspace-source-unavailable@example.com")
+    stock = _stock(db_session, "RWSSOURCE")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_source(*_args, **_kwargs):
+        raise ValueLineSourceUnavailableError()
+
+    monkeypatch.setattr(research_workspace, "resolve_active_reports", reject_source)
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "source_unavailable"
+
+
+def test_workspace_maps_actual_conflict_observation_bound_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import research_workspace
+    from app.services.actual_conflict_service import (
+        ActualConflictAuthorityBoundExceededError,
+    )
+
+    user = user_factory("workspace-actual-conflict-bound@example.com")
+    stock = _stock(db_session, "RWSACBOUND")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_bound(*_args, **_kwargs):
+        raise ActualConflictAuthorityBoundExceededError(
+            dimension="observations",
+            limit=500,
+        )
+
+    monkeypatch.setattr(research_workspace, "detect_actual_conflicts", reject_bound)
+
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "actual_conflict_authority_bound_exceeded",
+        "message": "Actual conflict authority exceeds the supported bounded scope.",
+    }
+
+
+def test_workspace_maps_ambiguous_actual_conflict_authority_to_typed_conflict(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.services import research_workspace
+    from app.services.actual_conflict_service import (
+        ActualConflictAuthorityAmbiguousError,
+    )
+
+    user = user_factory("workspace-actual-conflict-ambiguous@example.com")
+    stock = _stock(db_session, "RWSACAMB")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    def reject_ambiguous(*_args, **_kwargs):
+        raise ActualConflictAuthorityAmbiguousError(fact_ids=[11, 12])
+
+    monkeypatch.setattr(
+        research_workspace,
+        "detect_actual_conflicts",
+        reject_ambiguous,
+    )
+    response = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "actual_conflict_authority_ambiguous",
+        "message": (
+            "Actual conflict authority cannot identify a unique canonical fact."
+        ),
+    }
 
 
 def _monitoring_revision(expected_head: int = 0) -> dict:
@@ -492,7 +1011,11 @@ def test_batch_valuation_reader_respects_newest_unavailable_tombstone(
     )[stock.id]["val.fair_value"]
 
     assert selected.value_numeric is None
-    assert selected.value_json["reason"] == "evidence_insufficient"
+    assert selected.value_json == {
+        "status": "unsupported",
+        "reason_code": "valuation_origin_unverifiable",
+    }
+    assert selected.source_ref_id == 2
 
 
 def test_append_only_tables_reject_normal_update_and_delete(
@@ -614,7 +1137,10 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
                         {
                             "fact_id": owner_metric.id,
                             "metric_key": owner_metric.metric_key,
+                            "period_end_date": "2025-12-31",
+                            "value_numeric": "0.21",
                             "source_type": "parsed",
+                            "fact_nature": "actual",
                         }
                     ],
                 },
@@ -684,15 +1210,16 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
         "returns.return_on_equity",
         "score.piotroski.total",
     }
-    assert payload["piotroski_f_score"] == [
-        {
-            "fiscal_year": 2025,
-            "period_end_date": "2025-12-31",
-            "score": 8.0,
-            "status": "calculated",
-            "variant": "standard",
-        }
-    ]
+    assert payload["piotroski_f_score"] == []
+    piotroski_state = next(
+        fact
+        for fact in payload["fundamentals"]
+        if fact["metric_key"] == "score.piotroski.total"
+    )
+    assert piotroski_state["value_numeric"] is None
+    assert piotroski_state["reason_code"] == (
+        "piotroski_method_authority_manifest_missing"
+    )
     assert payload["valuation"]["display_state"] == "missing"
     assert payload["coverage"][0]["state"] == "ready"
     assert payload["holders_13f"]["status"] == "unavailable"
@@ -773,7 +1300,7 @@ def test_workspace_redacts_only_blocked_reconciliation_slot(
             parse_status="parsed",
             stock_id=stock.id,
             identity_needs_review=False,
-            report_date=date(2026, 1, 2),
+            report_date=date(2026, 1, 2 + index),
         )
         for index in range(2)
     ]
@@ -851,7 +1378,15 @@ def test_workspace_rejects_historical_as_of_until_pit_reconstruction_exists(
     user = user_factory(email="workspace-no-false-pit@example.com")
     stock = _stock(db_session, "NOPIT")
     case_id = _create(client, auth_headers(user), stock.id).json()["case"]["id"]
-    historical_day = date.today() - timedelta(days=1)
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    historical_day = (
+        evaluation_business_date(database_evaluation_cutoff(db_session))
+        - timedelta(days=1)
+    )
 
     response = client.get(
         f"/api/v1/research/cases/{case_id}/workspace?as_of={historical_day.isoformat()}",

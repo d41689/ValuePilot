@@ -12,9 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.core.currencies import normalize_iso4217_currency
 from app.models.facts import MetricFact
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    iter_current_metric_fact_id_chunks_at,
+)
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.stocks import Stock
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.market_data_service import (
     CanonicalEodPrice,
     read_canonical_eod_prices,
@@ -26,6 +31,8 @@ from app.services.canonical_financials import (
     CanonicalUnavailableError,
     MethodGateDecision,
     apply_reviewed_method_gates,
+    database_evaluation_cutoff,
+    evaluation_business_date,
     guard_sec_run_availability,
     reviewed_method_gate,
     visible_metric_fact_predicate,
@@ -39,6 +46,7 @@ from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.valuation import (
     USER_INTRINSIC_VALUE_KEY,
     VALUE_LINE_TARGET_REFERENCE_KEY,
+    ValuationFact,
     read_valuation_facts_by_stock,
 )
 from app.services.oracles_lens.manager_signal import derive_manager_signal_profile
@@ -126,6 +134,7 @@ def build_oracles_lens_dashboard(
     manager_id_allowlist: set[int] | None = None,
     universe_metadata: dict[str, Any] | None = None,
     user_id: int | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the Oracle's Lens dashboard payload.
 
@@ -148,6 +157,7 @@ def build_oracles_lens_dashboard(
     caller that omits this kwarg gets the legacy path — by design.
     Phase 4 will delete the parameter entirely.
     """
+    evaluated_at = database_evaluation_cutoff(session, knowledge_cutoff)
     periods = _periods(session, superinvestor_only=superinvestor_only)
     latest_complete = _latest_complete_period(periods, min_manager_coverage=min_holders)
 
@@ -274,6 +284,7 @@ def build_oracles_lens_dashboard(
         session,
         [item["stock_id"] for item in items],
         as_of_date=price_as_of_date,
+        knowledge_cutoff=evaluated_at,
     )
     quality_by_stock = _quality_overlay_by_stock(
         session,
@@ -282,6 +293,7 @@ def build_oracles_lens_dashboard(
         price_context=price_context,
         user_id=user_id,
         canonical_prices=canonical_prices,
+        knowledge_at=evaluated_at,
     )
     valuation_by_stock = _valuation_reference_by_stock(
         session,
@@ -296,6 +308,7 @@ def build_oracles_lens_dashboard(
         price_context=price_context,
         user_id=user_id,
         canonical_prices=canonical_prices,
+        knowledge_cutoff=evaluated_at,
     )
     for item in items:
         item["quality_overlay"] = quality_by_stock.get(item["stock_id"], _empty_quality_overlay())
@@ -1175,6 +1188,10 @@ def _m3_facts_by_stock(
     *,
     user_id: int | None = None,
     effective_as_of: date | None = None,
+    knowledge_at: datetime | None = None,
+    method_decisions_by_stock: (
+        dict[int, dict[str, MethodGateDecision]] | None
+    ) = None,
 ) -> tuple[dict[int, dict[str, MetricFact]], dict[int, dict[str, Any]]]:
     """Guard and select one current fact per (stock_id, metric_key).
 
@@ -1191,26 +1208,37 @@ def _m3_facts_by_stock(
     collapsed by ordering.
     """
     unique_stock_ids = list(dict.fromkeys(stock_ids))
+    evaluation_snapshot = database_evaluation_snapshot(session, knowledge_at)
+    evaluation_cutoff = evaluation_snapshot.cutoff
     if user_id is None or not unique_stock_ids or not metric_keys:
         return (
             {stock_id: {} for stock_id in unique_stock_ids},
             {stock_id: {"status": "available"} for stock_id in unique_stock_ids},
         )
 
-    facts = (
-        session.query(MetricFact)
-        .filter(visible_metric_fact_predicate(MetricFact, user_id=user_id))
-        .filter(MetricFact.stock_id.in_(unique_stock_ids))
-        .filter(MetricFact.metric_key.in_(metric_keys))
-        .filter(MetricFact.is_current.is_(True))
-        .order_by(
-            MetricFact.stock_id.asc(),
-            MetricFact.metric_key.asc(),
-            MetricFact.period_end_date.desc().nullslast(),
-            MetricFact.created_at.desc(),
+    facts: list[MetricFact] = []
+    for current_ids in iter_current_metric_fact_id_chunks_at(
+        session,
+        evaluation_snapshot=evaluation_snapshot,
+        scope=CurrentnessScope(
+            stock_ids=tuple(unique_stock_ids),
+            metric_keys=tuple(metric_keys),
+            user_ids=(user_id, None),
+        ),
+    ):
+        facts.extend(
+            session.query(MetricFact)
+            .filter(MetricFact.id.in_(current_ids))
+            .filter(visible_metric_fact_predicate(MetricFact, user_id=user_id))
+            .all()
         )
-        .all()
+    facts.sort(key=lambda fact: fact.created_at, reverse=True)
+    facts.sort(
+        key=lambda fact: fact.period_end_date or date.min,
+        reverse=True,
     )
+    facts.sort(key=lambda fact: fact.metric_key)
+    facts.sort(key=lambda fact: fact.stock_id)
     candidates: dict[int, dict[str, list[MetricFact]]] = {
         stock_id: {} for stock_id in unique_stock_ids
     }
@@ -1222,12 +1250,29 @@ def _m3_facts_by_stock(
     statuses = {stock_id: {"status": "available"} for stock_id in unique_stock_ids}
     for stock_id, by_key in candidates.items():
         all_facts = [fact for rows in by_key.values() for fact in rows]
-        kept, _, _ = apply_reviewed_method_gates(
+        kept, method_blocked, _ = apply_reviewed_method_gates(
             session,
             stock_id=stock_id,
             facts=all_facts,
-            effective_as_of=effective_as_of or date.today(),
+            effective_as_of=(
+                effective_as_of or evaluation_business_date(evaluation_cutoff)
+            ),
+            knowledge_at=evaluation_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
+            precomputed_decisions=(method_decisions_by_stock or {}).get(stock_id),
         )
+        if method_blocked:
+            statuses[stock_id] = {
+                "status": "partial",
+                "reason_code": method_blocked[0]["reason_code"],
+                "unavailable_metrics": [
+                    {
+                        "metric_key": item["metric_key"],
+                        "blocking_reasons": [item["reason_code"]],
+                    }
+                    for item in method_blocked
+                ],
+            }
         kept_ids = {fact.id for fact in kept}
         for metric_key, rows in by_key.items():
             rows = [fact for fact in rows if fact.id in kept_ids]
@@ -1237,7 +1282,7 @@ def _m3_facts_by_stock(
                 selected = guard_reconciled_source_selection(
                     rows,
                     consumer="oracles_lens_quality",
-                    knowledge_cutoff=datetime.now(timezone.utc),
+                    evaluation_snapshot=evaluation_snapshot,
                     session=session,
                     user_id=user_id,
                 )
@@ -1245,6 +1290,8 @@ def _m3_facts_by_stock(
                     session,
                     stock_id=stock_id,
                     facts=selected,
+                    knowledge_cutoff=evaluation_cutoff,
+                    evaluation_snapshot=evaluation_snapshot,
                 )
             except CanonicalReconciliationError as error:
                 status = statuses[stock_id]
@@ -1280,23 +1327,6 @@ def _m3_facts_by_stock(
                 statuses[stock_id] = error.state
                 result[stock_id] = {}
                 break
-            if metric_key.startswith("owners_earnings_per_share"):
-                authoring_types = {
-                    "user_authored"
-                    if isinstance(fact.value_json, dict)
-                    and fact.value_json.get("user_authored_formula") is True
-                    else "system_method"
-                    for fact in selected
-                }
-                if len(authoring_types) > 1:
-                    statuses[stock_id] = {
-                        "status": "source_conflict",
-                        "reason_code": "authoring_conflict",
-                        "source_types": sorted({fact.source_type for fact in selected}),
-                        "authoring_types": sorted(authoring_types),
-                    }
-                    result[stock_id] = {}
-                    break
             result[stock_id][metric_key] = selected[0]
     return result, statuses
 
@@ -1309,17 +1339,35 @@ def _quality_overlay_by_stock(
     price_context: str = "latest",
     user_id: int | None = None,
     canonical_prices: dict[int, CanonicalEodPrice] | None = None,
+    knowledge_at: datetime | None = None,
 ) -> dict[int, dict[str, Any]]:
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     if not unique_stock_ids:
         return {}
 
+    evaluated_at = database_evaluation_cutoff(session, knowledge_at)
+    effective_as_of = price_as_of_date or evaluation_business_date(evaluated_at)
+    gate_decisions = {
+        stock_id: {
+            method_key: reviewed_method_gate(
+                session,
+                stock_id=stock_id,
+                method_key=method_key,
+                effective_as_of=effective_as_of,
+                knowledge_at=evaluated_at,
+            )
+            for method_key in ("owner_earnings", "roic")
+        }
+        for stock_id in unique_stock_ids
+    }
     facts_by_metric_key, source_statuses = _m3_facts_by_stock(
         session,
         unique_stock_ids,
         list(QUALITY_METRIC_KEYS.values()),
         user_id=user_id,
-        effective_as_of=price_as_of_date or date.today(),
+        effective_as_of=effective_as_of,
+        knowledge_at=evaluated_at,
+        method_decisions_by_stock=gate_decisions,
     )
     reverse_keys = {metric_key: label for label, metric_key in QUALITY_METRIC_KEYS.items()}
     facts_by_stock: dict[int, dict[str, MetricFact]] = {stock_id: {} for stock_id in unique_stock_ids}
@@ -1333,34 +1381,43 @@ def _quality_overlay_by_stock(
         session,
         unique_stock_ids,
         as_of_date=price_as_of_date,
+        knowledge_cutoff=evaluated_at,
     )
     method_decisions: dict[int, MethodGateDecision | dict[str, Any]] = {}
     for stock_id in unique_stock_ids:
-        owner_fact = facts_by_stock.get(stock_id, {}).get("owners_earnings")
-        owner_metadata = (
-            owner_fact.value_json
-            if owner_fact is not None and isinstance(owner_fact.value_json, dict)
-            else {}
+        owner_block = next(
+            (
+                reason
+                for item in source_statuses[stock_id].get(
+                    "unavailable_metrics", []
+                )
+                if str(item.get("metric_key", "")).startswith(
+                    "owners_earnings_per_share"
+                )
+                for reason in item.get("blocking_reasons", [])
+                if str(reason).startswith("method_authority_snapshot_")
+            ),
+            None,
         )
-        if owner_metadata.get("user_authored_formula") is True:
-            method_decisions[stock_id] = {
+        method_decisions[stock_id] = (
+            {
                 "method_key": "owner_earnings",
-                "status": "user_defined",
-                "reason_code": "user_authored_formula",
+                "status": "unsupported",
+                "reason_code": owner_block,
             }
-        else:
-            method_decisions[stock_id] = reviewed_method_gate(
-                session,
-                stock_id=stock_id,
-                method_key="owner_earnings",
-                effective_as_of=price_as_of_date or date.today(),
-            )
+            if owner_block is not None
+            else gate_decisions[stock_id]["owner_earnings"]
+        )
     return {
         stock_id: _quality_payload(
             facts_by_stock.get(stock_id, {}),
             prices.get(stock_id),
             price_context=price_context,
             owner_earnings_method=method_decisions[stock_id],
+            system_method_gates={
+                "owner_earnings": gate_decisions[stock_id]["owner_earnings"],
+                "roic": gate_decisions[stock_id]["roic"],
+            },
             canonical_source_status=source_statuses[stock_id],
         )
         for stock_id in unique_stock_ids
@@ -1372,8 +1429,10 @@ def _canonical_prices_by_stock(
     stock_ids: list[int],
     *,
     as_of_date: date | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[int, CanonicalEodPrice]:
     """Resolve display and calculation prices through the canonical contract."""
+    evaluated_at = database_evaluation_cutoff(session, knowledge_cutoff)
     stocks = session.query(Stock).filter(Stock.id.in_(stock_ids)).all()
     if as_of_date is not None:
         return read_canonical_eod_prices(
@@ -1381,8 +1440,13 @@ def _canonical_prices_by_stock(
             stocks=stocks,
             as_of=as_of_date,
             include_as_of_session=True,
+            knowledge_cutoff=evaluated_at,
         )
-    return read_current_eod_prices(session, stocks=stocks)
+    return read_current_eod_prices(
+        session,
+        stocks=stocks,
+        evaluated_at=evaluated_at,
+    )
 
 
 def _quality_payload(
@@ -1391,6 +1455,9 @@ def _quality_payload(
     *,
     price_context: str = "latest",
     owner_earnings_method: MethodGateDecision | dict[str, Any] | None = None,
+    system_method_gates: dict[
+        str, MethodGateDecision | dict[str, Any]
+    ] | None = None,
     canonical_source_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     price = current_price.current_value if current_price is not None else None
@@ -1474,6 +1541,16 @@ def _quality_payload(
     elif owner_yield is None and owner_comparison_reason is not None:
         if owner_comparison_reason not in unavailable:
             unavailable.append(owner_comparison_reason)
+    roic_decision = (system_method_gates or {}).get("roic")
+    roic_status = (
+        roic_decision.get("status")
+        if isinstance(roic_decision, dict)
+        else roic_decision.status
+        if roic_decision is not None
+        else None
+    )
+    if roic_decision is not None and roic_status != "approved":
+        unavailable.append("ROIC method unsupported")
 
     return {
         **values,
@@ -1489,6 +1566,14 @@ def _quality_payload(
                 "reason_code": "method_gate_not_evaluated",
             }
         ),
+        "system_method_gates": {
+            method_key: (
+                decision.as_dict()
+                if isinstance(decision, MethodGateDecision)
+                else decision
+            )
+            for method_key, decision in (system_method_gates or {}).items()
+        },
         "coverage": {
             "value_line": any(key in facts for key in QUALITY_METRIC_KEYS if key != "owners_earnings"),
             "price": price is not None,
@@ -1580,6 +1665,7 @@ def _valuation_reference_by_stock(
     price_context: str = "latest",
     user_id: int | None = None,
     canonical_prices: dict[int, CanonicalEodPrice] | None = None,
+    knowledge_cutoff: datetime | None = None,
 ) -> dict[int, dict[str, Any]]:
     stock_ids = list(holder_ranges_by_stock)
     if not stock_ids:
@@ -1589,12 +1675,14 @@ def _valuation_reference_by_stock(
         session,
         user_id=user_id,
         stock_ids=stock_ids,
+        knowledge_cutoff=knowledge_cutoff,
     )
 
     prices = canonical_prices or _canonical_prices_by_stock(
         session,
         stock_ids,
         as_of_date=price_as_of_date,
+        knowledge_cutoff=knowledge_cutoff,
     )
     return {
         stock_id: _valuation_payload(
@@ -1608,7 +1696,7 @@ def _valuation_reference_by_stock(
 
 
 def _valuation_payload(
-    facts: dict[str, MetricFact],
+    facts: dict[str, ValuationFact],
     current_price: CanonicalEodPrice | None,
     holder_range: tuple[float | None, float | None],
     *,
@@ -1623,12 +1711,21 @@ def _valuation_payload(
     reference_type = "missing"
     reference_confidence = "unavailable"
     reference_currency = None
-    if manual and manual.value_numeric is not None:
-        reference = float(manual.value_numeric)
-        reference_label = "User-entered valuation reference"
-        reference_type = "manual_intrinsic_value"
-        reference_confidence = "user_supplied"
-        reference_currency = _fact_currency(manual)
+    manual_reason = None
+    if manual is not None:
+        if manual.value_numeric is not None:
+            reference = float(manual.value_numeric)
+            reference_label = "User-entered valuation reference"
+            reference_type = "manual_intrinsic_value"
+            reference_confidence = "user_supplied"
+            reference_currency = _fact_currency(manual)
+        elif isinstance(manual.value_json, dict):
+            reason = manual.value_json.get("reason_code")
+            if manual.value_json.get("status") == "unsupported" and isinstance(
+                reason, str
+            ):
+                manual_reason = reason
+                reference_type = "unsupported"
     elif target and target.value_numeric is not None:
         reference = float(target.value_numeric)
         reference_label = "Value Line 18-month target midpoint"
@@ -1644,7 +1741,7 @@ def _valuation_payload(
         if current_price is None
         else None
     )
-    comparison_reason = price_reason
+    comparison_reason = manual_reason or price_reason
     if comparison_reason is None and reference is not None and reference_currency is None:
         comparison_reason = "valuation_currency_unavailable"
     elif (
@@ -1676,7 +1773,7 @@ def _valuation_payload(
     ):
         unavailable.append(holder_comparison_reason)
     if reference is None:
-        unavailable.append("missing valuation reference")
+        unavailable.append(manual_reason or "missing valuation reference")
     if holder_low is None or holder_high is None:
         unavailable.append("missing holder price estimate")
 

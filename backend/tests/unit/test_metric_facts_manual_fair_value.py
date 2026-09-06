@@ -1,4 +1,5 @@
 import copy
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -17,6 +18,12 @@ from app.services.dcf_inputs import (
     calculate_dcf_model,
     dcf_manifest_token,
 )
+from app.services import dcf_inputs
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
 
 
 FAIR_VALUE_KEY = "val.fair_value"
@@ -24,7 +31,11 @@ ET = ZoneInfo("America/New_York")
 
 
 def _make_user(db_session, email: str = "fairvalue@example.com") -> User:
-    user = User(email=email, hashed_password=hash_password("TestPass123!"))
+    user = User(
+        email=email,
+        hashed_password=hash_password("TestPass123!"),
+        role="admin",
+    )
     db_session.add(user)
     db_session.commit()
     return user
@@ -38,6 +49,24 @@ def _make_stock(db_session, ticker: str) -> Stock:
 
 
 def _add_dcf_inputs(db_session, *, user, stock, currencies=("USD", "USD", "USD")):
+    review_company_classification(
+        db_session,
+        reviewer_user_id=user.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=date(2020, 1, 1),
+        review_reason="Reviewed operating model for DCF contract test.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=user.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=date(2020, 1, 1),
+            review_reason=f"Reviewed {risk_attribute} for DCF contract test.",
+        )
     period_end = date(2025, 12, 31)
     facts = [
         MetricFact(
@@ -104,6 +133,26 @@ def _add_dcf_inputs(db_session, *, user, stock, currencies=("USD", "USD", "USD")
     db_session.add_all(facts)
     db_session.commit()
     return facts
+
+
+@pytest.fixture(autouse=True)
+def _ft09_authorized_system_valuation_for_dcf_contract_tests(monkeypatch):
+    """Exercise DCF mechanics behind the FT-07 gate with a test-only FT-09 rule."""
+
+    original_gate = dcf_inputs.reviewed_method_gate
+
+    def reviewed_gate(session, **kwargs):
+        decision = original_gate(session, **kwargs)
+        if decision.method_key != "system_valuation":
+            return decision
+        return replace(
+            decision,
+            status="approved",
+            reason_code="approved",
+            method_version_id="test-system-valuation-v1",
+        )
+
+    monkeypatch.setattr(dcf_inputs, "reviewed_method_gate", reviewed_gate)
 
 
 def _dcf_assumption(client, *, user, stock, auth_headers, selection="norm"):
@@ -665,7 +714,18 @@ def test_put_dcf_rejects_manifest_across_new_york_calendar_day(
         datetime(2026, 9, 10, 1, 30, tzinfo=timezone.utc),
         date(2026, 9, 9),
     )
-    monkeypatch.setattr(stocks_endpoint, "dcf_evaluation_clock", lambda: clock)
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: clock.evaluated_at,
+    )
+    monkeypatch.setattr(
+        stocks_endpoint,
+        "dcf_evaluation_clock",
+        lambda *, evaluated_at: DcfEvaluationClock(
+            evaluated_at, clock.effective_as_of
+        ),
+    )
     assumption = _dcf_assumption(
         client, user=user, stock=stock, auth_headers=auth_headers
     )
@@ -693,21 +753,21 @@ def test_put_dcf_revalidates_classification_authority_at_save_time(
     assumption = _dcf_assumption(
         client, user=user, stock=stock, auth_headers=auth_headers
     )
-    db_session.execute(
+    prior_review_id = db_session.execute(
         text(
-            """
-            INSERT INTO sec_economic_classification_reviews
-              (stock_id, economic_class, effective_from, reviewer_user_id,
-               review_reason)
-            VALUES (:stock_id, 'ordinary', :effective_from, :reviewer,
-                    'R12 save-time authority regression')
-            """
+            "SELECT id FROM sec_economic_classification_reviews "
+            "WHERE stock_id=:stock_id ORDER BY id DESC LIMIT 1"
         ),
-        {
-            "stock_id": stock.id,
-            "effective_from": datetime.now(timezone.utc).astimezone(ET).date(),
-            "reviewer": user.id,
-        },
+        {"stock_id": stock.id},
+    ).scalar_one()
+    review_company_classification(
+        db_session,
+        reviewer_user_id=user.id,
+        stock_id=stock.id,
+        economic_class="bank",
+        effective_from=datetime.now(timezone.utc).astimezone(ET).date(),
+        review_reason="Reviewed classification change before DCF save.",
+        supersedes_review_id=prior_review_id,
     )
     db_session.commit()
 
@@ -718,7 +778,7 @@ def test_put_dcf_revalidates_classification_authority_at_save_time(
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "dcf_input_selection_changed"
+    assert response.json()["detail"]["code"] == "owner_earnings_unsupported_for_bank"
 
 
 def test_put_dcf_rejects_duplicate_dcf_assumptions_even_if_first_is_valid(
@@ -868,6 +928,8 @@ def test_get_then_save_selects_older_eligible_facts_after_latest_are_blocked(
     entry = fetched.json()["dcf_inputs"]
     assert entry["input_manifest"]["selected_year"] == 2025
     assert [item["year"] for item in fetched.json()["oeps_series"]] == [
+        2027,
+        2026,
         2025,
         2024,
         2023,
