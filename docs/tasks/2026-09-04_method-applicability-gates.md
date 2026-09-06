@@ -1097,3 +1097,56 @@ strict read-only Terra full-diff review with no P0–P3 findings before sign-off
   remediation is green. The other exact gates pass: container rebuild,
   migration at the sole revision-340 head, `233` frontend unit tests, frontend
   lint, production frontend build, and `git diff --check`.
+- 2026-09-05: Terra R27 found two real release blockers. First, revision 340's
+  legacy `account_erasure_events` authority backfill was unreachable from
+  revision 330 whenever retained events existed, because revision 330's
+  append-only trigger correctly rejected the migration's `UPDATE`. A later
+  migration cannot repair a failure that prevents reaching that later
+  revision. Revision 340 exists only on draft PR #143 and has not entered
+  `main` or production. Before applying the controlled unpublished-migration
+  exception, shared development was checked at revision 340 with zero
+  `account_erasure_barriers`, zero `account_erasure_events`, and zero
+  `privacy_erasure_operations`, then downgraded to 330. Revision 340 now
+  suspends only the named append-only event trigger within the same
+  transactional migration, backfills database-owned operation authority, and
+  restores the trigger before installing its stricter replacement. A new
+  regression seeds a real legacy event at 330, upgrades to 340, verifies the
+  exact event/operation/barrier binding and inactive user, and proves the event
+  is append-only after upgrade. Empty 340 -> 330 -> 340 and legacy 330 -> 340
+  both pass; shared development has been upgraded back to the sole 340 head.
+  The unpublished revision file checksum changed from
+  `8f930bd6d3cd6ff5fd28b7eaff5d749437a0e7d69778796f3ff474655100c145`
+  at pushed commit `7e95c0a8` to
+  `6a9487a4bf71f8dcd60658ccef068d1b1010810d0011c25d133701ad27dddeac`
+  for this compatibility fix; no released migration checksum changed.
+- 2026-09-05: Second, `IngestionService.process_upload` had two intentional
+  phase commits that released PostgreSQL's transaction-scoped user privacy
+  lock. A concurrent account erasure could commit after the first phase and
+  the upload could then persist `raw_text` and `document_pages`. The commits
+  remain because they preserve the existing durable upload/failure workflow,
+  but every intermediate commit now immediately reacquires and checks the
+  permanent per-user barrier before any later private database write. The
+  exception path likewise reacquires after rollback before recording failure
+  content. A two-session phased test commits the initial document, commits
+  erasure from another transaction, and proves the resumed upload is rejected
+  with no page or raw-text write. The existing successful upload and reparse
+  integration suites remain green (`14 passed`), and the R26/R27 isolated
+  migration/concurrency suite is `9 passed` (both intermediate upload commits
+  are exercised).
+- 2026-09-05: R27 remains a narrow FT-07/#136 compatibility closure. It does
+  not claim that PDF storage, documents/pages/extractions, or every other
+  user-owned writer is erased or permanently blocked. The complete table,
+  column, JSON/text, retained-file, and background-writer inventory remains an
+  explicit FT-02/#137 requirement in `docs/BACKLOG.md`. GitHub CI run
+  `34001242649` is green for prior R26 commit `7e95c0a8` (backend, frontend,
+  lint, production build, and Rate Guard), but it predates R27 and is not used
+  as evidence for the current patch. Fresh focused, broad, exact canonical CI,
+  migration round-trip, and stable-clock GitHub gates remain required before
+  R27 sign-off.
+- 2026-09-05: R27 local closing gates are green on a stable clock: container
+  rebuild; shared database at the sole revision-340 head; isolated empty
+  340 -> 330 -> 340 and retained legacy-event 330 -> 340 migration coverage;
+  backend `2719 passed`; frontend `233 passed`; frontend lint; production
+  frontend build; and `git diff --check`. Only the existing Starlette/httpx and
+  anyio deprecation warnings remain. A fresh GitHub CI run on the R27 commit
+  remains required before review sign-off.

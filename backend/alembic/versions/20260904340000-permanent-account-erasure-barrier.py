@@ -558,6 +558,12 @@ def upgrade() -> None:
         ALTER TABLE privacy_erasure_operations
           ENABLE TRIGGER trg_privacy_erasure_operations_immutable;
 
+        -- Revision 330 correctly rejects UPDATE on this append-only table.
+        -- Temporarily suspend only that known trigger inside this transactional
+        -- migration while DB-owned authority columns are backfilled; any error
+        -- rolls the trigger state and all data changes back together.
+        ALTER TABLE account_erasure_events
+          DISABLE TRIGGER trg_account_erasure_events_append_only;
         UPDATE account_erasure_events e SET
           privacy_erasure_operation_id=(
             SELECT p.id FROM privacy_erasure_operations p
@@ -569,6 +575,8 @@ def upgrade() -> None:
             WHERE p.user_id=e.user_id AND p.operation_kind='account_erasure'
             ORDER BY p.id LIMIT 1
           );
+        ALTER TABLE account_erasure_events
+          ENABLE TRIGGER trg_account_erasure_events_append_only;
         INSERT INTO account_erasure_barriers
           (user_id,privacy_erasure_operation_id,created_at,created_txid)
         SELECT e.user_id,e.privacy_erasure_operation_id,e.created_at,e.created_txid

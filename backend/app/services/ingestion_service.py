@@ -152,6 +152,10 @@ class IngestionService:
         )
         self.db.add(doc)
         self.db.commit()
+        # A commit releases the transaction-scoped privacy advisory lock. Take
+        # it again before any later user-owned database write so an account
+        # erasure committed between upload phases becomes a permanent barrier.
+        lock_user_privacy_write(self.db, user_id=user_id)
         self.db.refresh(doc)
 
         page_reports: list[dict] = []
@@ -181,6 +185,7 @@ class IngestionService:
             doc.parse_status = "parsing"
             self.db.add(doc)
             self.db.commit()
+            lock_user_privacy_write(self.db, user_id=user_id)
             self.db.refresh(doc)
 
             parse_run = self._start_value_line_parse_run(
@@ -401,6 +406,9 @@ class IngestionService:
         except Exception as e:
             # Handle failure
             self.db.rollback()
+            # Rollback also releases the privacy lock. Re-check the permanent
+            # barrier before recording failure details from this upload.
+            lock_user_privacy_write(self.db, user_id=user_id)
             doc = self.db.get(PdfDocument, doc.id)
             if doc is None:
                 raise

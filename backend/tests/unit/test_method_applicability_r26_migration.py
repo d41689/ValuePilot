@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import UploadFile
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -16,7 +20,11 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.models.users import User
 from app.services.account_erasure import erase_account
-from app.services.privacy_erasure import privacy_erasure_db_capability
+from app.services.ingestion_service import IngestionService
+from app.services.privacy_erasure import (
+    PrivacyErasureBarrierError,
+    privacy_erasure_db_capability,
+)
 from test_support.database_isolation import (
     build_isolated_database_url,
     create_test_schema,
@@ -105,6 +113,148 @@ def test_r26_empty_schema_roundtrips(isolated) -> None:
     _alembic(url, "upgrade", HEAD)
     _alembic(url, "downgrade", PARENT)
     _alembic(url, "upgrade", HEAD)
+
+
+def test_r26_upgrades_a_legacy_account_erasure_event_from_r25(isolated) -> None:
+    url, engine = isolated
+    _alembic(url, "upgrade", PARENT)
+    with engine.begin() as connection:
+        user_id = _seed_user(connection, "legacy-event")
+        event_id = int(
+            connection.scalar(
+                text(
+                    "INSERT INTO account_erasure_events "
+                    "(user_id,content_hash,summary_json) VALUES "
+                    "(:user,:hash,'{}'::jsonb) RETURNING id"
+                ),
+                {"user": user_id, "hash": "d" * 64},
+            )
+        )
+
+    _alembic(url, "upgrade", HEAD)
+    with engine.begin() as connection:
+        row = connection.execute(
+            text(
+                "SELECT e.privacy_erasure_operation_id,e.created_txid,"
+                "b.privacy_erasure_operation_id AS barrier_operation,"
+                "u.is_active,p.operation_kind "
+                "FROM account_erasure_events e "
+                "JOIN account_erasure_barriers b ON b.user_id=e.user_id "
+                "JOIN privacy_erasure_operations p "
+                "ON p.id=e.privacy_erasure_operation_id "
+                "JOIN users u ON u.id=e.user_id WHERE e.id=:event"
+            ),
+            {"event": event_id},
+        ).one()
+        assert row.privacy_erasure_operation_id == row.barrier_operation
+        assert row.created_txid == -event_id
+        assert row.is_active is False
+        assert row.operation_kind == "account_erasure"
+        with pytest.raises(DBAPIError, match="append-only"):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "UPDATE account_erasure_events "
+                        "SET summary_json=CAST(:summary AS jsonb) WHERE id=:event"
+                    ),
+                    {"event": event_id, "summary": '{"forged":true}'},
+                )
+
+
+@pytest.mark.parametrize(
+    ("blocked_commit", "expected_status", "expected_pages"),
+    [(1, "uploaded", 0), (2, "parsing", 1)],
+)
+def test_r27_upload_cannot_resume_private_writes_after_committed_erasure(
+    isolated,
+    monkeypatch,
+    blocked_commit: int,
+    expected_status: str,
+    expected_pages: int,
+) -> None:
+    """A phase commit must not let an upload outlive permanent account erase."""
+
+    url, engine = isolated
+    _alembic(url, "upgrade", HEAD)
+    with engine.begin() as connection:
+        user_id = _seed_user(connection, "upload-race")
+
+    first_upload_commit = threading.Event()
+    erasure_committed = threading.Event()
+    errors: list[BaseException] = []
+
+    monkeypatch.setattr(
+        "app.services.ingestion_service.PdfExtractor.extract_pages_with_words",
+        lambda _path: [(1, "x" * 100, [])],
+    )
+
+    def upload() -> None:
+        with Session(engine) as session:
+            original_commit = session.commit
+            commit_count = 0
+
+            def phased_commit() -> None:
+                nonlocal commit_count
+                original_commit()
+                commit_count += 1
+                if commit_count == blocked_commit:
+                    first_upload_commit.set()
+                    assert erasure_committed.wait(timeout=5)
+
+            session.commit = phased_commit  # type: ignore[method-assign]
+            service = IngestionService(session)
+            service.storage = SimpleNamespace(
+                save_upload_file=lambda _file, _key: "/tmp/r27-upload-race.pdf"
+            )
+            try:
+                service.process_upload(
+                    user_id=user_id,
+                    file=UploadFile(
+                        filename="r27-upload-race.pdf",
+                        file=BytesIO(b"%PDF-1.4 fake"),
+                    ),
+                )
+            except BaseException as exc:  # surfaced for an assertion in this thread
+                errors.append(exc)
+
+    worker = threading.Thread(target=upload)
+    worker.start()
+    assert first_upload_commit.wait(timeout=5)
+    with engine.begin() as connection:
+        _begin_erasure(connection, user_id)
+    erasure_committed.set()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], PrivacyErasureBarrierError)
+    with engine.begin() as connection:
+        document = connection.execute(
+            text(
+                "SELECT id,parse_status,raw_text FROM pdf_documents "
+                "WHERE user_id=:user"
+            ),
+            {"user": user_id},
+        ).one()
+        assert document.parse_status == expected_status
+        if expected_pages == 0:
+            assert document.raw_text is None
+        else:
+            assert document.raw_text == "x" * 100
+        assert connection.scalar(
+            text(
+                "SELECT count(*) FROM document_pages "
+                "WHERE document_id=:document"
+            ),
+            {"document": document.id},
+        ) == expected_pages
+        assert connection.scalar(
+            text(
+                "SELECT count(*) FROM value_line_parse_runs "
+                "WHERE document_id=:document"
+            ),
+            {"document": document.id},
+        ) == 0
 
 
 def test_r26_permanent_barrier_rejects_late_private_writes_and_reactivation(
