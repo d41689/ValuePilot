@@ -1,0 +1,112 @@
+# FT-10 automatic research coverage
+
+Status: in progress
+
+Issue: #133
+
+## Goal
+
+Connect the existing user-scoped coverage projection to the research-case and
+Inbox workflows so opening a case immediately produces an explainable,
+source-traceable readiness view without an admin action. This advances the
+circle-of-competence, normalized-owner-earnings, valuation, and disconfirmation
+jobs by keeping missing, stale, blocked, inaccessible, and unsupported evidence
+visible instead of silently treating an unevaluated case as ready.
+
+Success is observable when create/reopen, case workspace, and Inbox consumers
+agree on the same current business date and canonical coverage result, repeated
+evaluation is idempotent, and historical reconstruction fails closed.
+
+## Acceptance criteria
+
+- Creating a new case or reopening a closed/voided stock cycle materializes its
+  authoritative current coverage requirements in the same authenticated
+  workflow; repeated create/open and read operations do not duplicate rows.
+- The case workspace and coverage-driven Inbox actions expose the requirement
+  state, source/evidence identity, freshness or as-of date, reason, evaluation
+  time, and permitted next action.
+- Coverage incorporates the existing canonical price, source-visibility/
+  reconciliation, valuation, and reviewed method-gate decisions. It preserves
+  distinct `ready`, `missing`, `stale`, `blocked`, `inaccessible`, and
+  `unsupported` outcomes without inventing a value or choosing a source.
+- Case, Inbox, and coverage consumers derive their current date from one
+  database evaluation cutoff. Historical requests return the canonical
+  `historical_as_of_not_supported` result and do not mutate the projection.
+- Requirements remain user-owned. Cross-user reads disclose nothing, and the
+  admin endpoint remains aggregate-only without user, case, document, holding,
+  or requirement detail.
+- Tests cover repeat evaluation, lifecycle transitions and Inbox supersession,
+  permissions, missing evidence, source-policy blocking, inaccessible evidence,
+  unsupported method authority, and current/historical date behavior.
+
+## Scope
+
+### In scope
+
+- Minimal wiring from research case create/open, workspace reads, and Inbox
+  regeneration to the existing coverage evaluator.
+- Only coverage contract/model changes directly required to represent the
+  accepted FT-10 states and existing canonical authority results.
+- Focused case/coverage/Inbox UI copy and fields needed to expose source,
+  freshness/as-of, reason, and next action.
+- A fresh Alembic migration only if the existing database state constraint must
+  be extended; no migration or implementation is copied from frozen PR #128.
+
+### Out of scope
+
+- Notifications, portfolio/journal, postmortem, account/privacy redesign, new
+  acquisition providers, external SEC/13F fetches, or unrelated consumer
+  hardening.
+- New financial formulas, source precedence, generic workflow frameworks, and
+  changes to retained production/shared storage.
+
+## Authoritative contracts
+
+- GitHub issue #133 and `docs/BACKLOG.md` FT-10.
+- `docs/prd/value-pilot-prd-v0.1.md` §G.5–G.6.
+- `docs/architecture/research-decision-support.md` §§5, 7, 10–11.
+- `docs/architecture/coverage-source-policy.md`.
+- `docs/plans/research_decision_loop_product_roadmap.md` §§7.4–7.6.
+
+## Files expected to change
+
+- `backend/app/services/research_coverage.py`
+- `backend/app/services/research_cases.py`
+- `backend/app/services/research_workspace.py`
+- `backend/app/services/research_inbox.py`
+- `backend/app/api/v1/endpoints/research.py`
+- `backend/app/api/v1/endpoints/coverage.py`
+- `backend/app/models/coverage.py` and one fresh Alembic migration if required
+- focused tests in `backend/tests/unit/test_research_coverage.py` and
+  `backend/tests/unit/test_research_cases.py`
+- `frontend/app/(dashboard)/research/cases/[id]/page.tsx`
+- `frontend/app/(dashboard)/home/page.tsx`
+- focused frontend contract tests under `frontend/lib/`
+- this task record and `docs/BACKLOG.md` on completion
+
+## Test plan
+
+All tooling runs inside Docker. Use focused red/green iterations for the
+coverage, case, Inbox, migration, and frontend contract suites. At the closing
+gate run the exact canonical commands from `AGENTS.md`, once and in order:
+
+1. `docker compose up -d --build`
+2. `docker compose exec -T api alembic upgrade head`
+3. `docker compose exec -T api pytest -q`
+4. `docker compose exec -T web sh -lc 'node --test lib/*.test.js'`
+5. `docker compose exec -T web npm run lint`
+6. `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'`
+
+Also run `git diff --check`, confirm one Alembic head, and hand the pushed Draft
+PR to the independent read-only reviewer before merge.
+
+## Decisions and sign-off trail
+
+- 2026-09-06: Fresh worktree `/Users/dane/projects/ValuePilot-ft10-coverage`
+  and branch `codex/automatic-research-coverage` created at `f4c29361`, the
+  requested latest `origin/main`. Frozen PR #128 code and migrations are not
+  reused.
+- 2026-09-06: Scope is limited to missing coverage materialization and direct
+  projection/display contract gaps. Existing canonical price, reconciliation,
+  valuation, and method services remain the authorities; coverage only adapts
+  their typed outcomes.
