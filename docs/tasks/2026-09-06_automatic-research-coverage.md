@@ -1,6 +1,6 @@
 # FT-10 automatic research coverage
 
-Status: in progress
+Status: ready for review
 
 Issue: #133
 
@@ -132,3 +132,14 @@ PR to the independent read-only reviewer before merge.
   tests prove a post-cutoff price is excluded, unchanged multi-day gaps remain
   stable, and genuine provider-permission/method-review changes supersede prior
   actions.
+- 2026-09-06: Final canonical Docker gate at `58b38802` passed:
+  `docker compose up -d --build`; `alembic upgrade head`; backend `pytest -q`
+  (2,727 passed, 2 dependency deprecation warnings); frontend unit tests (233
+  passed); frontend lint; and the production frontend build. Alembic reports
+  the single head `20260904340000`; `git diff --check` passed.
+- 2026-09-06: Independent read-only re-review of `58b38802` passed with no
+  remaining findings. The reviewer verified both corrections retain the exact
+  cutoff and material source/policy/authorization/evidence/method-review
+  identity while ignoring observation-clock labels. Per shared-database
+  coordination, the reviewer ran static checks only; the implementation agent
+  ran the canonical Docker gate above.
