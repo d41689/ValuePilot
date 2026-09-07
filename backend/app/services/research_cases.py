@@ -22,6 +22,11 @@ from app.models.research import (
 )
 from app.models.stocks import PoolMembership, Stock
 from app.services.market_data_service import stock_price_evidence_matches
+from app.services.canonical_financials import (
+    ANALYSIS_BUSINESS_TIMEZONE,
+    database_evaluation_cutoff,
+    evaluation_business_date,
+)
 from app.services.metric_fact_locking import acquire_metric_fact_stock_lock
 from app.schemas.research import (
     EvidenceInput,
@@ -222,6 +227,7 @@ def create_or_open_case(
     stock_id: int,
     origin: ResearchOriginInput,
     commit: bool = True,
+    evaluated_at: datetime | None = None,
 ) -> tuple[ResearchCase, bool, bool]:
     lock_user_privacy_write(session, user_id=user_id)
     stock = session.get(Stock, stock_id)
@@ -254,6 +260,16 @@ def create_or_open_case(
         )
     _, origin_created = _add_origin(
         session, case=case, user_id=user_id, origin=origin
+    )
+    from app.services.research_coverage import evaluate_research_coverage
+
+    coverage_evaluated_at = database_evaluation_cutoff(session, evaluated_at)
+    evaluate_research_coverage(
+        session,
+        user_id=user_id,
+        as_of=evaluation_business_date(coverage_evaluated_at),
+        evaluated_at=coverage_evaluated_at,
+        commit=False,
     )
     if commit:
         session.commit()
@@ -560,6 +576,12 @@ def research_decision_metrics(
     week_start: date,
 ) -> dict[str, Any]:
     week_end = week_start + timedelta(days=7)
+    week_start_at = datetime.combine(
+        week_start, datetime.min.time(), tzinfo=ANALYSIS_BUSINESS_TIMEZONE
+    ).astimezone(timezone.utc)
+    week_end_at = datetime.combine(
+        week_end, datetime.min.time(), tzinfo=ANALYSIS_BUSINESS_TIMEZONE
+    ).astimezone(timezone.utc)
     count = (
         session.query(ResearchCaseEvent)
         .join(ResearchCase, ResearchCase.id == ResearchCaseEvent.case_id)
@@ -567,12 +589,8 @@ def research_decision_metrics(
             ResearchCase.user_id == user_id,
             ResearchCaseEvent.actor_user_id == user_id,
             ResearchCaseEvent.event_type == "qualified_decision_recorded",
-            ResearchCaseEvent.created_at >= datetime.combine(
-                week_start, datetime.min.time(), tzinfo=timezone.utc
-            ),
-            ResearchCaseEvent.created_at < datetime.combine(
-                week_end, datetime.min.time(), tzinfo=timezone.utc
-            ),
+            ResearchCaseEvent.created_at >= week_start_at,
+            ResearchCaseEvent.created_at < week_end_at,
         )
         .count()
     )
@@ -703,6 +721,16 @@ def save_product_valuation_revision(
                 source_ref_id=revision.id,
             )
             .one()
+        )
+        coverage_evaluated_at = database_evaluation_cutoff(session)
+        from app.services.research_coverage import evaluate_research_coverage
+
+        evaluate_research_coverage(
+            session,
+            user_id=user_id,
+            as_of=evaluation_business_date(coverage_evaluated_at),
+            evaluated_at=coverage_evaluated_at,
+            commit=False,
         )
         session.commit()
         session.refresh(case)

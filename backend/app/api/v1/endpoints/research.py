@@ -352,6 +352,7 @@ def regenerate_research_inbox(
                 as_of, current_date=evaluation_business_date(evaluated_at)
             ),
             lens=lens,
+            evaluated_at=evaluated_at,
         )
     except ResearchInboxError as error:
         session.rollback()

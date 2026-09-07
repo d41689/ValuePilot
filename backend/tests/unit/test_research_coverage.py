@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.models.artifacts import PdfDocument
 from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
+from app.models.research import ResearchCase
 from app.models.stocks import PoolMembership, Stock, StockPool, StockPrice
 from app.services.market_data_service import ET, compute_target_date, expected_session_on_or_before
 from app.services.oracles_lens.constants import SCORE_VERSION
@@ -346,34 +348,23 @@ def test_legacy_price_requirement_without_recorded_authorization_is_redacted_on_
     listed = client.get("/api/v1/coverage/requirements", headers=headers)
     assert listed.status_code == 200, listed.text
     listed_price = listed.json()["items"][0]
-    assert listed_price["state"] == "blocked"
+    assert listed_price["state"] == "inaccessible"
     assert listed_price["reason_code"] == "source_unavailable"
     assert listed_price["evidence"]["close"] is None
     assert listed_price["evidence"]["source_authorization_state"] == "unavailable"
 
-    created = client.post(
-        "/api/v1/research/cases",
-        headers=headers,
-        json={
-            "stock_id": stock.id,
-            "origin": {
-                "origin_type": "manual",
-                "origin_key": f"coverage-legacy:{stock.id}",
-                "source_version": "coverage-legacy-v1",
-                "source_ref": {"test": True},
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
     workspace = client.get(
-        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        f"/api/v1/research/cases/{case.id}/workspace",
         headers=headers,
     )
     assert workspace.status_code == 200, workspace.text
     workspace_price = next(
         item for item in workspace.json()["coverage"] if item["kind"] == "eod_price"
     )
-    assert workspace_price["state"] == "blocked"
+    assert workspace_price["state"] == "inaccessible"
     assert workspace_price["evidence"]["close"] is None
 
 
@@ -412,34 +403,23 @@ def test_persisted_authorized_price_is_redacted_after_provider_revocation(
     listed_price = next(
         item for item in listed.json()["items"] if item["kind"] == "eod_price"
     )
-    assert listed_price["state"] == "blocked"
+    assert listed_price["state"] == "inaccessible"
     assert listed_price["reason_code"] == "source_unavailable"
     assert listed_price["evidence"]["close"] is None
     assert listed_price["evidence"]["source_authorization_state"] == "unauthorized"
 
-    created = client.post(
-        "/api/v1/research/cases",
-        headers=headers,
-        json={
-            "stock_id": stock.id,
-            "origin": {
-                "origin_type": "manual",
-                "origin_key": f"coverage-revoked:{stock.id}",
-                "source_version": "coverage-revoked-v1",
-                "source_ref": {"test": True},
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
     workspace = client.get(
-        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        f"/api/v1/research/cases/{case.id}/workspace",
         headers=headers,
     )
     assert workspace.status_code == 200, workspace.text
     workspace_price = next(
         item for item in workspace.json()["coverage"] if item["kind"] == "eod_price"
     )
-    assert workspace_price["state"] == "blocked"
+    assert workspace_price["state"] == "inaccessible"
     assert workspace_price["reason_code"] == "source_unavailable"
     assert workspace_price["evidence"]["close"] is None
 
@@ -504,22 +484,11 @@ def test_legacy_ready_price_with_non_iso_currency_is_blocked_on_every_projection
     assert listed_price["evidence"]["currency"] is None
     assert listed_price["evidence"]["source_authorization_state"] == "authorized"
 
-    created = client.post(
-        "/api/v1/research/cases",
-        headers=headers,
-        json={
-            "stock_id": stock.id,
-            "origin": {
-                "origin_type": "manual",
-                "origin_key": f"coverage-invalid-currency:{stock.id}",
-                "source_version": "coverage-invalid-currency-v1",
-                "source_ref": {"test": True},
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
     workspace = client.get(
-        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        f"/api/v1/research/cases/{case.id}/workspace",
         headers=headers,
     )
     assert workspace.status_code == 200, workspace.text
@@ -619,26 +588,15 @@ def test_ready_price_source_aliases_match_across_every_projection(
     db_session.commit()
 
     headers = auth_headers(user)
-    created = client.post(
-        "/api/v1/research/cases",
-        headers=headers,
-        json={
-            "stock_id": stock.id,
-            "origin": {
-                "origin_type": "manual",
-                "origin_key": f"coverage-source-alias:{stock.id}",
-                "source_version": "coverage-source-alias-v1",
-                "source_ref": {"test": True},
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
 
     listed = client.get(
         "/api/v1/coverage/requirements", headers=headers
     ).json()["items"][0]
     workspace = client.get(
-        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        f"/api/v1/research/cases/{case.id}/workspace",
         headers=headers,
     ).json()
     workspace_price = next(
@@ -712,26 +670,15 @@ def test_ready_price_coverage_becomes_stale_after_session_rolls_without_reevalua
     db_session.commit()
 
     headers = auth_headers(user)
-    created = client.post(
-        "/api/v1/research/cases",
-        headers=headers,
-        json={
-            "stock_id": stock.id,
-            "origin": {
-                "origin_type": "manual",
-                "origin_key": f"coverage-session-roll:{stock.id}",
-                "source_version": "coverage-session-roll-v1",
-                "source_ref": {"test": True},
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
 
     listed = client.get(
         "/api/v1/coverage/requirements", headers=headers
     ).json()["items"][0]
     workspace = client.get(
-        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        f"/api/v1/research/cases/{case.id}/workspace",
         headers=headers,
     ).json()
     missing = next(
@@ -813,26 +760,15 @@ def test_ready_price_coverage_blocks_reference_date_and_canonical_id_mismatch(
     db_session.commit()
 
     headers = auth_headers(user)
-    created = client.post(
-        "/api/v1/research/cases",
-        headers=headers,
-        json={
-            "stock_id": stock.id,
-            "origin": {
-                "origin_type": "manual",
-                "origin_key": f"coverage-reference-mismatch:{stock.id}",
-                "source_version": "coverage-reference-mismatch-v1",
-                "source_ref": {"test": True},
-            },
-        },
-    )
-    assert created.status_code == 201, created.text
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
 
     listed = client.get(
         "/api/v1/coverage/requirements", headers=headers
     ).json()["items"][0]
     workspace = client.get(
-        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        f"/api/v1/research/cases/{case.id}/workspace",
         headers=headers,
     ).json()
     missing = next(
@@ -880,7 +816,15 @@ def test_coverage_projection_endpoints_reject_historical_as_of(
     admin = user_factory(email="coverage-no-false-pit-admin@example.com", role="admin")
     stock = _stock(db_session, "CPIT")
     _watchlist(db_session, owner.id, stock)
-    historical_day = date.today() - timedelta(days=1)
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
+
+    historical_day = (
+        evaluation_business_date(database_evaluation_cutoff(db_session))
+        - timedelta(days=1)
+    )
 
     user_response = client.post(
         f"/api/v1/coverage/evaluate?as_of={historical_day.isoformat()}",
@@ -1059,3 +1003,223 @@ def test_open_research_cases_outrank_watchlist_and_lens_candidates(
         "watchlist_member",
         "oracles_lens_consensus_top30",
     ]
+
+
+def test_case_create_and_repeat_open_materialize_current_coverage_once(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="coverage-case-create@example.com")
+    stock = _stock(db_session, "CASEAUTO")
+    payload = {
+        "stock_id": stock.id,
+        "origin": {
+            "origin_type": "manual",
+            "origin_key": "case-auto",
+            "source_version": "case-auto-v1",
+            "source_ref": {"entry_point": "test"},
+        },
+    }
+
+    first = client.post(
+        "/api/v1/research/cases", headers=auth_headers(user), json=payload
+    )
+    second = client.post(
+        "/api/v1/research/cases", headers=auth_headers(user), json=payload
+    )
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["case"]["id"] == second.json()["case"]["id"]
+    requirements = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id, is_current=True)
+        .order_by(ResearchCoverageRequirement.kind)
+        .all()
+    )
+    assert [row.kind for row in requirements] == [
+        "eod_price",
+        "valuation_input",
+        "value_line_current_report",
+    ]
+    assert len({(row.kind, row.priority_policy_version) for row in requirements}) == 3
+
+
+def test_case_coverage_projects_source_loss_and_method_denial_without_new_storage_states(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="coverage-projection-states@example.com")
+    stock = _stock(db_session, "TYPED")
+    created = client.post(
+        "/api/v1/research/cases",
+        headers=auth_headers(user),
+        json={
+            "stock_id": stock.id,
+            "origin": {
+                "origin_type": "manual",
+                "origin_key": "typed-states",
+                "source_version": "typed-states-v1",
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    price = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id, kind="eod_price")
+        .one()
+    )
+    price.state = "blocked"
+    price.reason_code = "source_unavailable"
+    price.reason = "The canonical source is no longer readable."
+    price.next_action = "review_source_authorization"
+    db_session.commit()
+
+    workspace = client.get(
+        f"/api/v1/research/cases/{created.json()['case']['id']}/workspace",
+        headers=auth_headers(user),
+    )
+
+    assert workspace.status_code == 200, workspace.text
+    by_kind = {item["kind"]: item for item in workspace.json()["coverage"]}
+    assert by_kind["eod_price"]["state"] == "inaccessible"
+    assert by_kind["eod_price"]["reason_code"] == "source_unavailable"
+    assert by_kind["valuation_input"]["state"] == "unsupported"
+    assert by_kind["valuation_input"]["reason_code"]
+    assert by_kind["valuation_input"]["evidence"]["method_gate"]["status"] == "unsupported"
+
+
+def test_inbox_regeneration_materializes_coverage_and_keeps_unchanged_source_version(
+    client, db_session, user_factory, auth_headers
+):
+    from app.models.research import ResearchCase, ResearchInboxAction
+
+    user = user_factory(email="coverage-inbox-auto@example.com")
+    stock = _stock(db_session, "IBAUTO")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    first = client.post(
+        "/api/v1/research/inbox/regenerate", headers=auth_headers(user)
+    )
+    first_actions = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=user.id, action_family="coverage_gap")
+        .order_by(ResearchInboxAction.id)
+        .all()
+    )
+    first_ids = [row.id for row in first_actions]
+    second = client.post(
+        "/api/v1/research/inbox/regenerate", headers=auth_headers(user)
+    )
+    second_actions = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=user.id, action_family="coverage_gap")
+        .order_by(ResearchInboxAction.id)
+        .all()
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first_ids
+    assert [row.id for row in second_actions] == first_ids
+    assert all(row.state == "open" for row in second_actions)
+    evidence = second_actions[0].evidence_json
+    assert {
+        "kind",
+        "state",
+        "reason",
+        "source_type",
+        "source_ref_id",
+        "freshness_policy_version",
+        "as_of",
+        "evaluated_at",
+        "next_action",
+    } <= set(evidence)
+
+
+def test_coverage_endpoint_uses_database_business_date_at_utc_boundary(
+    client, db_session, user_factory, auth_headers, monkeypatch
+):
+    from app.api.v1.endpoints import coverage as coverage_endpoint
+
+    user = user_factory(email="coverage-db-clock@example.com")
+    stock = _stock(db_session, "DBCLOCK")
+    _watchlist(db_session, user.id, stock)
+    evaluated_at = datetime(2026, 9, 7, 0, 30, tzinfo=timezone.utc)
+    expected_date = evaluated_at.astimezone(ZoneInfo("America/New_York")).date()
+    monkeypatch.setattr(
+        coverage_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session: evaluated_at,
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/v1/coverage/evaluate?as_of={expected_date.isoformat()}",
+        headers=auth_headers(user),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["as_of"] == expected_date.isoformat()
+    stored = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id, kind="eod_price")
+        .one()
+    )
+    assert stored.evaluated_at == evaluated_at
+
+
+def test_current_business_date_price_read_keeps_exact_utc_knowledge_cutoff(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import evaluation_business_date
+    from app.services.research_coverage import evaluate_research_coverage
+
+    user = user_factory(email="coverage-exact-cutoff@example.com")
+    stock = _stock(db_session, "EXACTCUT")
+    _watchlist(db_session, user.id, stock)
+    evaluated_at = datetime(2026, 9, 7, 0, 30, tzinfo=timezone.utc)
+    as_of = evaluation_business_date(evaluated_at)
+    session_date = expected_session_on_or_before(stock.exchange, as_of).session_date
+    before_cutoff = StockPrice(
+        stock_id=stock.id,
+        price_date=session_date,
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="USD",
+        source="twelvedata",
+        created_at=evaluated_at - timedelta(minutes=15),
+    )
+    after_cutoff = StockPrice(
+        stock_id=stock.id,
+        price_date=session_date,
+        open=200,
+        high=201,
+        low=199,
+        close=200,
+        volume=1_000,
+        currency="USD",
+        source="twelvedata",
+        created_at=evaluated_at + timedelta(minutes=15),
+    )
+    db_session.add_all([before_cutoff, after_cutoff])
+    db_session.flush()
+
+    evaluate_research_coverage(
+        db_session,
+        user_id=user.id,
+        as_of=as_of,
+        include_as_of_session=True,
+        evaluated_at=evaluated_at,
+    )
+
+    price_requirement = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id, kind="eod_price")
+        .one()
+    )
+    assert price_requirement.source_ref_id == before_cutoff.id
+    assert price_requirement.evidence_json["close"] == "100.0"

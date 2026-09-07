@@ -1,6 +1,8 @@
 """Deterministic, user-scoped Research Inbox projection and actions."""
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,6 +20,10 @@ from app.models.research import (
 )
 from app.models.stocks import PoolMembership, Stock
 from app.services.oracles_lens.constants import SCORE_VERSION
+from app.services.research_coverage import (
+    evaluate_research_coverage,
+    serialize_requirements,
+)
 
 
 INBOX_PRIORITY_POLICY_VERSION = "research-inbox-priority-v1.0"
@@ -53,6 +59,33 @@ class _DesiredAction:
         return self.tier * 10_000 + self.within_tier
 
 
+def _coverage_source_identity(requirement: dict[str, Any]) -> dict[str, Any]:
+    """Keep evidence revisions, not the request clock, in an action version."""
+
+    evidence = dict(requirement["evidence"])
+    # These dates describe when an unchanged projection was observed. Actual
+    # source dates remain below (price_date, report_date) and source_ref_id.
+    evidence.pop("as_of_date", None)
+    evidence.pop("expected_session_date", None)
+    method_gate = evidence.get("method_gate")
+    if isinstance(method_gate, dict):
+        evidence["method_gate"] = {
+            key: value
+            for key, value in method_gate.items()
+            if key not in {"effective_as_of", "knowledge_at"}
+        }
+    return {
+        "priority_policy_version": requirement["priority_policy_version"],
+        "freshness_policy_version": requirement["freshness_policy_version"],
+        "kind": requirement["kind"],
+        "state": requirement["state"],
+        "reason_code": requirement["reason_code"],
+        "source_type": requirement["source_type"],
+        "source_ref_id": requirement["source_ref_id"],
+        "evidence": evidence,
+    }
+
+
 def _case_tier(case: ResearchCase) -> int:
     if case.state == "monitoring" and case.decision == "own":
         return 1
@@ -70,6 +103,7 @@ def _desired_actions(
     as_of: date,
     lens: str,
     lens_limit: int,
+    evaluated_at: datetime,
 ) -> list[_DesiredAction]:
     desired: list[_DesiredAction] = []
     active_cases = (
@@ -163,40 +197,53 @@ def _desired_actions(
                 )
             )
 
-        requirements = (
-            session.query(ResearchCoverageRequirement)
+        requirement_rows = (
+            session.query(ResearchCoverageRequirement, Stock)
+            .join(Stock, Stock.id == ResearchCoverageRequirement.stock_id)
             .filter(
                 ResearchCoverageRequirement.user_id == user_id,
                 ResearchCoverageRequirement.stock_id == case.stock_id,
                 ResearchCoverageRequirement.is_current.is_(True),
-                ResearchCoverageRequirement.state != "ready",
             )
             .order_by(ResearchCoverageRequirement.priority_rank, ResearchCoverageRequirement.id)
             .all()
         )
+        requirements = serialize_requirements(
+            session,
+            requirement_rows,
+            evaluated_at=evaluated_at,
+        )
         for requirement in requirements:
+            if requirement["state"] == "ready":
+                continue
+            source_identity = _coverage_source_identity(requirement)
+            source_digest = hashlib.sha256(
+                json.dumps(source_identity, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:24]
             desired.append(
                 _DesiredAction(
-                    logical_key=f"case-coverage:{case.id}:{requirement.kind}",
+                    logical_key=f"case-coverage:{case.id}:{requirement['kind']}",
                     action_family="coverage_gap",
                     subject_type="research_case",
                     subject_key=str(case.id),
-                    source_version=(
-                        f"{requirement.priority_policy_version}:"
-                        f"{requirement.freshness_policy_version}:"
-                        f"{requirement.state}:{requirement.evaluated_at.isoformat()}"
-                    ),
-                    matched_rule=f"open_case_coverage_{requirement.state}",
+                    source_version=f"coverage:{source_digest}",
+                    matched_rule=f"open_case_coverage_{requirement['state']}",
                     tier=tier,
-                    within_tier=5_000 + requirement.priority_rank,
-                    reason=requirement.reason,
+                    within_tier=5_000 + requirement["priority_rank"],
+                    reason=requirement["reason"],
                     target_case_id=case.id,
                     stock_id=case.stock_id,
                     evidence={
-                        "coverage_requirement_id": requirement.id,
-                        "kind": requirement.kind,
-                        "state": requirement.state,
-                        "next_action": requirement.next_action,
+                        "coverage_requirement_id": requirement["id"],
+                        "kind": requirement["kind"],
+                        "state": requirement["state"],
+                        "reason": requirement["reason"],
+                        "source_type": requirement["source_type"],
+                        "source_ref_id": requirement["source_ref_id"],
+                        "freshness_policy_version": requirement["freshness_policy_version"],
+                        "as_of": requirement["as_of"],
+                        "evaluated_at": requirement["evaluated_at"],
+                        "next_action": requirement["next_action"],
                     },
                 )
             )
@@ -310,6 +357,14 @@ def _append_event(
     )
 
 
+def _material_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
+    material = dict(evidence or {})
+    material.pop("evaluated_at", None)
+    if "coverage_requirement_id" in material:
+        material.pop("as_of", None)
+    return material
+
+
 def regenerate_inbox(
     session: Session,
     *,
@@ -317,6 +372,7 @@ def regenerate_inbox(
     as_of: date,
     lens: str = "consensus",
     lens_limit: int = 30,
+    evaluated_at: datetime | None = None,
 ) -> dict[str, Any]:
     if lens not in {"consensus", "distinctive"}:
         raise ResearchInboxError("invalid_lens", "Lens must be consensus or distinctive.")
@@ -324,13 +380,23 @@ def regenerate_inbox(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"research-inbox:{user_id}:{INBOX_PRIORITY_POLICY_VERSION}"},
     )
-    now = datetime.now(timezone.utc)
+    now = evaluated_at or datetime.now(timezone.utc)
+    evaluate_research_coverage(
+        session,
+        user_id=user_id,
+        as_of=as_of,
+        lens=lens,
+        lens_limit=lens_limit,
+        evaluated_at=now,
+        commit=False,
+    )
     desired = _desired_actions(
         session,
         user_id=user_id,
         as_of=as_of,
         lens=lens,
         lens_limit=lens_limit,
+        evaluated_at=now,
     )
     desired_keys = {(item.logical_key, item.source_version) for item in desired}
     created_count = 0
@@ -403,7 +469,7 @@ def regenerate_inbox(
             action.matched_rule,
             action.priority_rank,
             action.reason,
-            action.evidence_json,
+            _material_evidence(action.evidence_json),
         )
         action.matched_rule = item.matched_rule
         action.priority_rank = item.priority_rank
@@ -425,7 +491,7 @@ def regenerate_inbox(
             action.matched_rule,
             action.priority_rank,
             action.reason,
-            action.evidence_json,
+            _material_evidence(action.evidence_json),
         )
         if material_before != material_after:
             _append_event(

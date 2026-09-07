@@ -345,25 +345,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `frontend/lib/dcfMath.js`; `docs/prd/value-pilot-prd-v0.1.md` §G.4
 - **Issue:** —
 
-### FT-10 — automatically materialize research coverage with each case
-- **Found:** 2026-08-27, PO acceptance of the ASML case and `/admin/coverage`
-- **Severity:** medium (an open case can have no evaluated requirements)
-- **Problem:** case creation and coverage evaluation are disconnected.
-- **Outcome:** every case explains which evidence is ready, missing, blocked,
-  stale, inaccessible, or unsupported and what the user should do next.
-- **Acceptance criteria:**
-  - Create/reopen idempotently materializes authoritative requirements without
-    an admin button; case and inbox show source, freshness/as-of, reason, and next action.
-  - Ownership follows authenticated user/workspace authority and admin aggregates
-    reveal no user, case, document, holding, or requirement detail.
-  - Current-date results agree across consumers; unsupported historical
-    reconstruction fails closed with the canonical reason.
-  - Tests cover repeat evaluation, transitions, supersession, permissions,
-    missing data, blocked source, inaccessible evidence, and unsupported method.
-- **Context:** `backend/app/services/research_coverage.py`;
-  `backend/app/services/research_cases.py`
-- **Issue:** —
-
 ### FT-11 — consistent and explainable Oracle's Lens consumer state
 - **Found:** 2026-08-27, PO acceptance of `/home` and `/13f/oracles-lens`;
   adversarial review VG-05
