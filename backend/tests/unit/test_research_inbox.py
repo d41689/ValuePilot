@@ -94,6 +94,8 @@ def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
         "/api/v1/research/inbox/regenerate?lens=consensus",
         headers=auth_headers(user),
     )
+    first_action_count = db_session.query(ResearchInboxAction).count()
+    first_event_count = db_session.query(ResearchInboxActionEvent).count()
     second = client.post(
         "/api/v1/research/inbox/regenerate?lens=consensus",
         headers=auth_headers(user),
@@ -104,7 +106,10 @@ def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
     listing = client.get(
         "/api/v1/research/inbox", headers=auth_headers(user)
     ).json()
-    assert [item["ticker"] for item in listing["items"]] == [
+    primary_items = [
+        item for item in listing["items"] if item["action_family"] != "coverage_gap"
+    ]
+    assert [item["ticker"] for item in primary_items] == [
         "IBOWN",
         "IBWAT",
         "IBRES",
@@ -112,7 +117,7 @@ def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
         "IBCAN",
         "IBLEN",
     ]
-    assert [item["matched_rule"] for item in listing["items"]] == [
+    assert [item["matched_rule"] for item in primary_items] == [
         "owned_review_overdue",
         "watch_review_due",
         "research_incomplete",
@@ -121,9 +126,9 @@ def test_inbox_regeneration_is_idempotent_explainable_and_prioritized(
         "oracles_lens_consensus_candidate",
     ]
     assert all(item["reason"] for item in listing["items"])
-    assert db_session.query(ResearchInboxAction).count() == 6
+    assert db_session.query(ResearchInboxAction).count() == first_action_count
     # Regeneration observes an unchanged projection without noisy audit events.
-    assert db_session.query(ResearchInboxActionEvent).count() == 6
+    assert db_session.query(ResearchInboxActionEvent).count() == first_event_count
 
 
 def test_inbox_regeneration_rejects_historical_as_of_without_mutating_projection(
@@ -236,7 +241,11 @@ def test_inbox_source_version_supersedes_old_action_without_deleting_history(
         "/api/v1/research/inbox/regenerate",
         headers=auth_headers(user),
     )
-    old = db_session.query(ResearchInboxAction).filter_by(user_id=user.id).one()
+    old = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=user.id, action_family="continue_research")
+        .one()
+    )
     case.head_revision_number = 1
     case.version = 2
     db_session.commit()
@@ -247,7 +256,7 @@ def test_inbox_source_version_supersedes_old_action_without_deleting_history(
 
     actions = (
         db_session.query(ResearchInboxAction)
-        .filter_by(user_id=user.id)
+        .filter_by(user_id=user.id, action_family="continue_research")
         .order_by(ResearchInboxAction.id)
         .all()
     )
@@ -256,6 +265,47 @@ def test_inbox_source_version_supersedes_old_action_without_deleting_history(
     assert actions[0].state == "superseded"
     assert actions[1].state == "open"
     assert actions[1].supersedes_action_id == old.id
+
+
+def test_coverage_state_change_supersedes_prior_gap_action(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="inbox-coverage-version@example.com")
+    stock = _stock(db_session, "CVERS")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    client.post(
+        "/api/v1/research/inbox/regenerate",
+        headers=auth_headers(user),
+    )
+    logical_key = f"case-coverage:{case.id}:eod_price"
+    prior = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=user.id, logical_key=logical_key)
+        .one()
+    )
+    assert prior.evidence_json["state"] == "missing"
+
+    stock.is_active = False
+    db_session.commit()
+    client.post(
+        "/api/v1/research/inbox/regenerate",
+        headers=auth_headers(user),
+    )
+
+    actions = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=user.id, logical_key=logical_key)
+        .order_by(ResearchInboxAction.id)
+        .all()
+    )
+    assert len(actions) == 2
+    assert actions[0].state == "superseded"
+    assert actions[1].state == "open"
+    assert actions[1].evidence_json["state"] == "blocked"
+    assert actions[1].supersedes_action_id == actions[0].id
 
 
 def test_inbox_is_user_scoped_and_cross_user_action_is_404(
@@ -270,7 +320,11 @@ def test_inbox_is_user_scoped_and_cross_user_action_is_404(
         "/api/v1/research/inbox/regenerate",
         headers=auth_headers(owner),
     )
-    action = db_session.query(ResearchInboxAction).filter_by(user_id=owner.id).one()
+    action = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=owner.id, action_family="start_research")
+        .one()
+    )
 
     result = client.post(
         f"/api/v1/research/inbox/{action.id}/complete",

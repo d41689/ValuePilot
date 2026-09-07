@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.exc import DBAPIError
 
 from app.models.artifacts import PdfDocument, ValueLineParseRun
+from app.models.coverage import ResearchCoverageRequirement
 from app.models.facts import MetricFact
 from app.models.research import (
     ResearchCase,
@@ -779,6 +780,36 @@ def test_qualified_decision_metric_counts_transitions_and_explicit_reviews_not_d
         "decision",
         "review",
     ]
+
+
+def test_research_metrics_include_sunday_evening_events_after_utc_midnight(
+    db_session, user_factory
+):
+    from app.services.research_cases import research_decision_metrics
+
+    user = user_factory(email="qualified-metric-sunday@example.com")
+    stock = _stock(db_session, "SUNUTC")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.flush()
+    db_session.add(
+        ResearchCaseEvent(
+            case_id=case.id,
+            actor_user_id=user.id,
+            event_type="qualified_decision_recorded",
+            payload_json={"decision_action": "review"},
+            created_at=datetime(2026, 9, 7, 3, 0, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    metrics = research_decision_metrics(
+        db_session,
+        user_id=user.id,
+        week_start=date(2026, 8, 31),
+    )
+
+    assert metrics["qualified_research_decisions"] == 1
 def test_transition_and_valuation_validation_are_typed_and_terminal_cycle_reopens(
     client, db_session, user_factory, auth_headers
 ):
@@ -826,6 +857,12 @@ def test_transition_and_valuation_validation_are_typed_and_terminal_cycle_reopen
     assert reopened.status_code == 201, reopened.text
     assert reopened.json()["created"] is True
     assert reopened.json()["case"]["id"] != case_id
+    assert (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id, is_current=True)
+        .count()
+        == 3
+    )
 
 
 def test_case_resources_are_non_disclosing_across_users(
@@ -1048,7 +1085,6 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
 ):
     from datetime import datetime, timezone
 
-    from app.models.coverage import ResearchCoverageRequirement
     from app.models.stocks import StockPrice
     from app.services import market_data_service
 
@@ -1174,21 +1210,21 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
                 source="twelvedata",
                 created_at=datetime(2026, 7, 17, 22, tzinfo=timezone.utc),
             ),
-            ResearchCoverageRequirement(
-                user_id=owner.id,
-                stock_id=stock.id,
-                kind="value_line_current_report",
-                priority_policy_version="research-coverage-priority-v1.0",
-                matched_rule="open_case_queued",
-                priority_rank=40,
-                state="ready",
-                reason="Current report exists.",
-                freshness_policy_version="value-line-120d-v1.0",
-                evaluated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
-                is_current=True,
-            ),
         ]
     )
+    coverage = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(
+            user_id=owner.id,
+            stock_id=stock.id,
+            kind="value_line_current_report",
+        )
+        .one()
+    )
+    coverage.state = "ready"
+    coverage.reason_code = None
+    coverage.reason = "Current report exists."
+    coverage.evaluated_at = datetime(2026, 7, 20, tzinfo=timezone.utc)
     db_session.commit()
 
     response = client.get(
@@ -1221,7 +1257,12 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
         "piotroski_method_authority_manifest_missing"
     )
     assert payload["valuation"]["display_state"] == "missing"
-    assert payload["coverage"][0]["state"] == "ready"
+    value_line_coverage = next(
+        requirement
+        for requirement in payload["coverage"]
+        if requirement["kind"] == "value_line_current_report"
+    )
+    assert value_line_coverage["state"] == "ready"
     assert payload["holders_13f"]["status"] == "unavailable"
     assert hidden.status_code == 404
 

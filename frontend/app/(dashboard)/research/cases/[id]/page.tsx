@@ -180,7 +180,14 @@ type Workspace = {
     id: number;
     kind: string;
     state: string;
+    reason_code: string | null;
     reason: string;
+    source_type: string | null;
+    source_ref_id: number | null;
+    observed_at: string | null;
+    freshness_policy_version: string;
+    as_of: string | null;
+    evaluated_at: string;
     next_action: string | null;
   }>;
   oracles_lens: {
@@ -652,7 +659,7 @@ export default function ResearchCaseWorkspacePage() {
             <CardHeader><CardTitle>Research coverage</CardTitle><CardDescription>Missing and blocked are explicit states, never implied coverage.</CardDescription></CardHeader>
             <CardContent className="space-y-2">
               {workspace.coverage.length === 0 ? <div className="text-sm text-muted-foreground">Coverage has not been evaluated for this case.</div> : workspace.coverage.map((item) => (
-                <div key={item.id} className="rounded-lg border p-3 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-medium">{label(item.kind)}</span><Badge variant={item.state === 'ready' ? 'success' : item.state === 'blocked' || item.state === 'failed' ? 'danger' : 'warning'}>{label(item.state)}</Badge></div><p className="mt-2 text-xs text-muted-foreground">{item.reason}</p>{item.next_action ? <div className="mt-1 text-xs">Next: {label(item.next_action)}</div> : null}</div>
+                <div key={item.id} className="rounded-lg border p-3 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-medium">{label(item.kind)}</span><Badge variant={item.state === 'ready' ? 'success' : ['blocked', 'failed', 'inaccessible', 'unsupported'].includes(item.state) ? 'danger' : 'warning'}>{label(item.state)}</Badge></div><p className="mt-2 text-xs text-muted-foreground">{item.reason}</p><div className="mt-2 text-xs text-muted-foreground">Source: {item.source_type ? `${label(item.source_type)}${item.source_ref_id ? ` #${item.source_ref_id}` : ''}` : 'none yet'} · As of {item.as_of ?? item.observed_at ?? 'not observed'}</div><div className="mt-1 text-xs text-muted-foreground">Freshness policy: <span className="font-mono">{item.freshness_policy_version}</span> · Evaluated {item.evaluated_at}</div>{item.reason_code ? <div className="mt-1 text-xs font-mono text-muted-foreground">{item.reason_code}</div> : null}{item.next_action ? <div className="mt-1 text-xs">Next: {label(item.next_action)}</div> : null}</div>
               ))}
             </CardContent>
           </Card>

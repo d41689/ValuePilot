@@ -13,6 +13,7 @@ from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase
 from app.models.stocks import PoolMembership, Stock
+from app.services.canonical_financials import reviewed_method_gate
 from app.services.market_data_service import (
     CanonicalEodPrice,
     PRICE_FRESHNESS_POLICY_VERSION,
@@ -24,11 +25,13 @@ from app.services.market_data_service import (
     serialize_canonical_eod_price,
 )
 from app.services.oracles_lens.constants import SCORE_VERSION
+from app.services.valuation import read_valuation_context
 
 
 PRIORITY_POLICY_VERSION = "research-coverage-priority-v1.0"
 VALUE_LINE_FRESHNESS_POLICY_VERSION = "value-line-120d-v1.0"
 VALUE_LINE_MAX_AGE_DAYS = 120
+VALUATION_INPUT_POLICY_VERSION = "valuation-input-v1.0"
 
 
 @dataclass(frozen=True)
@@ -319,6 +322,94 @@ def _value_line_requirement(
     }
 
 
+def _valuation_requirement(
+    session: Session,
+    *,
+    user_id: int,
+    stock: Stock,
+    as_of: date,
+    evaluated_at: datetime,
+) -> dict[str, Any]:
+    valuation = read_valuation_context(
+        session,
+        user_id=user_id,
+        stock_id=stock.id,
+        knowledge_cutoff=evaluated_at,
+    )
+    method_gate = reviewed_method_gate(
+        session,
+        stock_id=stock.id,
+        method_key="system_valuation",
+        effective_as_of=as_of,
+        knowledge_at=evaluated_at,
+    )
+    evidence = {
+        "as_of_date": (
+            valuation.user_intrinsic_value_as_of.isoformat()
+            if valuation.user_intrinsic_value_as_of
+            else as_of.isoformat()
+        ),
+        "currency": valuation.user_intrinsic_value_currency,
+        "user_intrinsic_value_status": valuation.user_intrinsic_value_status,
+        "method_gate": method_gate.as_dict(),
+    }
+    if valuation.user_intrinsic_value_status == "available":
+        return {
+            "state": "ready",
+            "reason_code": None,
+            "reason": "A current user-authored intrinsic value is available.",
+            "source_type": "metric_fact",
+            "source_ref_id": valuation.user_intrinsic_value_fact_id,
+            "evidence_json": evidence,
+            "observed_at": evaluated_at,
+            "next_action": None,
+        }
+    if valuation.user_intrinsic_value_status == "unsupported":
+        reason_code = (
+            valuation.user_intrinsic_value_reason_code
+            or "valuation_input_unsupported"
+        )
+    elif method_gate.status == "unsupported":
+        reason_code = method_gate.reason_code
+    else:
+        return {
+            "state": "missing" if valuation.user_intrinsic_value_status == "missing" else "blocked",
+            "reason_code": (
+                "valuation_input_missing"
+                if valuation.user_intrinsic_value_status == "missing"
+                else "valuation_input_unavailable"
+            ),
+            "reason": (
+                "No user-authored valuation has been recorded for this research case."
+                if valuation.user_intrinsic_value_status == "missing"
+                else "The latest user-authored valuation is explicitly unavailable."
+            ),
+            "source_type": (
+                "metric_fact" if valuation.user_intrinsic_value_fact_id else None
+            ),
+            "source_ref_id": valuation.user_intrinsic_value_fact_id,
+            "evidence_json": evidence,
+            "observed_at": evaluated_at if valuation.user_intrinsic_value_fact_id else None,
+            "next_action": "record_user_valuation",
+        }
+    evidence["projection_state"] = "unsupported"
+    return {
+        "state": "failed",
+        "reason_code": reason_code,
+        "reason": (
+            "The canonical system valuation method is unsupported for the current "
+            "reviewed company state; an independent user valuation may still be recorded."
+        ),
+        "source_type": (
+            "metric_fact" if valuation.user_intrinsic_value_fact_id else "method_policy"
+        ),
+        "source_ref_id": valuation.user_intrinsic_value_fact_id,
+        "evidence_json": evidence,
+        "observed_at": evaluated_at,
+        "next_action": "record_user_valuation",
+    }
+
+
 def _upsert_requirement(
     session: Session,
     *,
@@ -382,6 +473,8 @@ def evaluate_research_coverage(
     lens: str = "consensus",
     lens_limit: int = 30,
     include_as_of_session: bool = False,
+    evaluated_at: datetime | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     if lens not in {"consensus", "distinctive"}:
         raise ValueError("lens must be consensus or distinctive")
@@ -396,7 +489,7 @@ def evaluate_research_coverage(
         ),
         {"key": f"coverage:{user_id}:{PRIORITY_POLICY_VERSION}"},
     )
-    evaluated_at = datetime.now(timezone.utc)
+    evaluated_at = evaluated_at or datetime.now(timezone.utc)
     price_knowledge_cutoff = evaluated_at if as_of == evaluated_at.date() else None
     candidates, lens_eligible_count, lens_evaluated_count = _candidates(
         session,
@@ -419,7 +512,7 @@ def evaluate_research_coverage(
         stock = session.get(Stock, candidate.stock_id)
         if stock is None:
             continue
-        evaluations = (
+        evaluations = [
             (
                 "eod_price",
                 PRICE_FRESHNESS_POLICY_VERSION,
@@ -438,7 +531,21 @@ def evaluate_research_coverage(
                     session, user_id=user_id, stock=stock, as_of=as_of
                 ),
             ),
-        )
+        ]
+        if candidate.tier <= 4:
+            evaluations.append(
+                (
+                    "valuation_input",
+                    VALUATION_INPUT_POLICY_VERSION,
+                    _valuation_requirement(
+                        session,
+                        user_id=user_id,
+                        stock=stock,
+                        as_of=as_of,
+                        evaluated_at=evaluated_at,
+                    ),
+                )
+            )
         for kind_offset, (kind, policy, evaluation) in enumerate(evaluations):
             _upsert_requirement(
                 session,
@@ -452,7 +559,10 @@ def evaluate_research_coverage(
                 evaluation=evaluation,
             )
             requirements_evaluated += 1
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return {
         "priority_policy_version": PRIORITY_POLICY_VERSION,
         "value_line_freshness_policy_version": VALUE_LINE_FRESHNESS_POLICY_VERSION,
@@ -463,6 +573,7 @@ def evaluate_research_coverage(
         "lens_evaluated_count": lens_evaluated_count,
         "lens_denominator": min(lens_limit, lens_eligible_count),
         "requirements_evaluated": requirements_evaluated,
+        "as_of": as_of.isoformat(),
         "evaluated_at": evaluated_at.isoformat(),
     }
 
@@ -533,6 +644,11 @@ def _serialize_price_requirement_evidence(
 
 
 def _projection_state(row: ResearchCoverageRequirement, blocker_reason: str | None) -> str:
+    projected = (row.evidence_json or {}).get("projection_state")
+    if projected in {"inaccessible", "unsupported"}:
+        return projected
+    if blocker_reason == "source_unavailable" or row.reason_code == "source_unavailable":
+        return "inaccessible"
     if blocker_reason is None:
         return row.state
     if blocker_reason == "price_older_than_expected_session":
@@ -575,6 +691,7 @@ def _serialize_requirement(
             canonical=canonical,
             referenced=referenced,
         )
+    projected_state = _projection_state(row, blocker_reason)
     return {
         "id": row.id,
         "stock_id": row.stock_id,
@@ -585,7 +702,7 @@ def _serialize_requirement(
         "matched_rule": row.matched_rule,
         "priority_rank": row.priority_rank,
         "rank_components": row.rank_components or {},
-        "state": _projection_state(row, blocker_reason),
+        "state": projected_state,
         "reason_code": (
             row.reason_code
             if blocker_reason is None
@@ -601,10 +718,17 @@ def _serialize_requirement(
         "evidence": evidence,
         "observed_at": row.observed_at.isoformat() if row.observed_at else None,
         "freshness_policy_version": row.freshness_policy_version,
+        "as_of": (
+            evidence.get("as_of_date")
+            or evidence.get("report_date")
+            or evidence.get("price_date")
+        ),
         "evaluated_at": row.evaluated_at.isoformat(),
         "next_action": (
             row.next_action
             if blocker_reason is None
+            else "review_source_authorization"
+            if projected_state == "inaccessible"
             else "refresh_eod_price"
         ),
         "first_unmet_at": (

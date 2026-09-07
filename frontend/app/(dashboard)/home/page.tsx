@@ -52,6 +52,11 @@ function actionLabel(family: string) {
   }[family] ?? family.replaceAll('_', ' ');
 }
 
+function evidenceText(evidence: Record<string, unknown>, key: string) {
+  const value = evidence[key];
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
+}
+
 export default function HomePage() {
   const queryClient = useQueryClient();
   const inboxQuery = useQuery({
@@ -175,6 +180,13 @@ export default function HomePage() {
                     Rule: <span className="font-mono">{item.matched_rule}</span> · Policy rank{' '}
                     {item.priority_rank}
                   </div>
+                  {item.action_family === 'coverage_gap' ? (
+                    <div className="rounded-lg border px-3 py-2 text-xs text-muted-foreground">
+                      <div>Coverage: {actionLabel(evidenceText(item.evidence, 'state') ?? 'unknown')} · Source: {evidenceText(item.evidence, 'source_type') ?? 'none yet'}{evidenceText(item.evidence, 'source_ref_id') ? ` #${evidenceText(item.evidence, 'source_ref_id')}` : ''}</div>
+                      <div className="mt-1">As of {evidenceText(item.evidence, 'as_of') ?? 'not observed'} · Freshness policy <span className="font-mono">{evidenceText(item.evidence, 'freshness_policy_version') ?? 'unavailable'}</span></div>
+                      <div className="mt-1">Evaluated {evidenceText(item.evidence, 'evaluated_at') ?? 'unknown'}{evidenceText(item.evidence, 'next_action') ? ` · Next: ${actionLabel(evidenceText(item.evidence, 'next_action')!)}` : ''}</div>
+                    </div>
+                  ) : null}
                   <div className="flex flex-wrap gap-2">
                     {item.target_case_id ? (
                       <Button asChild size="sm">

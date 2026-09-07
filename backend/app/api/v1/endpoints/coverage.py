@@ -19,14 +19,18 @@ from app.services.research_coverage import (
     evaluate_research_coverage,
     serialize_requirements,
 )
+from app.services.canonical_financials import (
+    database_evaluation_cutoff,
+    evaluation_business_date,
+)
 
 
 router = APIRouter()
 _ACTIVE_JOB_STATUSES = {"queued", "running", "cancel_requested"}
 
 
-def _current_projection_date(requested: date | None) -> date:
-    today = date.today()
+def _current_projection_date(requested: date | None, *, current_date: date) -> date:
+    today = current_date
     if requested is not None and requested != today:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -46,6 +50,7 @@ def list_requirements(
     session: SessionDep,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
+    evaluated_at = database_evaluation_cutoff(session)
     rows = (
         session.query(ResearchCoverageRequirement, Stock)
         .join(Stock, Stock.id == ResearchCoverageRequirement.stock_id)
@@ -67,7 +72,7 @@ def list_requirements(
         "items": serialize_requirements(
             session,
             rows,
-            evaluated_at=datetime.now(timezone.utc),
+            evaluated_at=evaluated_at,
         ),
     }
 
@@ -79,11 +84,15 @@ def evaluate_requirements(
     as_of: date | None = Query(default=None),
     lens: Literal["consensus", "distinctive"] = Query(default="consensus"),
 ) -> dict[str, Any]:
+    evaluated_at = database_evaluation_cutoff(session)
     return evaluate_research_coverage(
         session,
         user_id=current_user.id,
-        as_of=_current_projection_date(as_of),
+        as_of=_current_projection_date(
+            as_of, current_date=evaluation_business_date(evaluated_at)
+        ),
         lens=lens,
+        evaluated_at=evaluated_at,
     )
 
 
@@ -199,13 +208,15 @@ def refresh_required_prices(
             reason="coverage_queue",
             now=refresh_now,
         )
-        coverage_as_of = date.today()
+        coverage_evaluated_at = database_evaluation_cutoff(session)
+        coverage_as_of = evaluation_business_date(coverage_evaluated_at)
         coverage = evaluate_research_coverage(
             session,
             user_id=current_user.id,
             as_of=coverage_as_of,
             lens=lens,
             include_as_of_session=target_as_of == coverage_as_of,
+            evaluated_at=coverage_evaluated_at,
         )
         failed_count = sum(
             result["status"] in {"failed", "blocked"} for result in results
@@ -301,7 +312,10 @@ def evaluate_all_users(
     as_of: date | None = Query(default=None),
     lens: Literal["consensus", "distinctive"] = Query(default="consensus"),
 ) -> dict[str, Any]:
-    target_as_of = _current_projection_date(as_of)
+    evaluated_at = database_evaluation_cutoff(session)
+    target_as_of = _current_projection_date(
+        as_of, current_date=evaluation_business_date(evaluated_at)
+    )
     user_ids = [
         row[0]
         for row in session.query(User.id).filter(User.is_active.is_(True)).all()
@@ -312,6 +326,7 @@ def evaluate_all_users(
             user_id=user_id,
             as_of=target_as_of,
             lens=lens,
+            evaluated_at=evaluated_at,
         )
         for user_id in user_ids
     ]

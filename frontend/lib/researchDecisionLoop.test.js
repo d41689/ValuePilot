@@ -55,6 +55,10 @@ test('case workspace separates current evidence from recorded revisions and supp
   assert.match(page, /Last user value — under review/);
   assert.match(page, /Piotroski quality history/);
   assert.match(page, /Review original evidence/);
+  assert.match(page, /freshness_policy_version/);
+  assert.match(page, /evaluated_at/);
+  assert.match(page, /source_type/);
+  assert.match(page, /observed_at/);
   assert.match(page, /Latest reported changes/);
   assert.match(page, /holding streak/);
 });
@@ -74,6 +78,9 @@ test('discovery surfaces use one canonical create-or-open case control', () => {
   assert.match(watchlist, /OpenResearchCaseButton/);
   assert.match(lens, /OpenResearchCaseButton/);
   assert.match(inbox, /OpenResearchCaseButton/);
+  assert.match(inbox, /freshness_policy_version/);
+  assert.match(inbox, /evaluated_at/);
+  assert.match(inbox, /source_type/);
   assert.match(screener, /OpenResearchCaseButton/);
   assert.match(stockSummary, /OpenResearchCaseButton/);
   assert.match(managerHolding, /OpenResearchCaseButton/);
