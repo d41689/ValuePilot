@@ -74,6 +74,9 @@ class ResearchCase(Base):
     decision: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     next_review_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     void_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    void_reason_content_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     head_revision_number: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -199,6 +202,9 @@ class ResearchCaseRevision(Base):
     )
     redaction_content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     redaction_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    redaction_reason_content_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     redacted_by_user_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, ForeignKey("users.id"), nullable=True
     )

@@ -1,8 +1,11 @@
-from datetime import date
+import ast
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from app.services import canonical_financials
 from app.services.calculated_metrics.piotroski_f_score import build_piotroski_f_score_facts
 from app.services.calculated_metrics.value_line_ratios import build_value_line_ratio_facts
 from app.services.canonical_financials import (
@@ -43,7 +46,7 @@ def test_ratio_and_piotroski_primitives_fail_closed_on_mixed_sources():
     with pytest.raises(CanonicalSourceConflictError):
         build_value_line_ratio_facts(facts)
     with pytest.raises(CanonicalSourceConflictError):
-        build_piotroski_f_score_facts(facts)
+        build_piotroski_f_score_facts(facts, roic_decisions_by_period={})
 
 
 def test_source_guard_uses_only_the_facts_canonical_source_role():
@@ -148,3 +151,124 @@ def test_sec_amendment_cycle_uses_base_form_not_period_end_date(monkeypatch):
     assert guard_sec_run_availability(object(), stock_id=7, facts=[ten_k]) == [ten_k]
     with pytest.raises(CanonicalUnavailableError):
         guard_sec_run_availability(object(), stock_id=7, facts=[ten_q])
+
+
+@pytest.mark.parametrize("transition", ["amendment", "retirement"])
+def test_sec_availability_uses_cutoff_before_later_authority_transition(
+    monkeypatch, transition
+):
+    evaluated_at = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    transition_at = evaluated_at + timedelta(minutes=1)
+    state = {
+        "status": "unresolved",
+        "reason_code": "unresolved_amendment_parse_failure",
+        "period_end_date": date(2025, 9, 30),
+        "source_type": "sec",
+        "filing_cycle": {"base_form": "10-Q", "report_date": date(2025, 9, 30)},
+    }
+
+    def states_at_cutoff(_session, *, stock_id, knowledge_cutoff=None):
+        assert stock_id == 7
+        if transition == "amendment":
+            return [state] if knowledge_cutoff >= transition_at else []
+        return [state] if knowledge_cutoff < transition_at else []
+
+    monkeypatch.setattr(
+        "app.services.canonical_financials.active_sec_run_unresolved_states",
+        states_at_cutoff,
+    )
+    sec_fact = _fact("is.net_income", 2, "sec")
+    sec_fact.source_ref_id = 12
+    monkeypatch.setattr(
+        "app.services.canonical_financials.sec_fact_filing_cycles",
+        lambda _session, *, facts: {
+            12: {("10-Q", date(2025, 9, 30))},
+        },
+    )
+
+    if transition == "amendment":
+        assert guard_sec_run_availability(
+            object(), stock_id=7, facts=[sec_fact], knowledge_cutoff=evaluated_at
+        ) == [sec_fact]
+        with pytest.raises(CanonicalUnavailableError):
+            guard_sec_run_availability(
+                object(), stock_id=7, facts=[sec_fact], knowledge_cutoff=transition_at
+            )
+    else:
+        with pytest.raises(CanonicalUnavailableError):
+            guard_sec_run_availability(
+                object(), stock_id=7, facts=[sec_fact], knowledge_cutoff=evaluated_at
+            )
+        assert guard_sec_run_availability(
+            object(), stock_id=7, facts=[sec_fact], knowledge_cutoff=transition_at
+        ) == [sec_fact]
+
+
+def test_all_production_sec_availability_callers_pass_a_cutoff():
+    missing: list[str] = []
+    for path in Path("app").rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if function_name != "guard_sec_run_availability":
+                continue
+            if not any(item.arg == "knowledge_cutoff" for item in node.keywords):
+                missing.append(f"{path}:{node.lineno}")
+
+    assert missing == []
+
+
+@pytest.mark.parametrize(
+    ("evaluated_at", "expected"),
+    [
+        (datetime(2026, 9, 4, 0, 30, tzinfo=timezone.utc), date(2026, 9, 3)),
+        (datetime(2026, 9, 4, 4, 30, tzinfo=timezone.utc), date(2026, 9, 4)),
+    ],
+)
+def test_evaluation_business_date_uses_new_york_boundary(evaluated_at, expected):
+    assert canonical_financials.evaluation_business_date(evaluated_at) == expected
+
+
+def test_evaluation_business_date_requires_aware_timestamp():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        canonical_financials.evaluation_business_date(datetime(2026, 9, 4, 4, 30))
+
+
+def test_method_gate_consumers_do_not_capture_independent_app_clocks():
+    guarded_paths = (
+        Path("app/api/v1/endpoints/research.py"),
+        Path("app/api/v1/endpoints/stock_pools.py"),
+        Path("app/api/v1/endpoints/stocks.py"),
+        Path("app/services/calculated_metrics/piotroski_f_score.py"),
+        Path("app/services/calculated_metrics/value_line_ratios.py"),
+        Path("app/services/dcf_inputs.py"),
+        Path("app/services/formula_engine.py"),
+        Path("app/services/oracles_lens/dashboard.py"),
+        Path("app/services/research_workspace.py"),
+        Path("app/services/screener_service.py"),
+    )
+    violations: list[str] = []
+    for path in guarded_paths:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = ast.unparse(node.func)
+            if function_name in {"datetime.now", "date.today"}:
+                violations.append(f"{path}:{node.lineno}:{function_name}")
+            if (
+                function_name == "dcf_evaluation_clock"
+                and not node.args
+                and not node.keywords
+            ):
+                violations.append(f"{path}:{node.lineno}:unbound DCF clock")
+
+    assert violations == []

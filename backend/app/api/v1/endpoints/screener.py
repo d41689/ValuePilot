@@ -1,12 +1,17 @@
-from typing import Any, List, Dict
+from typing import Any, List
 from fastapi import APIRouter, HTTPException, Body
 from app.api.deps import SessionDep, CurrentUser
-from app.services.screener_service import ScreenerService
+from app.services.screener_service import ScreenerRuleError, ScreenerService
 from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     CanonicalUnavailableError,
+    PiotroskiMethodAuthorityError,
+    UnsupportedSystemMethodError,
 )
 from app.services.source_reconciliation import CanonicalReconciliationError
+from app.services.metric_fact_currentness import (
+    HistoricalCurrentnessUnverifiableError,
+)
 
 router = APIRouter()
 
@@ -14,7 +19,7 @@ router = APIRouter()
 def run_screen(
     session: SessionDep,
     current_user: CurrentUser,
-    rule: Dict[str, Any] = Body(
+    rule: Any = Body(
         ...,
         examples={
             "basic": {
@@ -35,12 +40,14 @@ def run_screen(
     """
     service = ScreenerService(session)
     try:
-        results = service.execute_screen(rule, current_user_id=current_user.id)
+        evaluation = service.evaluate_screen(rule, current_user_id=current_user.id)
+        results = evaluation.stocks
         stock_ids = [stock.id for stock in results]
         metrics_by_stock = service.fetch_metrics_for_stocks(
             stock_ids,
             current_user_id=current_user.id,
             selected_source_type=rule.get("source_type"),
+            knowledge_cutoff=evaluation.evaluated_at,
         )
         return [
             {
@@ -51,10 +58,18 @@ def run_screen(
             }
             for stock in results
         ]
+    except ScreenerRuleError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
     except (
         CanonicalSourceConflictError,
         CanonicalUnavailableError,
         CanonicalReconciliationError,
+        PiotroskiMethodAuthorityError,
+        UnsupportedSystemMethodError,
+        HistoricalCurrentnessUnverifiableError,
     ) as error:
         raise HTTPException(
             status_code=409,

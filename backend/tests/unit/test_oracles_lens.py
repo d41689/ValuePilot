@@ -9,7 +9,13 @@ from app.models.facts import MetricFact
 from app.models.institutions import Filing13F, Holding13F, InstitutionManager, ParseRun13F
 from app.models.stocks import Stock, StockPrice
 from app.models.users import User
+from tests.piotroski_test_helpers import seed_strict_piotroski_total
 from app.services.market_data_service import ET, compute_target_date, expected_session_on_or_before
+from app.services.method_applicability import (
+    RISK_ATTRIBUTES,
+    review_company_classification,
+    review_company_risk_attribute,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -251,6 +257,42 @@ def _derived_lineage_source(db_session, stock: Stock) -> MetricFact:
     return source
 
 
+def _piotroski_lineage(source: MetricFact) -> dict:
+    return {
+        "fact_id": source.id,
+        "metric_key": source.metric_key,
+        "period_end_date": None,
+        "value_numeric": "1",
+        "source_type": source.source_type,
+        "fact_nature": None,
+    }
+
+
+def _review_ordinary_method_profile(db_session, stock: Stock) -> None:
+    reviewer = db_session.get(User, stock._test_user_id)
+    reviewer.role = "admin"
+    db_session.flush()
+    review_company_classification(
+        db_session,
+        reviewer_user_id=reviewer.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=date(2020, 1, 1),
+        review_reason="Reviewed ordinary-company test profile.",
+    )
+    for risk_attribute in sorted(RISK_ATTRIBUTES):
+        review_company_risk_attribute(
+            db_session,
+            reviewer_user_id=reviewer.id,
+            stock_id=stock.id,
+            risk_attribute=risk_attribute,
+            is_present=False,
+            effective_from=date(2020, 1, 1),
+            review_reason=f"Reviewed {risk_attribute} for consumer test.",
+        )
+    db_session.commit()
+
+
 def _pdf_document(db_session, stock: Stock, *, report_date: date = date(2032, 1, 31)) -> PdfDocument:
     document = PdfDocument(
         user_id=stock._test_user_id,
@@ -398,22 +440,15 @@ def test_oracles_lens_adds_value_line_quality_overlay(
 ):
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
-    lineage_source = _derived_lineage_source(db_session, target)
-    piotroski = _metric_fact(
-        target,
-        "score.piotroski.total",
-        8,
-        source_type="calculated",
-        source_document_id=document.id,
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=target._test_user_id,
+        stock_id=target.id,
+        score=8,
+        period_end=date(2031, 12, 31),
     )
-    piotroski.value_json = {
-        **piotroski.value_json,
-        "calculation_version": "piotroski-test-v1",
-        "inputs": [{"fact_id": lineage_source.id}],
-    }
     db_session.add_all(
         [
-            piotroski,
             _metric_fact(target, "bs.return_on_total_capital", 0.24, source_document_id=document.id),
             _metric_fact(target, "bs.return_on_equity", 0.31, source_document_id=document.id),
             _metric_fact(target, "is.net_profit_margin", 0.22, source_document_id=document.id),
@@ -456,13 +491,16 @@ def test_oracles_lens_adds_value_line_quality_overlay(
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
     overlay = item["quality_overlay"]
     assert overlay.pop("owner_earnings_method")["status"] == "unsupported"
+    method_gates = overlay.pop("system_method_gates")
+    assert method_gates["owner_earnings"]["reason_code"] == "classification_unreviewed"
+    assert method_gates["roic"]["reason_code"] == "classification_unreviewed"
     price_state = overlay.pop("current_price_state")
     assert price_state["status"] == "available"
     assert price_state["currency"] == "USD"
     assert price_state["source"] == "yfinance"
     assert overlay == {
         "piotroski_total": 8.0,
-        "return_on_total_capital": 0.24,
+        "return_on_total_capital": None,
         "return_on_equity": 0.31,
         "net_profit_margin": 0.22,
         "debt_to_capital": 0.18,
@@ -470,32 +508,40 @@ def test_oracles_lens_adds_value_line_quality_overlay(
         "latest_price": 100.0,
         "price_date": _current_price_date().isoformat(),
         "price_context": "latest",
-        "canonical_source_status": {"status": "available"},
+        "canonical_source_status": {
+            "status": "partial",
+            "reason_code": "classification_unreviewed",
+            "unavailable_metrics": [
+                {
+                    "metric_key": "bs.return_on_total_capital",
+                    "blocking_reasons": ["classification_unreviewed"],
+                },
+                {
+                    "metric_key": "owners_earnings_per_share_normalized",
+                    "blocking_reasons": ["classification_unreviewed"],
+                },
+            ],
+        },
         "coverage": {
             "value_line": True,
             "price": True,
             "owner_earnings": False,
-            "available_metrics": 5,
+                "available_metrics": 4,
             "expected_metrics": 6,
         },
-        "unavailable_reasons": ["owner earnings method unsupported"],
+            "unavailable_reasons": [
+                "owner earnings method unsupported",
+                "ROIC method unsupported",
+            ],
         "provenance": {
             "primary_source_document_id": document.id,
             "source_document_ids": [document.id],
             "facts": [
-                {
-                    "label": "piotroski_total",
-                    "metric_key": "score.piotroski.total",
-                    "source_document_id": document.id,
+                    {
+                        "label": "piotroski_total",
+                        "metric_key": "score.piotroski.total",
+                        "source_document_id": None,
                     "source_type": "calculated",
-                    "period_type": "FY",
-                    "period_end_date": "2031-12-31",
-                },
-                {
-                    "label": "return_on_total_capital",
-                    "metric_key": "bs.return_on_total_capital",
-                    "source_document_id": document.id,
-                    "source_type": "parsed",
                     "period_type": "FY",
                     "period_end_date": "2031-12-31",
                 },
@@ -541,31 +587,13 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
     """
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
-    lineage_source = _derived_lineage_source(db_session, target)
-    # Piotroski fact: value_numeric=None, value_json carries partial_score.
-    db_session.add(
-        MetricFact(
-            user_id=target._test_user_id,
-            stock_id=target.id,
-            metric_key="score.piotroski.total",
-            value_numeric=None,
-            value_json={
-                "partial_score": 6,
-                "max_available_score": 8,
-                "status": "partial",
-                "fact_nature": "actual",
-                "calculation_version": "piotroski-test-v1",
-                "inputs": [{"fact_id": lineage_source.id}],
-            },
-            unit=None,
-            period_type="FY",
-            period_end_date=date(2031, 12, 31),
-            source_document_id=document.id,
-            source_type="calculated",
-            is_current=True,
-        )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=target._test_user_id,
+        stock_id=target.id,
+        score=6,
+        period_end=date(2031, 12, 31),
     )
-    db_session.commit()
 
     response = client.get(
         "/api/v1/13f/oracles-lens?use_persisted_scores=false",
@@ -579,14 +607,10 @@ def test_oracles_lens_reads_piotroski_from_value_json_when_value_numeric_null(
     assert overlay["coverage"]["value_line"] is True
 
 
-def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
+def test_oracles_lens_quarantines_legacy_divergent_piotroski_numeric(
     client, db_session, auth_headers,
 ):
-    """D2 post-review (Backend B5): when BOTH ``value_numeric`` and
-    ``value_json['partial_score']`` are set with different values, the
-    column wins. The value_json fallback only fires when value_numeric is
-    null — never as a silent override of the canonical column.
-    """
+    """Legacy payloads cannot prove which of two divergent scores is valid."""
     target = _seed_oracles_lens_fixture(db_session)
     document = _pdf_document(db_session, target)
     lineage_source = _derived_lineage_source(db_session, target)
@@ -602,7 +626,7 @@ def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
                 "status": "partial",
                 "fact_nature": "actual",
                 "calculation_version": "piotroski-test-v1",
-                "inputs": [{"fact_id": lineage_source.id}],
+                "inputs": [_piotroski_lineage(lineage_source)],
             },
             unit=None,
             period_type="FY",
@@ -620,8 +644,11 @@ def test_oracles_lens_value_numeric_takes_precedence_over_partial_score(
     )
     assert response.status_code == 200
     item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
-    # value_numeric (8.0) wins over value_json.partial_score (3).
-    assert item["quality_overlay"]["piotroski_total"] == 8.0
+    overlay = item["quality_overlay"]
+    assert overlay["piotroski_total"] is None
+    assert overlay["canonical_source_status"]["reason_code"] == (
+        "piotroski_method_authority_manifest_missing"
+    )
 
 
 def test_oracles_lens_adds_conservative_valuation_reference(
@@ -687,6 +714,94 @@ def test_oracles_lens_adds_conservative_valuation_reference(
     }
     assert item["valuation_unavailable_reasons"] == []
     assert response.json()["coverage"]["valuation_reference_coverage_count"] >= 1
+
+
+def test_oracles_lens_full_dashboard_excludes_price_and_valuation_after_one_cutoff(
+    client, db_session, auth_headers, monkeypatch
+):
+    from app.services.canonical_financials import database_evaluation_cutoff
+    from app.services.oracles_lens import dashboard as dashboard_service
+
+    target = _seed_oracles_lens_fixture(db_session)
+    db_session.add_all(
+        [
+            _metric_fact(
+                target,
+                "target.price_18m.mid",
+                150.0,
+                period_end=date(2032, 1, 1),
+            ),
+            StockPrice(
+                stock_id=target.id,
+                price_date=_current_price_date(),
+                open=89.0,
+                high=91.0,
+                low=88.0,
+                close=90.0,
+                adj_close=None,
+                volume=1000,
+                source="yfinance",
+                currency="USD",
+            ),
+        ]
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    future_timestamp = cutoff + timedelta(minutes=1)
+    valuation = _metric_fact(
+        target,
+        "val.fair_value",
+        175.0,
+        period_end=date(2032, 1, 2),
+        source_type="manual",
+    )
+    valuation.created_at = future_timestamp
+    valuation.updated_at = future_timestamp
+    db_session.add_all(
+        [
+            valuation,
+            StockPrice(
+                stock_id=target.id,
+                price_date=_current_price_date(),
+                open=99.0,
+                high=101.0,
+                low=98.0,
+                close=100.0,
+                adj_close=None,
+                volume=1000,
+                source="yfinance",
+                currency="USD",
+                created_at=future_timestamp,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    cutoff_calls: list[datetime | None] = []
+
+    def fixed_cutoff(_session, supplied=None):
+        cutoff_calls.append(supplied)
+        return supplied or cutoff
+
+    monkeypatch.setattr(
+        dashboard_service,
+        "database_evaluation_cutoff",
+        fixed_cutoff,
+    )
+
+    response = client.get(
+        "/api/v1/13f/oracles-lens?use_persisted_scores=false",
+        headers=auth_headers(db_session.get(User, target._test_user_id)),
+    )
+
+    assert response.status_code == 200, response.text
+    item = next(row for row in response.json()["items"] if row["stock_id"] == target.id)
+    assert item["current_price"] == 90.0
+    assert item["valuation_reference"] == 150.0
+    assert item["valuation_reference_type"] == "analyst_target_reference"
+    assert item["discount_to_reference"] == 0.4
+    assert cutoff_calls.count(None) == 1
+    assert all(value is None or value is cutoff for value in cutoff_calls)
 
 
 @pytest.mark.parametrize(
@@ -770,6 +885,7 @@ def test_oracles_lens_price_dependent_outputs_fail_closed(
         True,
     )
     target = _seed_oracles_lens_fixture(db_session)
+    _review_ordinary_method_profile(db_session, target)
     if scenario == "inactive":
         target.is_active = False
     owner_earnings = _metric_fact(
@@ -907,10 +1023,9 @@ def test_oracles_lens_uses_period_price_for_historical_snapshot(
                 close=80.0,
                 adj_close=None,
                 volume=1000,
-                source="yfinance",
-                currency="USD",
-                created_at=datetime(2031, 9, 30, 22, tzinfo=timezone.utc),
-            ),
+                    source="yfinance",
+                    currency="USD",
+                ),
             StockPrice(
                 stock_id=target.id,
                 price_date=date(2032, 1, 2),
@@ -994,7 +1109,7 @@ def test_oracles_lens_historical_snapshot_ignores_late_inserted_price(
     assert response.json()["coverage"]["price_missing_count"] == 1
 
 
-def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session):
+def test_quality_overlay_quarantines_legacy_user_authored_owner_earnings(db_session):
     from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
 
     target = _seed_oracles_lens_fixture(db_session)
@@ -1008,7 +1123,7 @@ def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session)
         "fact_nature": "estimate",
         "user_authored_formula": True,
         "calculation_version": "formula-test-v1",
-        "inputs": [{"fact_id": lineage_source.id}],
+        "inputs": [_piotroski_lineage(lineage_source)],
     }
     db_session.add(custom)
     db_session.add(
@@ -1033,12 +1148,11 @@ def test_quality_overlay_keeps_user_authored_owner_earnings_distinct(db_session)
         user_id=target._test_user_id,
     )[target.id]
 
-    assert overlay["owner_earnings_yield"] == 0.05
-    assert overlay["owner_earnings_method"] == {
-        "method_key": "owner_earnings",
-        "status": "user_defined",
-        "reason_code": "user_authored_formula",
-    }
+    assert overlay["owner_earnings_yield"] is None
+    assert overlay["owner_earnings_method"]["status"] == "unsupported"
+    assert overlay["owner_earnings_method"]["reason_code"] == (
+        "classification_unreviewed"
+    )
 
 
 def test_quality_overlay_returns_typed_conflict_before_cross_source_aggregation(
@@ -1096,17 +1210,19 @@ def test_missing_derived_lineage_does_not_hide_unrelated_legal_source(
     assert overlay["piotroski_total"] is None
     assert overlay["canonical_source_status"] == {
         "status": "partial",
-        "reason_code": "unresolved_source_reconciliation",
+        "reason_code": "piotroski_method_authority_manifest_missing",
         "unavailable_metrics": [
             {
                 "metric_key": "score.piotroski.total",
-                "blocking_reasons": ["derived_lineage_unavailable"],
+                "blocking_reasons": [
+                    "piotroski_method_authority_manifest_missing"
+                ],
             }
         ],
     }
 
 
-def test_quality_overlay_gates_system_owner_earnings_before_selecting_user_authored(
+def test_quality_overlay_gates_all_legacy_owner_earnings_formula_claims(
     db_session
 ):
     from app.services.oracles_lens.dashboard import _quality_overlay_by_stock
@@ -1124,7 +1240,7 @@ def test_quality_overlay_gates_system_owner_earnings_before_selecting_user_autho
         "fact_nature": "estimate",
         "user_authored_formula": True,
         "calculation_version": "formula-test-v1",
-        "inputs": [{"fact_id": lineage_source.id}],
+        "inputs": [_piotroski_lineage(lineage_source)],
     }
     system = _metric_fact(
         target,
@@ -1157,8 +1273,11 @@ def test_quality_overlay_gates_system_owner_earnings_before_selecting_user_autho
         user_id=target._test_user_id,
     )[target.id]
 
-    assert overlay["owner_earnings_yield"] == 0.05
-    assert overlay["owner_earnings_method"]["status"] == "user_defined"
+    assert overlay["owner_earnings_yield"] is None
+    assert overlay["owner_earnings_method"]["status"] == "unsupported"
+    assert overlay["owner_earnings_method"]["reason_code"] == (
+        "classification_unreviewed"
+    )
 
 
 def test_oracles_lens_never_leaks_another_users_valuation(

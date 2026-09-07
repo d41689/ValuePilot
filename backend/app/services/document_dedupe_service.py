@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import DocumentPage, PdfDocument
@@ -16,6 +16,7 @@ from app.services.calculated_metrics.piotroski_f_score import (
     PiotroskiFScoreCalculator,
 )
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
+from app.services.privacy_erasure import lock_user_privacy_write
 
 
 VALUE_LINE_RATIO_KEYS = {
@@ -129,6 +130,8 @@ class DocumentDedupeService:
             return summary
 
         try:
+            for affected_user_id in sorted({group.user_id for group in groups}):
+                lock_user_privacy_write(self.db, user_id=affected_user_id)
             deleted_document_ids = [
                 document.id
                 for group in groups
@@ -160,17 +163,11 @@ class DocumentDedupeService:
                 .distinct()
             ).all()
 
-            preserved_fact_count = self._detach_non_parsed_facts_from_deleted_documents(
+            preserved_fact_count = self._relocate_manual_facts_from_deleted_documents(
                 duplicate_to_keep_document_id=duplicate_to_keep_document_id
             )
             self.db.flush()
 
-            self.db.execute(
-                delete(MetricFact).where(
-                    MetricFact.source_document_id.in_(deleted_document_ids),
-                    MetricFact.source_type == "parsed",
-                )
-            )
             self.db.execute(
                 delete(MetricExtraction).where(
                     MetricExtraction.document_id.in_(deleted_document_ids)
@@ -205,6 +202,7 @@ class DocumentDedupeService:
         user_id: int,
         document_id: int,
     ) -> Optional[dict[str, Any]]:
+        lock_user_privacy_write(self.db, user_id=user_id)
         document = self.db.scalar(
             select(PdfDocument).where(
                 PdfDocument.id == document_id,
@@ -237,13 +235,10 @@ class DocumentDedupeService:
             if document.stock_id is not None:
                 affected_user_stock_pairs.add((document.user_id, document.stock_id))
 
-            deleted_fact_count = (
-                self.db.execute(
-                    delete(MetricFact).where(
-                        MetricFact.source_document_id == document_id
-                    )
-                ).rowcount
-                or 0
+            deleted_fact_count = self.db.scalar(
+                select(func.count(MetricFact.id)).where(
+                    MetricFact.source_document_id == document_id
+                )
             )
             deleted_extraction_count = (
                 self.db.execute(
@@ -280,7 +275,7 @@ class DocumentDedupeService:
             self.db.rollback()
             raise
 
-    def _detach_non_parsed_facts_from_deleted_documents(
+    def _relocate_manual_facts_from_deleted_documents(
         self,
         *,
         duplicate_to_keep_document_id: dict[int, int],
@@ -293,7 +288,11 @@ class DocumentDedupeService:
             facts = self.db.scalars(
                 select(MetricFact).where(
                     MetricFact.source_document_id == duplicate_document_id,
-                    MetricFact.source_type != "parsed",
+                    # FT-06 explicitly permits provenance relocation only for
+                    # user-authored manual facts. Calculated/derived facts are
+                    # immutable outputs: the parent cascade retires them and
+                    # the refresh below appends replacements.
+                    MetricFact.source_type == "manual",
                 )
             ).all()
             for fact in facts:
@@ -322,12 +321,13 @@ class DocumentDedupeService:
     ) -> None:
         for affected_user_id, affected_stock_id in affected_user_stock_pairs:
             self.db.execute(
-                delete(MetricFact).where(
+                update(MetricFact).where(
                     MetricFact.user_id == affected_user_id,
                     MetricFact.stock_id == affected_stock_id,
                     MetricFact.source_type == "calculated",
                     MetricFact.metric_key.in_(sorted(REFRESH_CALCULATED_KEYS)),
-                )
+                    MetricFact.is_current.is_(True),
+                ).values(is_current=False)
             )
         self.db.flush()
 

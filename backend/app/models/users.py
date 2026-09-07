@@ -62,6 +62,18 @@ class NotificationEvent(Base):
     user: Mapped["User"] = relationship(back_populates="notification_events")
 
 
+class PrivacyErasureOperation(Base):
+    """Database-owned transaction authority for a narrow privacy operation."""
+
+    __tablename__ = "privacy_erasure_operations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    operation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_txid: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+
+
 class AccountErasureEvent(Base):
     """Append-only, non-content proof of a completed privacy transaction."""
 
@@ -69,8 +81,15 @@ class AccountErasureEvent(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
+    privacy_erasure_operation_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("privacy_erasure_operations.id"),
+        unique=True,
+        nullable=False,
+    )
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)

@@ -440,10 +440,11 @@ def test_database_coverage_is_user_scoped_and_uses_authoritative_13f_rows(db_ses
     )
     db_session.flush()
 
+    audit_cutoff = db_session.scalar(text("SELECT clock_timestamp()"))
     coverage = collect_database_coverage(
         db_session,
         user_id=owner.id,
-        as_of_date=date(2026, 7, 21),
+        knowledge_cutoff=audit_cutoff,
     )
 
     assert coverage["metric_facts"]["documents"] == 2
@@ -472,44 +473,18 @@ def test_backdated_audit_excludes_records_not_known_at_evaluation_time(db_sessio
     stock = Stock(ticker="QPIT", exchange="NYSE", company_name="Quant PIT")
     db_session.add_all([user, stock])
     db_session.flush()
-    cutoff = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
 
     known_document = PdfDocument(
         user_id=user.id,
         file_name="known.pdf",
         source="upload",
-        upload_time=cutoff.replace(hour=10),
         report_date=date(2026, 7, 1),
         file_storage_key="tests/known.pdf",
         parse_status="parsed",
         raw_text="VALUE LINE TIMELINESS SAFETY RECENT PRICE 100",
         stock_id=stock.id,
     )
-    future_document = PdfDocument(
-        user_id=user.id,
-        file_name="future.pdf",
-        source="upload",
-        upload_time=cutoff.replace(hour=13),
-        report_date=date(2026, 6, 1),
-        file_storage_key="tests/future.pdf",
-        parse_status="parsed",
-        raw_text="VALUE LINE TIMELINESS SAFETY RECENT PRICE 100",
-        stock_id=stock.id,
-    )
-    parsed_after_cutoff_document = PdfDocument(
-        user_id=user.id,
-        file_name="parsed-after-cutoff.pdf",
-        source="upload",
-        upload_time=cutoff.replace(hour=9),
-        report_date=date(2026, 5, 1),
-        file_storage_key="tests/parsed-after-cutoff.pdf",
-        parse_status="parsed",
-        raw_text="VALUE LINE TIMELINESS SAFETY RECENT PRICE 100",
-        stock_id=stock.id,
-    )
-    db_session.add_all(
-        [known_document, future_document, parsed_after_cutoff_document]
-    )
+    db_session.add(known_document)
     db_session.flush()
     db_session.add_all(
         [
@@ -523,9 +498,36 @@ def test_backdated_audit_excludes_records_not_known_at_evaluation_time(db_sessio
                 source_document_id=known_document.id,
                 source_type="parsed",
                 is_current=True,
-                created_at=cutoff.replace(hour=11),
-                updated_at=cutoff.replace(hour=11),
             ),
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date.today(),
+                open=10,
+                high=10,
+                low=10,
+                close=10,
+                source="known",
+                currency="USD",
+            ),
+        ]
+    )
+    db_session.commit()
+    cutoff = db_session.scalar(text("SELECT clock_timestamp()"))
+
+    future_document = PdfDocument(
+        user_id=user.id,
+        file_name="future.pdf",
+        source="upload",
+        report_date=date(2026, 6, 1),
+        file_storage_key="tests/future.pdf",
+        parse_status="parsed",
+        raw_text="VALUE LINE TIMELINESS SAFETY RECENT PRICE 100",
+        stock_id=stock.id,
+    )
+    db_session.add(future_document)
+    db_session.flush()
+    db_session.add_all(
+        [
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
@@ -536,34 +538,6 @@ def test_backdated_audit_excludes_records_not_known_at_evaluation_time(db_sessio
                 source_document_id=known_document.id,
                 source_type="parsed",
                 is_current=True,
-                created_at=cutoff.replace(hour=13),
-                updated_at=cutoff.replace(hour=13),
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="per_share.mutated_after_cutoff",
-                value_numeric=5,
-                period_type="FY",
-                period_end_date=date(2025, 12, 31),
-                source_document_id=known_document.id,
-                source_type="parsed",
-                is_current=True,
-                created_at=cutoff.replace(hour=11),
-                updated_at=cutoff.replace(hour=13),
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock.id,
-                metric_key="per_share.document_parsed_after_cutoff",
-                value_numeric=4,
-                period_type="FY",
-                period_end_date=date(2025, 12, 31),
-                source_document_id=parsed_after_cutoff_document.id,
-                source_type="parsed",
-                is_current=True,
-                created_at=cutoff.replace(hour=13),
-                updated_at=cutoff.replace(hour=13),
             ),
             MetricFact(
                 user_id=user.id,
@@ -575,45 +549,32 @@ def test_backdated_audit_excludes_records_not_known_at_evaluation_time(db_sessio
                 source_document_id=future_document.id,
                 source_type="parsed",
                 is_current=True,
-                created_at=cutoff.replace(hour=13),
-                updated_at=cutoff.replace(hour=13),
             ),
             StockPrice(
                 stock_id=stock.id,
-                price_date=date(2026, 7, 21),
-                open=10,
-                high=10,
-                low=10,
-                close=10,
-                source="known",
-                currency="USD",
-                created_at=cutoff.replace(hour=11),
-            ),
-            StockPrice(
-                stock_id=stock.id,
-                price_date=date(2026, 7, 21),
+                price_date=cutoff.date(),
                 open=20,
                 high=20,
                 low=20,
                 close=20,
                 source="backfilled_after_cutoff",
                 currency="USD",
-                created_at=cutoff.replace(hour=13),
+                created_at=cutoff + timedelta(minutes=1),
             ),
             StockPrice(
                 stock_id=stock.id,
-                price_date=date(2026, 7, 22),
+                price_date=cutoff.date() + timedelta(days=1),
                 open=30,
                 high=30,
                 low=30,
                 close=30,
                 source="future_session",
                 currency="USD",
-                created_at=cutoff.replace(day=22, hour=1),
+                created_at=cutoff + timedelta(days=1),
             ),
         ]
     )
-    db_session.flush()
+    db_session.commit()
 
     coverage = build_audit_report(
         db_session,
@@ -627,6 +588,100 @@ def test_backdated_audit_excludes_records_not_known_at_evaluation_time(db_sessio
     assert coverage["metric_facts"]["metric_keys"] == 1
     assert coverage["prices"]["rows"] == 1
     assert coverage["prices"]["sources"] == {"known": 1}
+
+
+def test_value_line_coverage_keeps_fact_visible_after_later_current_demotion(
+    db_session,
+) -> None:
+    user = User(email="quant-audit-demotion-pit@example.com")
+    stock = Stock(ticker="QDEM", exchange="NYSE", company_name="Quant Demotion")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _value_line_document(
+        db_session,
+        user=user,
+        stock=stock,
+        report_date=date(2026, 1, 5),
+        suffix="demotion",
+    )
+    fact = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="per_share.demotion_audit",
+        value_numeric=1,
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        source_document_id=document.id,
+        source_type="parsed",
+        is_current=True,
+    )
+    db_session.add(fact)
+    db_session.commit()
+    cutoff = db_session.execute(text("SELECT clock_timestamp()"))
+    cutoff = cutoff.scalar_one()
+
+    fact.is_current = False
+    db_session.commit()
+
+    coverage = collect_database_coverage(
+        db_session,
+        user_id=user.id,
+        knowledge_cutoff=cutoff,
+    )["metric_facts"]
+
+    assert coverage["status"] == "available"
+    assert coverage["documents"] == 1
+    assert coverage["parsed_fact_rows"] == 1
+
+
+def test_value_line_coverage_ignores_later_mutable_document_metadata(
+    db_session,
+) -> None:
+    user = User(email="quant-audit-document-identity-pit@example.com")
+    stock = Stock(ticker="QDOC", exchange="NYSE", company_name="Quant Document")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    document = _value_line_document(
+        db_session,
+        user=user,
+        stock=stock,
+        report_date=date(2026, 1, 5),
+        suffix="identity",
+    )
+    db_session.add(
+        MetricFact(
+            user_id=user.id,
+            stock_id=stock.id,
+            metric_key="per_share.document_identity_audit",
+            value_numeric=1,
+            period_type="FY",
+            period_end_date=date(2025, 12, 31),
+            source_document_id=document.id,
+            source_type="parsed",
+            is_current=True,
+        )
+    )
+    db_session.commit()
+    cutoff = db_session.execute(text("SELECT clock_timestamp()"))
+    cutoff = cutoff.scalar_one()
+
+    document.report_date = date(2099, 1, 5)
+    document.stock_id = None
+    document.parse_status = "failed"
+    document.raw_text = "mutated metadata no longer containing vendor markers"
+    db_session.commit()
+
+    coverage = collect_database_coverage(
+        db_session,
+        user_id=user.id,
+        knowledge_cutoff=cutoff,
+    )["metric_facts"]
+
+    assert coverage["status"] == "available"
+    assert coverage["documents"] == 1
+    assert coverage["stocks"] == 1
+    assert coverage["report_date_start"] == "2026-01-05"
+    assert coverage["report_date_end"] == "2026-01-05"
 
 
 @pytest.mark.parametrize(

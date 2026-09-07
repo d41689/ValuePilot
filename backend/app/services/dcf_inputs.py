@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 from app.core.currencies import normalize_iso4217_currency
 from app.core.config import settings
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     guard_sec_run_availability,
@@ -79,13 +81,28 @@ class DcfFactUniverse:
 
 
 class DcfFactUniverseError(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        method_decision: Any | None = None,
+        reason_code: str | None = None,
+        method_gate: dict[str, Any] | None = None,
+    ):
         self.code = code
+        self.method_decision = method_decision
+        self.reason_code = reason_code or (
+            method_decision.reason_code if method_decision is not None else code
+        )
+        self.method_gate = method_gate or (
+            method_decision.as_dict() if method_decision is not None else None
+        )
         super().__init__(message)
 
 
-def dcf_evaluation_clock(evaluated_at: datetime | None = None) -> DcfEvaluationClock:
-    instant = _aware_utc(evaluated_at or datetime.now(timezone.utc))
+def dcf_evaluation_clock(evaluated_at: datetime) -> DcfEvaluationClock:
+    instant = _aware_utc(evaluated_at)
     return DcfEvaluationClock(
         evaluated_at=instant,
         effective_as_of=instant.astimezone(ET).date(),
@@ -93,18 +110,14 @@ def dcf_evaluation_clock(evaluated_at: datetime | None = None) -> DcfEvaluationC
 
 
 def _stable_method_authority(decisions: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {
-            "method_key": decision.method_key,
-            "status": decision.status,
-            "reason_code": decision.reason_code,
-            "method_policy_version_id": decision.method_policy_version_id,
-            "economic_class": decision.economic_class,
-            "classification_review_id": decision.classification_review_id,
-            "effective_as_of": decision.effective_as_of.isoformat(),
-        }
-        for _, decision in sorted(decisions.items())
-    ]
+    authority = []
+    for _, decision in sorted(decisions.items()):
+        snapshot = decision.as_dict()
+        # The manifest already records ``evaluated_at``. Excluding only this
+        # duplicate clock field keeps otherwise-identical manifests stable.
+        snapshot.pop("knowledge_at")
+        authority.append(snapshot)
+    return authority
 
 
 def load_canonical_dcf_fact_universe(
@@ -117,12 +130,51 @@ def load_canonical_dcf_fact_universe(
 ) -> DcfFactUniverse:
     """Load and gate the complete bounded DCF fact universe before selection."""
 
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
+
+    method_decisions = {
+        method_key: reviewed_method_gate(
+            session,
+            stock_id=stock_id,
+            method_key=method_key,
+            effective_as_of=effective_as_of,
+            knowledge_at=evaluated_at,
+        )
+        for method_key in (
+            "owner_earnings",
+            "per_share_trend",
+            "roic",
+            "system_valuation",
+        )
+    }
+    for required_method in ("owner_earnings", "system_valuation"):
+        decision = method_decisions[required_method]
+        if decision.status != "approved":
+            raise DcfFactUniverseError(
+                "unsupported",
+                f"{required_method} is unsupported: {decision.reason_code}",
+                method_decision=decision,
+            )
+
     facts = session.scalars(
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock_id,
-            MetricFact.is_current.is_(True),
-            MetricFact.created_at <= evaluated_at,
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=evaluated_at,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id,
+                        metric_keys=tuple(
+                            [*DCF_INPUT_FACT_KEYS.values(), "owners_earnings_per_share"]
+                        ),
+                        user_ids=(user_id, None),
+                    ),
+                )
+            ),
             visible_metric_fact_predicate(MetricFact, user_id=user_id),
             MetricFact.period_type == "FY",
             MetricFact.metric_key.in_(
@@ -142,39 +194,45 @@ def load_canonical_dcf_fact_universe(
             "dcf_fact_universe_too_large",
             "Canonical DCF fact universe exceeds the safe evaluation bound",
         )
-    method_decisions = {
-        method_key: reviewed_method_gate(
-            session,
-            stock_id=stock_id,
-            method_key=method_key,
-            effective_as_of=effective_as_of,
-            knowledge_at=evaluated_at,
+    candidate_oeps = [
+        fact for fact in facts if fact.metric_key == "owners_earnings_per_share"
+    ]
+    oeps_facts, blocked_oeps, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock_id,
+        facts=candidate_oeps,
+        effective_as_of=effective_as_of,
+        knowledge_at=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
+        precomputed_decisions=method_decisions,
+    )
+    if blocked_oeps:
+        blocked = blocked_oeps[0]
+        raise DcfFactUniverseError(
+            "unsupported",
+            f"owner_earnings is unsupported: {blocked['reason_code']}",
+            reason_code=str(blocked["reason_code"]),
+            method_gate=blocked.get("method_gate"),
         )
-        for method_key in (
-            "owner_earnings",
-            "per_share_trend",
-            "roic",
-            "system_valuation",
-        )
-    }
+    facts = [
+        fact for fact in facts if fact.metric_key != "owners_earnings_per_share"
+    ] + oeps_facts
     facts = guard_reconciled_source_selection(
         facts,
         consumer="valuation_inputs",
-        knowledge_cutoff=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
         session=session,
         user_id=user_id,
     )
-    facts = guard_sec_run_availability(session, stock_id=stock_id, facts=facts)
-    dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
-    oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]
-    oeps_facts, _, _ = apply_reviewed_method_gates(
+    facts = guard_sec_run_availability(
         session,
         stock_id=stock_id,
-        facts=oeps_facts,
-        effective_as_of=effective_as_of,
-        knowledge_at=evaluated_at,
-        precomputed_decisions=method_decisions,
+        facts=facts,
+        knowledge_cutoff=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
     )
+    dcf_facts = [fact for fact in facts if fact.metric_key in DCF_INPUT_FACT_KEYS.values()]
+    oeps_facts = [fact for fact in facts if fact.metric_key == "owners_earnings_per_share"]
     return DcfFactUniverse(
         dcf_facts=dcf_facts,
         oeps_facts=oeps_facts,

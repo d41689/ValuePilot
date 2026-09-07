@@ -41,13 +41,17 @@ from app.services.research_inbox import (
     snooze_action,
 )
 from app.services.research_workspace import build_research_workspace
+from app.services.canonical_financials import (
+    database_evaluation_cutoff,
+    evaluation_business_date,
+)
 
 
 router = APIRouter()
 
 
-def _current_projection_date(requested: date | None) -> date:
-    today = date.today()
+def _current_projection_date(requested: date | None, *, current_date: date) -> date:
+    today = current_date
     if requested is not None and requested != today:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -68,7 +72,8 @@ def get_research_metrics(
     current_user: CurrentUser,
     week_start: date | None = Query(default=None),
 ) -> dict[str, Any]:
-    start = week_start or (date.today() - timedelta(days=date.today().weekday()))
+    current_date = evaluation_business_date(database_evaluation_cutoff(session))
+    start = week_start or (current_date - timedelta(days=current_date.weekday()))
     if start.weekday() != 0:
         raise HTTPException(status_code=422, detail="week_start must be a Monday")
     return research_decision_metrics(
@@ -195,12 +200,14 @@ def get_case_workspace(
     current_user: CurrentUser,
     as_of: date | None = Query(default=None),
 ) -> dict[str, Any]:
+    evaluated_at = database_evaluation_cutoff(session)
     try:
         return build_research_workspace(
             session,
             user_id=current_user.id,
             case_id=case_id,
-            as_of=as_of or date.today(),
+            as_of=as_of or evaluation_business_date(evaluated_at),
+            evaluated_at=evaluated_at,
         )
     except ResearchCaseError as error:
         _raise(session, error)
@@ -336,11 +343,14 @@ def regenerate_research_inbox(
     as_of: date | None = Query(default=None),
     lens: Literal["consensus", "distinctive"] = Query(default="consensus"),
 ) -> dict[str, Any]:
+    evaluated_at = database_evaluation_cutoff(session)
     try:
         return regenerate_inbox(
             session,
             user_id=current_user.id,
-            as_of=_current_projection_date(as_of),
+            as_of=_current_projection_date(
+                as_of, current_date=evaluation_business_date(evaluated_at)
+            ),
             lens=lens,
         )
     except ResearchInboxError as error:

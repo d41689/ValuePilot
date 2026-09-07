@@ -9,6 +9,31 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### FT-07 — operator-triggered Piotroski authority recomputation
+- **Found:** 2026-09-04, PR #143 Terra R6 review
+- **Severity:** medium (all legacy scores without the strict versioned input
+  manifest correctly fail closed, but recovery currently depends on a later
+  ingestion, correction, or document-reconciliation event)
+- **Problem:** no bounded operator action can non-destructively recompute current
+  Piotroski facts immediately after the required classification and risk
+  reviews are approved when the governed proxy is needed. Migration 160
+  intentionally does not backfill, rewrite, or re-authorize retained scores.
+- **Acceptance criteria:**
+  - An authorized operator can request a stock-scoped recomputation without
+    editing or deleting retained `metric_facts`.
+  - Recalculation uses one explicit effective date and knowledge cutoff, calls
+    the shared ROIC applicability gate, appends new facts, and only demotes the
+    prior current projection.
+  - Repeated requests are serialized and do not create conflicting current
+    facts; blocked profiles retain a typed unavailable result with no proxy
+    numeric.
+  - No bulk action infers a classification, backfills authority into legacy
+    JSON, or weakens source reconciliation/PIT behavior.
+- **Context:** `backend/app/services/calculated_metrics/piotroski_f_score.py`;
+  `backend/app/services/method_applicability.py`;
+  `docs/tasks/2026-09-04_method-applicability-gates.md`
+- **Issue:** —
+
 ### Development hot reload repeatedly creates quarantined 13F reparses
 - **Found:** 2026-08-31, PR #131 post-review closing-gate run
 - **Severity:** medium (audit-table growth and misleading repeated work; current
@@ -84,6 +109,21 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
     not rewrite shared financial lineage or pretend the event never existed.
   - Tests cover archive, current projection reconciliation, permission
     revocation, cross-user access, account erasure, and referenced history.
+- **R26 scope note (2026-09-05, PR #143 / delivery #137):** FT-07's R26
+  compatibility fix installs the permanent per-user barrier only for the
+  private fact and research write paths enumerated in its task record. Delivery
+  #137 must complete a schema-and-writer inventory and bring every remaining
+  user-owned surface under the same first-lock/barrier and erasure contract.
+  At minimum this includes research-origin reference fields and non-redaction
+  event payloads/correlation values; research inbox state; portfolios,
+  positions and journal writers; notification/follow/delivery state;
+  refresh-token and rate-limit writers; PDFs/pages/extractions, document-list
+  snapshots and retained files; screening rules, formulas, pools and
+  memberships; source permissions, evidence retirement and background jobs.
+  The inventory must classify each
+  text/JSON field as retained non-content metadata, shared financial lineage,
+  or private content to delete/tombstone, and must test concurrent late writes.
+  The R26 barrier is not evidence that this broader work is complete.
 - **Context:** `docs/architecture/research-decision-support.md` §10.2;
   `docs/prd/value-pilot-prd-v0.1.md` §G.2–G.3;
   `docs/architecture/coverage-source-policy.md`
@@ -251,34 +291,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   - Tolerances prioritize review but never hide a material unresolved difference;
     the locked gold set has zero silent source substitution.
 - **Context:** `docs/architecture/research-decision-support.md` §2 and §5;
-  `docs/metric_facts_mapping_spec.yml`; `docs/prd/value-pilot-prd-v0.1.md`
-- **Issue:** —
-
-### FT-07 — industry applicability and permanent-impairment method gate
-- **Found:** 2026-08-27, adversarial review VG-03 and omitted-risk finding
-- **Severity:** high (generic industrial-company formulas can publish false
-  Owner Earnings, ROIC, trends, or valuation for banks, insurers, and REITs)
-- **Problem:** industry and business-model applicability is not implied by
-  complete data. Unsupported economics must block conclusions.
-- **Outcome:** each analytical output is governed by an approved, versioned,
-  auditable applicability policy or is visibly unsupported.
-- **Acceptance criteria:**
-  - Mapping spec owns input semantics and the PRD owns calculation/publication
-    behavior and classification/applicability lifecycle for every gold-set
-    primary stratum; no formula or company classification is adopted from the
-    non-normative Vision or issuer-name inference alone.
-  - Banks, insurers, REITs, ordinary operating companies, high-SBC/acquisitive
-    businesses, and cyclical/commodity businesses each have an approved method
-    and required evidence, or return typed `unsupported` and block the affected
-    Owner Earnings, ROIC, per-share trend, and valuation conclusion.
-  - Every result records method/version, company classification at calculation
-    time, inputs, adjustments, unsupported reasons, and source/knowledge cutoff.
-  - Balance-sheet/refinancing risk, accounting credibility, management
-    integrity, dilution, and capital allocation are evidence-backed or typed
-    unknown; ordinary price volatility or low beta cannot satisfy this gate.
-  - Golden and negative tests cover every manifest stratum, including attempts
-    to apply an ordinary-company method to financials, insurers, and REITs.
-- **Context:** `docs/Investment_Research_Vision.md` §9–§15 (non-normative);
   `docs/metric_facts_mapping_spec.yml`; `docs/prd/value-pilot-prd-v0.1.md`
 - **Issue:** —
 

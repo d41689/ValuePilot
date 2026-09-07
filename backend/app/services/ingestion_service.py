@@ -5,7 +5,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import update, select, text
+from sqlalchemy import func, update, select, text
 from sqlalchemy.dialects.postgresql import insert
 from fastapi import UploadFile
 
@@ -17,6 +17,7 @@ from app.models.artifacts import (
 )
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.models.stocks import Stock
 from app.services.file_storage import FileStorageService
 from app.services.identity_service import IdentityService
@@ -31,9 +32,19 @@ from app.services.owners_earnings import (
     build_normalized_owners_earnings_fact,
     build_owners_earnings_facts,
 )
-from app.services.canonical_financials import reviewed_method_gate
+from app.services.canonical_financials import (
+    MethodGateDecision,
+    database_evaluation_cutoff,
+    reviewed_method_gate,
+)
+from app.services.value_line_report_identity import (
+    resolve_document_report_identities,
+    resolve_fact_report_identities,
+)
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
+from app.services.privacy_erasure import lock_user_privacy_write
 
 
 LOGGER = logging.getLogger(__name__)
@@ -121,6 +132,8 @@ class IngestionService:
         5. Parse pages independently (multi-page supported).
         6. Run Normalization & Fact Creation per page-resolved stock.
         """
+        lock_user_privacy_write(self.db, user_id=user_id)
+
         # 1. Save file
         file_ext = Path(file.filename).suffix if file.filename else ".pdf"
         unique_filename = f"{uuid.uuid4()}{file_ext}"
@@ -139,6 +152,10 @@ class IngestionService:
         )
         self.db.add(doc)
         self.db.commit()
+        # A commit releases the transaction-scoped privacy advisory lock. Take
+        # it again before any later user-owned database write so an account
+        # erasure committed between upload phases becomes a permanent barrier.
+        lock_user_privacy_write(self.db, user_id=user_id)
         self.db.refresh(doc)
 
         page_reports: list[dict] = []
@@ -168,6 +185,7 @@ class IngestionService:
             doc.parse_status = "parsing"
             self.db.add(doc)
             self.db.commit()
+            lock_user_privacy_write(self.db, user_id=user_id)
             self.db.refresh(doc)
 
             parse_run = self._start_value_line_parse_run(
@@ -330,6 +348,7 @@ class IngestionService:
                             stock_id=stock.id,
                             report_date=report_date,
                             value_line_parse_run_id=parse_run.id,
+                            method_decision=owner_earnings_gate,
                         )
 
                     self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
@@ -387,6 +406,9 @@ class IngestionService:
         except Exception as e:
             # Handle failure
             self.db.rollback()
+            # Rollback also releases the privacy lock. Re-check the permanent
+            # barrier before recording failure details from this upload.
+            lock_user_privacy_write(self.db, user_id=user_id)
             doc = self.db.get(PdfDocument, doc.id)
             if doc is None:
                 raise
@@ -457,6 +479,7 @@ class IngestionService:
         currentness changes back together, leaving the prior current facts
         untouched.
         """
+        lock_user_privacy_write(self.db, user_id=user_id)
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
             raise ValueError("Document not found for user")
@@ -670,6 +693,7 @@ class IngestionService:
                     stock_id=stock.id,
                     report_date=report_date,
                     value_line_parse_run_id=parse_run.id,
+                    method_decision=owner_earnings_gate,
                 )
 
             parsed_stock_ids.add(stock.id)
@@ -737,6 +761,7 @@ class IngestionService:
         stock_id: int,
         report_date: date,
         value_line_parse_run_id: int | None = None,
+        method_decision: MethodGateDecision | None = None,
     ) -> list[MetricFact]:
         """Persist base-derived OEPS first, then its normalized snapshot.
 
@@ -746,11 +771,35 @@ class IngestionService:
         tests; duplicate slots still fail closed in the pure builder.
         """
 
+        decision = method_decision or reviewed_method_gate(
+            self.db,
+            stock_id=stock_id,
+            method_key="owner_earnings",
+            effective_as_of=report_date,
+        )
+        if decision.status != "approved":
+            return []
+        method_snapshot = decision.as_dict()
+
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        knowledge_cutoff = evaluation_snapshot.cutoff
         source_query = select(MetricFact).where(
             MetricFact.user_id == user_id,
             MetricFact.stock_id == stock_id,
             MetricFact.source_type == "parsed",
-            MetricFact.is_current.is_(True),
+            MetricFact.id.in_(
+                current_metric_fact_ids_at(
+                    self.db,
+                    knowledge_cutoff=knowledge_cutoff,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id,
+                        metric_keys=tuple(OE_INPUT_KEYS),
+                        user_ids=(user_id,),
+                        source_types=("parsed",),
+                    ),
+                )
+            ),
             MetricFact.period_type == "FY",
             MetricFact.metric_key.in_(OE_INPUT_KEYS),
         )
@@ -765,19 +814,28 @@ class IngestionService:
                 MetricFact.id.asc(),
             )
         ).all()
-        annual = [
-            self._insert_calculated_fact(
-                user_id=user_id,
-                stock_id=stock_id,
-                payload=payload,
+        annual = []
+        for payload in build_owners_earnings_facts(source_facts):
+            payload["value_json"] = {
+                **(payload.get("value_json") or {}),
+                "analysis_method": method_snapshot,
+            }
+            annual.append(
+                self._insert_calculated_fact(
+                    user_id=user_id,
+                    stock_id=stock_id,
+                    payload=payload,
+                )
             )
-            for payload in build_owners_earnings_facts(source_facts)
-        ]
         normalized = build_normalized_owners_earnings_fact(
             annual,
             report_date=report_date,
         )
         if normalized is not None:
+            normalized["value_json"] = {
+                **(normalized.get("value_json") or {}),
+                "analysis_method": method_snapshot,
+            }
             annual.append(
                 self._insert_calculated_fact(
                     user_id=user_id,
@@ -822,6 +880,10 @@ class IngestionService:
             source_ref_id=None,
             source_document_id=None,
             is_current=True,
+            # ``func.now()`` is transaction-start time in PostgreSQL and can
+            # precede the authority cutoff captured later in a long-lived
+            # transaction.  This origin boundary needs the actual insert time.
+            created_at=func.clock_timestamp(),
         )
         self.db.add(fact)
         self.db.flush()
@@ -1225,6 +1287,7 @@ class IngestionService:
         self.db.execute(insert_stmt)
         self.db.flush()
         self._reconcile_parsed_fact_current_slot(
+            user_id=user_id,
             stock_id=stock_id,
             metric_key=metric_key,
             period_type=period_type,
@@ -1302,6 +1365,7 @@ class IngestionService:
             )
         self.db.flush()
         self._reconcile_parsed_fact_current_slot(
+            user_id=user_id,
             stock_id=stock_id,
             metric_key=metric_key,
             period_type=period_type,
@@ -1340,6 +1404,14 @@ class IngestionService:
     ) -> None:
         if source_document_id is None:
             return
+        cutoff = database_evaluation_cutoff(self.db)
+        identity = resolve_document_report_identities(
+            self.db,
+            knowledge_cutoff=cutoff,
+            document_ids=(source_document_id,),
+        ).get(source_document_id)
+        if identity is None:
+            return
         self.db.execute(
             update(MetricFact)
             .where(
@@ -1348,6 +1420,8 @@ class IngestionService:
                 MetricFact.period_type == period_type,
                 MetricFact.period_end_date == period_end_date,
                 MetricFact.source_document_id == source_document_id,
+                MetricFact.value_line_report_identity_revision_id
+                == identity.revision_id,
                 MetricFact.source_type == "parsed",
                 MetricFact.is_current.is_(True),
             )
@@ -1358,42 +1432,110 @@ class IngestionService:
     def _reconcile_parsed_fact_current_slot(
         self,
         *,
+        user_id: int | None = None,
         stock_id: int,
         metric_key: str,
         period_type: Optional[str],
         period_end_date: Optional[date],
     ) -> None:
-        facts = self.db.scalars(
-            select(MetricFact).where(
+        facts_query = select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key == metric_key,
                 MetricFact.source_type == "parsed",
                 MetricFact.period_type == period_type,
                 MetricFact.period_end_date == period_end_date,
             )
-        ).all()
+        if user_id is not None:
+            facts_query = facts_query.where(MetricFact.user_id == user_id)
+        facts = self.db.scalars(facts_query.order_by(MetricFact.id)).all()
         if not facts:
             return
 
-        doc_ids = sorted({fact.source_document_id for fact in facts if fact.source_document_id is not None})
-        report_dates_by_doc: dict[int, Optional[date]] = {}
-        if doc_ids:
-            report_dates_by_doc = dict(
-                self.db.execute(
-                    select(PdfDocument.id, PdfDocument.report_date).where(PdfDocument.id.in_(doc_ids))
-                ).all()
-            )
-
-        winner = max(
-            facts,
-            key=lambda fact: (
-                report_dates_by_doc.get(fact.source_document_id or -1) or date.min,
-                fact.source_document_id or -1,
-                fact.id or -1,
-            ),
+        identities = resolve_fact_report_identities(
+            self.db,
+            facts=facts,
+            knowledge_cutoff=database_evaluation_cutoff(self.db),
         )
 
+        latest_report_date = max(
+            identities[fact.id].report_date or date.min for fact in facts
+        )
+        latest = [
+            fact
+            for fact in facts
+            if (identities[fact.id].report_date or date.min) == latest_report_date
+        ]
+        # A repeat within the exact immutable report identity is a reparse of
+        # the same evidence, not a second independent observation.  Its newest
+        # append replaces the earlier projection.  Different report identities
+        # at the same publication date remain independent.
+        latest_by_identity: dict[int, MetricFact] = {}
+        for fact in latest:
+            revision_id = identities[fact.id].revision_id
+            current = latest_by_identity.get(revision_id)
+            if current is None or (fact.id or -1) > (current.id or -1):
+                latest_by_identity[revision_id] = fact
+        identity_winners = list(latest_by_identity.values())
+        observations: dict[tuple[object, ...], list[MetricFact]] = {}
+        for fact in identity_winners:
+            observations.setdefault(
+                self._parsed_canonical_observation_key(fact), []
+            ).append(fact)
+        if len(observations) <= 1:
+            # Equal observations carry no decision-relevant disagreement.
+            # Keep one deterministic newest projection and preserve every
+            # other fact/currentness revision as audit history.
+            target_ids = {
+                max(
+                    identity_winners,
+                    key=lambda fact: (bool(fact.is_current), fact.id or -1),
+                ).id
+            }
+        else:
+            # No ID/document tie-breaker may manufacture truth from divergent
+            # reports.  Keeping one current row per exact identity makes every
+            # canonical consumer return its typed ambiguity state.
+            # One still-current representative per distinct canonical value is
+            # enough to preserve the disagreement.  This avoids reactivating a
+            # duplicate equal value that an earlier reconciliation correctly
+            # demoted, which append-only currentness intentionally forbids.
+            target_ids = {
+                max(
+                    candidates,
+                    key=lambda fact: (bool(fact.is_current), fact.id or -1),
+                ).id
+                for candidates in observations.values()
+            }
+
         for fact in facts:
-            fact.is_current = fact.id == winner.id
-            self.db.add(fact)
+            should_be_current = fact.id in target_ids
+            if should_be_current and not fact.is_current:
+                raise ValueError(
+                    "parsed_currentness_reactivation_required: retained ambiguity "
+                    "cannot be reconstructed by mutating history"
+                )
+            if fact.is_current and not should_be_current:
+                fact.is_current = False
+                self.db.add(fact)
         self.db.flush()
+
+    @staticmethod
+    def _parsed_canonical_observation_key(fact: MetricFact) -> tuple[object, ...]:
+        value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
+        if fact.value_numeric is not None:
+            value = ("numeric", str(fact.value_numeric.normalize()))
+        elif fact.value_text is not None:
+            value = ("text", fact.value_text)
+        else:
+            value = ("unavailable", None)
+        return (
+            *value,
+            fact.unit,
+            fact.currency,
+            value_json.get("mapping_id"),
+            value_json.get("source_mapping_version"),
+            value_json.get("definition_basis"),
+            value_json.get("dimensions_identity"),
+            value_json.get("fact_nature"),
+            value_json.get("status"),
+        )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -10,12 +10,25 @@ from sqlalchemy import select, func, delete
 from app.api.deps import SessionDep, CurrentUser
 from app.models.stocks import StockPool, PoolMembership, Stock
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+)
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    iter_current_metric_fact_id_chunks_at,
+)
 from app.services.market_data_service import (
     read_canonical_eod_prices,
     read_current_eod_prices,
     serialize_canonical_eod_price,
 )
-from app.services.canonical_financials import CanonicalSourceConflictError
+from app.services.canonical_financials import (
+    CanonicalSourceConflictError,
+    database_evaluation_cutoff,
+    evaluation_business_date,
+    guard_piotroski_method_authority,
+)
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
     guard_reconciled_source_selection,
@@ -43,36 +56,79 @@ def _serialize_piotroski_total(fact: MetricFact) -> dict[str, Any]:
     }
 
 
-def _is_displayable_historical_piotroski_total(fact: MetricFact) -> bool:
-    if fact.period_end_date and fact.period_end_date > date.today():
+def _is_displayable_historical_piotroski_total(
+    fact: MetricFact, *, business_date: date
+) -> bool:
+    if fact.period_end_date and fact.period_end_date > business_date:
         return False
     value_json = fact.value_json if isinstance(fact.value_json, dict) else {}
     return value_json.get("fact_nature") != "estimate"
 
 
+def _load_current_piotroski_facts(
+    session: SessionDep,
+    *,
+    user_id: int,
+    stock_ids: list[int],
+    evaluation_snapshot: EvaluationSnapshot,
+    descending_period: bool,
+) -> list[MetricFact]:
+    facts: list[MetricFact] = []
+    for current_ids in iter_current_metric_fact_id_chunks_at(
+        session,
+        evaluation_snapshot=evaluation_snapshot,
+        scope=CurrentnessScope(
+            stock_ids=tuple(stock_ids),
+            metric_keys=(PIOTROSKI_TOTAL_KEY,),
+            user_ids=(user_id,),
+            source_types=("calculated",),
+        ),
+    ):
+        facts.extend(
+            session.scalars(
+                select(MetricFact).where(
+                    MetricFact.id.in_(current_ids),
+                    MetricFact.period_type == "FY",
+                    MetricFact.period_end_date.is_not(None),
+                )
+            )
+        )
+    # Stable passes reproduce the former SQL ordering without negating
+    # datetimes: stock ASC, configurable period direction, newest revision
+    # first within an exact period.
+    facts.sort(key=lambda fact: (fact.created_at, fact.id), reverse=True)
+    facts.sort(
+        key=lambda fact: fact.period_end_date or date.min,
+        reverse=descending_period,
+    )
+    facts.sort(key=lambda fact: fact.stock_id)
+    return facts
+
+
 def _piotroski_scores_for_stocks(
-    session: SessionDep, user_id: int, stock_ids: list[int]
+    session: SessionDep,
+    user_id: int,
+    stock_ids: list[int],
+    *,
+    evaluated_at: datetime | None = None,
 ) -> tuple[dict[int, list[dict[str, Any]]], dict[int, dict[str, Any]]]:
     if not stock_ids:
         return {}, {}
 
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
+    business_date = evaluation_business_date(evaluated_at)
     unique_stock_ids = list(dict.fromkeys(stock_ids))
     scores_by_stock_id: dict[int, list[dict[str, Any]]] = {stock_id: [] for stock_id in unique_stock_ids}
     states_by_stock_id: dict[int, dict[str, Any]] = {}
 
-    facts = session.scalars(
-        select(MetricFact)
-        .where(
-            MetricFact.user_id == user_id,
-            MetricFact.stock_id.in_(unique_stock_ids),
-            MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
-            MetricFact.source_type == "calculated",
-            MetricFact.is_current.is_(True),
-            MetricFact.period_type == "FY",
-            MetricFact.period_end_date.is_not(None),
-        )
-        .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.desc(), MetricFact.created_at.desc())
-    ).all()
+    facts = _load_current_piotroski_facts(
+        session,
+        user_id=user_id,
+        stock_ids=unique_stock_ids,
+        evaluation_snapshot=evaluation_snapshot,
+        descending_period=True,
+    )
 
     facts_by_stock_id: dict[int, list[MetricFact]] = {
         stock_id: [] for stock_id in unique_stock_ids
@@ -80,18 +136,19 @@ def _piotroski_scores_for_stocks(
     for fact in facts:
         facts_by_stock_id[fact.stock_id].append(fact)
 
-    evaluated_at = datetime.now(timezone.utc)
     for stock_id, stock_facts in facts_by_stock_id.items():
         guarded, state = _guard_piotroski_display_facts(
             session,
             user_id=user_id,
             stock_id=stock_id,
             facts=stock_facts,
-            evaluated_at=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
         )
         states_by_stock_id[stock_id] = state
         for fact in guarded:
-            if not _is_displayable_historical_piotroski_total(fact):
+            if not _is_displayable_historical_piotroski_total(
+                fact, business_date=business_date
+            ):
                 continue
             stock_scores = scores_by_stock_id[stock_id]
             if len(stock_scores) < 3:
@@ -106,8 +163,12 @@ def _guard_piotroski_display_facts(
     user_id: int,
     stock_id: int,
     facts: list[MetricFact],
-    evaluated_at: datetime,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
+    evaluated_at: datetime | None = None,
 ) -> tuple[list[MetricFact], dict[str, Any]]:
+    if evaluation_snapshot is None:
+        evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     if not facts:
         return [], {
             "status": "unavailable",
@@ -118,7 +179,7 @@ def _guard_piotroski_display_facts(
         guarded = guard_reconciled_source_selection(
             facts,
             consumer="stock_pool_piotroski_display",
-            knowledge_cutoff=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
             session=session,
             user_id=user_id,
         )
@@ -140,6 +201,21 @@ def _guard_piotroski_display_facts(
             "status": "unavailable",
             "reason_code": error.code,
             "blocking_reasons": ["explicit_source_selection_required"],
+        }
+    guarded, method_blocked = guard_piotroski_method_authority(
+        session,
+        facts=guarded,
+        effective_as_of=evaluation_business_date(evaluated_at),
+        knowledge_at=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
+    )
+    if method_blocked:
+        return [], {
+            "status": "unavailable",
+            "reason_code": method_blocked[0]["reason_code"],
+            "blocking_reasons": sorted(
+                {item["reason_code"] for item in method_blocked}
+            ),
         }
     return list(guarded), {
         "status": "available",
@@ -208,7 +284,10 @@ def _piotroski_compare_payload(
     members: list[PoolMembership],
     *,
     watchlist: dict[str, Any],
+    evaluated_at: datetime | None = None,
 ) -> dict[str, Any]:
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
     unique_members: list[PoolMembership] = []
     seen_stock_ids: set[int] = set()
     for member in members:
@@ -220,19 +299,13 @@ def _piotroski_compare_payload(
     stock_ids = [member.stock_id for member in unique_members]
     facts_by_stock_id: dict[int, list[MetricFact]] = {stock_id: [] for stock_id in stock_ids}
     if stock_ids:
-        facts = session.scalars(
-            select(MetricFact)
-            .where(
-                MetricFact.user_id == user_id,
-                MetricFact.stock_id.in_(stock_ids),
-                MetricFact.metric_key == PIOTROSKI_TOTAL_KEY,
-                MetricFact.source_type == "calculated",
-                MetricFact.is_current.is_(True),
-                MetricFact.period_type == "FY",
-                MetricFact.period_end_date.is_not(None),
-            )
-            .order_by(MetricFact.stock_id.asc(), MetricFact.period_end_date.asc(), MetricFact.created_at.desc())
-        ).all()
+        facts = _load_current_piotroski_facts(
+            session,
+            user_id=user_id,
+            stock_ids=stock_ids,
+            evaluation_snapshot=evaluation_snapshot,
+            descending_period=False,
+        )
         for fact in facts:
             facts_by_stock_id.setdefault(fact.stock_id, []).append(fact)
 
@@ -245,7 +318,7 @@ def _piotroski_compare_payload(
             user_id=user_id,
             stock_id=stock_id,
             facts=facts,
-            evaluated_at=datetime.now(timezone.utc),
+            evaluation_snapshot=evaluation_snapshot,
         )
         states_by_stock_id[stock_id] = state
         selected = {}
@@ -294,13 +367,16 @@ def _watchlist_rows_for_memberships(
     session: SessionDep,
     user_id: int,
     members: list[PoolMembership],
+    *,
+    evaluated_at: datetime | None = None,
 ) -> list[dict[str, Any]]:
     if not members:
         return []
 
+    evaluated_at = database_evaluation_cutoff(session, evaluated_at)
     stock_ids = list(dict.fromkeys(int(member.stock_id) for member in members))
     piotroski_scores_by_stock_id, piotroski_states_by_stock_id = _piotroski_scores_for_stocks(
-        session, user_id, stock_ids
+        session, user_id, stock_ids, evaluated_at=evaluated_at
     )
     stocks_by_id = {
         int(stock.id): stock
@@ -308,7 +384,6 @@ def _watchlist_rows_for_memberships(
             select(Stock).where(Stock.id.in_(stock_ids))
         ).all()
     }
-    evaluated_at = datetime.now(timezone.utc)
     current_prices = read_current_eod_prices(
         session,
         stocks=stocks_by_id.values(),
@@ -333,6 +408,7 @@ def _watchlist_rows_for_memberships(
         session,
         user_id=user_id,
         stock_ids=stock_ids,
+        knowledge_cutoff=evaluated_at,
     )
 
     rows: list[dict[str, Any]] = []
@@ -396,7 +472,10 @@ def _watchlist_rows_for_memberships(
         if current_price.status != "available":
             price_comparison_reason = current_price.reason_code
         elif fair_value is None:
-            price_comparison_reason = "intrinsic_value_unavailable"
+            price_comparison_reason = (
+                valuation.user_intrinsic_value_reason_code
+                or "intrinsic_value_unavailable"
+            )
         elif current_price.currency != valuation.user_intrinsic_value_currency:
             price_comparison_reason = "currency_mismatch"
         else:
@@ -428,6 +507,9 @@ def _watchlist_rows_for_memberships(
                 "fair_value": fair_value,
                 "fair_value_source": "manual" if fair_value is not None else None,
                 "fair_value_status": valuation.user_intrinsic_value_status,
+                "fair_value_reason_code": (
+                    valuation.user_intrinsic_value_reason_code
+                ),
                 "fair_value_as_of": valuation.user_intrinsic_value_as_of,
                 "fair_value_currency": valuation.user_intrinsic_value_currency,
                 "mos": mos,
@@ -539,6 +621,7 @@ def list_overview_members(
     current_user: CurrentUser,
 ) -> Any:
     user_id = current_user.id
+    evaluated_at = database_evaluation_cutoff(session)
 
     members = session.scalars(
         select(PoolMembership)
@@ -554,7 +637,9 @@ def list_overview_members(
         seen_stock_ids.add(membership.stock_id)
         unique_members.append(membership)
 
-    return _watchlist_rows_for_memberships(session, user_id, unique_members)
+    return _watchlist_rows_for_memberships(
+        session, user_id, unique_members, evaluated_at=evaluated_at
+    )
 
 
 @router.get("/overview/f-score-compare", response_model=dict)
@@ -564,6 +649,7 @@ def overview_f_score_compare(
     current_user: CurrentUser,
 ) -> Any:
     user_id = current_user.id
+    evaluated_at = database_evaluation_cutoff(session)
 
     members = session.scalars(
         select(PoolMembership)
@@ -575,6 +661,7 @@ def overview_f_score_compare(
         user_id,
         members,
         watchlist={"id": "overview", "name": "Overview"},
+        evaluated_at=evaluated_at,
     )
 
 
@@ -586,6 +673,7 @@ def pool_f_score_compare(
     pool_id: int,
 ) -> Any:
     user_id = current_user.id
+    evaluated_at = database_evaluation_cutoff(session)
 
     pool = session.get(StockPool, pool_id)
     if not pool or pool.user_id != user_id:
@@ -604,6 +692,7 @@ def pool_f_score_compare(
         user_id,
         members,
         watchlist={"id": pool.id, "name": pool.name},
+        evaluated_at=evaluated_at,
     )
 
 
@@ -615,6 +704,7 @@ def list_pool_members(
     pool_id: int,
 ) -> Any:
     user_id = current_user.id
+    evaluated_at = database_evaluation_cutoff(session)
 
     pool = session.get(StockPool, pool_id)
     if not pool or pool.user_id != user_id:
@@ -628,7 +718,9 @@ def list_pool_members(
         )
         .order_by(PoolMembership.created_at.desc())
     ).all()
-    return _watchlist_rows_for_memberships(session, user_id, members)
+    return _watchlist_rows_for_memberships(
+        session, user_id, members, evaluated_at=evaluated_at
+    )
 
 
 @router.post("/{pool_id}/members", response_model=dict)

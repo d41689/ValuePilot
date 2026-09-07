@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import BigInteger, CheckConstraint, String, Date, DateTime, Boolean, ForeignKey, Integer, Text
+from sqlalchemy import BigInteger, CheckConstraint, String, Date, DateTime, Boolean, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.core.db import Base
@@ -41,6 +41,95 @@ class PdfDocument(Base):
     stock: Mapped[Optional["Stock"]] = relationship("Stock")
     parser_template: Mapped[Optional["ParserTemplate"]] = relationship("ParserTemplate")
     pages: Mapped[list["DocumentPage"]] = relationship(back_populates="document")
+
+
+class DocumentListSnapshot(Base):
+    """Short-lived, tenant-owned membership for stable document traversal."""
+
+    __tablename__ = "document_list_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "page_limit BETWEEN 1 AND 500",
+            name="ck_document_list_snapshots_limit",
+        ),
+        CheckConstraint(
+            "total_count BETWEEN 0 AND 5000",
+            name="ck_document_list_snapshots_total",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    page_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snapshot_cutoff: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    membership_fingerprint: Mapped[str] = mapped_column(String(32), nullable=False)
+    visibility_snapshot: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class DocumentListSnapshotMember(Base):
+    """Immutable membership and sort key captured by a document snapshot."""
+
+    __tablename__ = "document_list_snapshot_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id",
+            "document_id",
+            name="uq_document_list_snapshot_member_document",
+        ),
+        CheckConstraint(
+            "ordinal > 0", name="ck_document_list_snapshot_members_ordinal"
+        ),
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("document_list_snapshots.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Deliberately not a FK: deletion must remain detectable as a typed
+    # incomplete snapshot instead of silently shrinking retained membership.
+    document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    upload_time: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    report_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class ValueLineDocumentReportIdentityRevision(Base):
+    """Append-only point-in-time identity for one Value Line document."""
+
+    __tablename__ = "value_line_document_report_identity_revisions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("pdf_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    stock_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("stocks.id", ondelete="RESTRICT"), nullable=True
+    )
+    report_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    known_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_txid: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 class DocumentPage(Base):
     __tablename__ = "document_pages"

@@ -1,14 +1,19 @@
 import ast
 import operator
-from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.models.facts import MetricFact, Formula, CalculatedRun
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.numeric_persistence import persist_numeric_38_12
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.services.canonical_financials import (
+    evaluation_business_date,
     guard_sec_run_availability,
+    is_reserved_system_output_key,
+    require_applicable_method_facts,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
@@ -26,6 +31,17 @@ SAFE_OPERATORS = {
     ast.Pow: operator.pow,
 }
 SAFE_COMPARISONS = {ast.Lt: operator.lt, ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge, ast.Eq: operator.eq, ast.NotEq: operator.ne}
+
+
+class ReservedMethodFormulaOutputError(ValueError):
+    code = "method_reserved_formula_output"
+
+    def __init__(self, metric_key: str):
+        self.metric_key = metric_key
+        super().__init__(
+            f"Formula output {metric_key!r} is reserved for a reviewed system method."
+        )
+
 
 class FormulaEngine:
     def __init__(self, db: Session):
@@ -114,32 +130,63 @@ class FormulaEngine:
         3. Evaluate
         4. Save CalculatedRun & MetricFact
         """
+        lock_user_privacy_write(self.db, user_id=user_id)
         formula = self.db.get(Formula, formula_id)
         if not formula or formula.user_id != user_id:
             raise ValueError("Formula not found")
+        output_key = formula.name.lower().replace(" ", "_")
+        if is_reserved_system_output_key(output_key):
+            raise ReservedMethodFormulaOutputError(output_key)
         
         # Fetch dependencies
         # In V1, we fetch the *current* fact for each dependency
         # TODO: Handle period matching (e.g. Sales 2023 vs EPS 2023)
         # For now, we take the `is_current=True` fact.
         
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        evaluated_at = evaluation_snapshot.cutoff
         facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
                 MetricFact.metric_key.in_(formula.dependencies_json),
-                MetricFact.is_current.is_(True),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        self.db,
+                        knowledge_cutoff=evaluated_at,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(
+                            stock_id,
+                            metric_keys=tuple(formula.dependencies_json),
+                            user_ids=(user_id, None),
+                        ),
+                    )
+                ),
                 visible_metric_fact_predicate(MetricFact, user_id=user_id),
             )
         ).all()
         facts = guard_reconciled_source_selection(
             facts,
             consumer="formula",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            evaluation_snapshot=evaluation_snapshot,
             selected_source_type=selected_source_type,
             session=self.db,
             user_id=user_id,
         )
-        facts = guard_sec_run_availability(self.db, stock_id=stock_id, facts=facts)
+        facts = guard_sec_run_availability(
+            self.db,
+            stock_id=stock_id,
+            facts=facts,
+            knowledge_cutoff=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
+        )
+        facts = require_applicable_method_facts(
+            self.db,
+            stock_id=stock_id,
+            facts=facts,
+            effective_as_of=evaluation_business_date(evaluated_at),
+            knowledge_at=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
+        )
         facts_by_metric = {
             metric_key: [fact for fact in facts if fact.metric_key == metric_key]
             for metric_key in formula.dependencies_json
@@ -196,8 +243,6 @@ class FormulaEngine:
             # Let's assume formula.name IS the key for simplicity in V1, 
             # or we add an output_key field to Formula. 
             # Using formula.name as key (normalized).
-            output_key = formula.name.lower().replace(" ", "_")
-            
             # Deactivate old current fact for this calculated metric
             # (Simple "latest is current" logic)
             # ... skipping deactivation for brevity, ideally handled in transaction

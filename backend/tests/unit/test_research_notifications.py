@@ -50,6 +50,7 @@ from app.services.research_notifications import (
     upsert_subscription,
     verify_email_destination,
 )
+from app.services.research_cases import save_product_valuation_revision
 from app.services.valuation import publish_user_intrinsic_value
 
 
@@ -777,6 +778,76 @@ def test_intrinsic_value_change_reinitializes_alert_without_false_crossing(
     ).one()
     assert notification.payload_json["price_id"] == third_price.id
     assert f"value-{second_value.id}" in notification.source_version
+
+
+def test_legacy_dcf_value_cannot_initialize_or_cross_notification_boundary(
+    db_session, user_factory
+) -> None:
+    user = user_factory("legacy-dcf-notify@example.com")
+    stock = Stock(
+        ticker="DCFNOALERT",
+        exchange="NASDAQ",
+        company_name="Legacy DCF Notification Corp",
+    )
+    db_session.add(stock)
+    db_session.commit()
+    case, revision, fact = save_product_valuation_revision(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        value_numeric=100,
+        valuation_low=90,
+        valuation_high=110,
+        as_of_date=date(2026, 7, 20),
+        source="dcf",
+        pool_id=None,
+        assumptions=[{"source": "dcf", "label": "Legacy DCF output"}],
+        valuation_currency="USD",
+    )
+    case.state = "monitoring"
+    case.decision = "watch"
+    case.next_review_on = date(2026, 10, 1)
+    db_session.add(
+        NotificationSubscription(
+            user_id=user.id,
+            event_family="intrinsic_value_threshold_crossed",
+            destination_id=None,
+            frequency="immediate",
+            timezone="UTC",
+            cooldown_minutes=60,
+            threshold_ratio=0.20,
+            hysteresis_ratio=0.02,
+            is_enabled=True,
+        )
+    )
+    db_session.add(
+        StockPrice(
+            stock_id=stock.id,
+            price_date=date(2026, 7, 20),
+            open=75,
+            high=75,
+            low=75,
+            close=75,
+            source="yfinance",
+            currency="USD",
+            created_at=datetime(2026, 7, 20, 21, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+
+    assert fact.value_numeric == 100
+    assert fact.source_ref_id == revision.id
+    assert materialize_intrinsic_value_crossings(
+        db_session,
+        as_of=datetime(2026, 7, 20, 22, tzinfo=timezone.utc),
+    ) == 0
+    assert db_session.query(NotificationPriceAlertState).filter_by(
+        user_id=user.id, stock_id=stock.id
+    ).count() == 0
+    assert db_session.query(LogicalNotification).filter_by(
+        user_id=user.id,
+        event_family="intrinsic_value_threshold_crossed",
+    ).count() == 0
 
 
 def test_post_close_alert_evaluation_uses_same_day_completed_session(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from typing import Any, Iterable, Optional
 
@@ -9,8 +9,14 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.facts import MetricFact
-from app.services.canonical_financials import guard_sec_run_availability, guard_source_selection
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
+from app.services.canonical_financials import (
+    guard_sec_run_availability,
+    guard_source_selection,
+)
 from app.services.numeric_persistence import persist_numeric_38_12
+from app.services.privacy_erasure import lock_user_privacy_write
 from app.services.source_reconciliation import guard_reconciled_source_selection
 
 
@@ -116,10 +122,25 @@ class ValueLineRatioCalculator:
         self.db = db
 
     def calculate_for_stock(self, *, user_id: int, stock_id: int) -> list[MetricFact]:
+        lock_user_privacy_write(self.db, user_id=user_id)
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        knowledge_cutoff = evaluation_snapshot.cutoff
         source_facts = self.db.scalars(
             select(MetricFact).where(
                 MetricFact.stock_id == stock_id,
-                MetricFact.is_current.is_(True),
+                MetricFact.id.in_(
+                    current_metric_fact_ids_at(
+                        self.db,
+                        knowledge_cutoff=knowledge_cutoff,
+                        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                        scope=CurrentnessScope.one_stock(
+                            stock_id,
+                            metric_keys=tuple(RATIO_INPUT_KEYS),
+                            user_ids=(user_id, None),
+                            source_types=("parsed", "manual", "sec"),
+                        ),
+                    )
+                ),
                 MetricFact.metric_key.in_(RATIO_INPUT_KEYS),
                 or_(
                     and_(MetricFact.user_id == user_id, MetricFact.source_type.in_(["parsed", "manual"])),
@@ -130,13 +151,17 @@ class ValueLineRatioCalculator:
         source_facts = guard_reconciled_source_selection(
             source_facts,
             consumer="ratio",
-            knowledge_cutoff=datetime.now(timezone.utc),
+            evaluation_snapshot=evaluation_snapshot,
             session=self.db,
             user_id=user_id,
             selected_source_type="parsed",
         )
         source_facts = guard_sec_run_availability(
-            self.db, stock_id=stock_id, facts=source_facts
+            self.db,
+            stock_id=stock_id,
+            facts=source_facts,
+            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
         derived = build_value_line_ratio_facts(source_facts)
         return [

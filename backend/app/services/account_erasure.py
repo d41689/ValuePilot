@@ -23,7 +23,7 @@ from app.models.notifications import (
 from app.models.portfolios import ManualPortfolio, ManualPosition, PositionJournalEvent
 from app.models.research import ResearchCase, ResearchCaseEvent, ResearchCaseRevision
 from app.models.users import AccountErasureEvent, NotificationSettings, User
-from app.services.valuation import redact_published_unavailable_reason
+from app.services.privacy_erasure import begin_privacy_erasure_operation
 
 
 class AccountErasureError(ValueError):
@@ -38,22 +38,48 @@ def erase_account(
 ) -> dict[str, int | str]:
     if not verify_password(password, user.hashed_password):
         raise AccountErasureError("Password verification failed.")
-    session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"account-erasure:{user.id}"},
+    # This is the first lock. The database takes the exclusive form of the
+    # canonical per-user advisory lock, creates the permanent barrier, and
+    # disables the account before any child table is scanned.
+    privacy_operation_id = begin_privacy_erasure_operation(
+        session,
+        user_id=user.id,
+        operation_kind="account_erasure",
     )
-    if session.query(AccountErasureEvent).filter_by(user_id=user.id).first():
-        raise AccountErasureError("Account erasure was already completed.")
-
-    # This transaction-local setting permits UPDATE (never DELETE) through the
-    # append-only journal trigger solely for the audited privacy tombstone.
-    session.execute(text("SELECT set_config('valuepilot.account_erasure', 'on', true)"))
     now = datetime.now(timezone.utc)
     today = now.date()
     digest = hashlib.sha256()
 
     cases = session.query(ResearchCase).filter_by(user_id=user.id).all()
     case_ids = [case.id for case in cases]
+    for case in cases:
+        if case.void_reason and case.void_reason != "[redacted]":
+            digest.update(case.void_reason.encode("utf-8"))
+            case.void_reason_content_hash = hashlib.sha256(
+                case.void_reason.encode("utf-8")
+            ).hexdigest()
+            case.void_reason = "[redacted]"
+
+    redaction_events = (
+        session.query(ResearchCaseEvent)
+        .filter(
+            ResearchCaseEvent.case_id.in_(case_ids or [-1]),
+            ResearchCaseEvent.event_type == "revision_redacted",
+        )
+        .order_by(ResearchCaseEvent.id)
+        .all()
+    )
+    for event in redaction_events:
+        payload = dict(event.payload_json or {})
+        reason = payload.get("reason")
+        if isinstance(reason, str) and reason and reason != "[redacted]":
+            digest.update(reason.encode("utf-8"))
+            payload["reason"] = "[redacted]"
+            payload["redaction_reason_content_hash"] = hashlib.sha256(
+                reason.encode("utf-8")
+            ).hexdigest()
+            event.payload_json = payload
+
     revisions = (
         session.query(ResearchCaseRevision)
         .filter(ResearchCaseRevision.case_id.in_(case_ids or [-1]))
@@ -75,6 +101,13 @@ def erase_account(
             json.dumps(authored, sort_keys=True, default=str).encode("utf-8")
         )
         if revision.is_redacted:
+            reason = revision.redaction_reason
+            if isinstance(reason, str) and reason and reason != "[redacted]":
+                digest.update(reason.encode("utf-8"))
+                revision.redaction_reason_content_hash = hashlib.sha256(
+                    reason.encode("utf-8")
+                ).hexdigest()
+                revision.redaction_reason = "[redacted]"
             continue
         content_hash = hashlib.sha256(
             json.dumps(authored, sort_keys=True, default=str).encode("utf-8")
@@ -90,16 +123,12 @@ def erase_account(
         )
         revision.is_redacted = True
         revision.redaction_content_hash = content_hash
-        revision.redaction_reason = "account_erasure"
+        revision.redaction_reason = "[redacted]"
+        revision.redaction_reason_content_hash = hashlib.sha256(
+            b"account_erasure"
+        ).hexdigest()
         revision.redacted_by_user_id = user.id
         revision.redacted_at = now
-        redact_published_unavailable_reason(
-            session,
-            user_id=user.id,
-            stock_id=revision.snapshot_stock_id,
-            revision_id=revision.id,
-            content_hash=content_hash,
-        )
         session.add(
             ResearchCaseEvent(
                 case_id=revision.case_id,
@@ -110,7 +139,10 @@ def erase_account(
                     "revision_id": revision.id,
                     "revision_number": revision.revision_number,
                     "content_hash": content_hash,
-                    "reason": "account_erasure",
+                    "reason": "[redacted]",
+                    "redaction_reason_content_hash": hashlib.sha256(
+                        b"account_erasure"
+                    ).hexdigest(),
                 },
             )
         )
@@ -229,15 +261,58 @@ def erase_account(
         synchronize_session=False
     )
 
-    # Current manual unavailable reasons can duplicate user-authored text even
-    # when they were not linked to a revision. Tombstone the text only.
+    # Manual ``reason`` and ``note`` are user-authored rationale. Tombstone
+    # those fields and no others: ``raw``/``value_text`` and numeric values are
+    # the economic observation, while the remaining JSON is server provenance.
     manual_facts = session.query(MetricFact).filter(
         MetricFact.user_id == user.id,
         MetricFact.source_type == "manual",
     ).all()
     for fact in manual_facts:
-        if isinstance(fact.value_json, dict) and fact.value_json.get("reason"):
-            fact.value_json = {**fact.value_json, "reason": "[redacted]"}
+        if not isinstance(fact.value_json, dict):
+            continue
+        reason = fact.value_json.get("reason")
+        note = fact.value_json.get("note")
+        rationale = {
+            "reason": reason,
+            "note": note,
+        }
+        redactable = {
+            key: value
+            for key, value in rationale.items()
+            if isinstance(value, str) and value and value != "[redacted]"
+        }
+        if not redactable:
+            continue
+        redacted = dict(fact.value_json)
+        for key, value in redactable.items():
+            content_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            digest.update(value.encode("utf-8"))
+            redacted[key] = "[redacted]"
+            hash_key = (
+                "redaction_content_hash"
+                if key == "reason"
+                else "redaction_note_content_hash"
+            )
+            # A retained hash is immutable evidence.  PostgreSQL verifies it
+            # against the plaintext during this exact erasure transition.  A
+            # mismatch is tombstoned for privacy but recorded as a typed,
+            # append-only integrity anomaly instead of replacing the evidence
+            # or permanently blocking account deletion.
+            redacted.setdefault(hash_key, content_hash)
+        fact.value_json = redacted
+
+    session.flush()
+    manual_rationale_integrity_anomalies = int(
+        session.scalar(
+            text(
+                "SELECT count(*) FROM manual_rationale_erasure_anomalies "
+                "WHERE user_id=:user_id AND created_txid=txid_current()"
+            ),
+            {"user_id": user.id},
+        )
+        or 0
+    )
 
     user.email = f"erased-{user.id}@deleted.invalid"
     user.hashed_password = hash_password(secrets.token_urlsafe(32))
@@ -249,9 +324,16 @@ def erase_account(
         "journal_events_tombstoned": journal_count,
         "destinations_revoked": len(destinations),
         "refresh_tokens_revoked": revoked_tokens,
+        "manual_rationale_integrity_anomalies": (
+            manual_rationale_integrity_anomalies
+        ),
     }
+    # Finalize every authorized tombstone and the disabled user row before the
+    # append-only audit event closes this transaction's erasure capability.
+    session.flush()
     audit = AccountErasureEvent(
         user_id=user.id,
+        privacy_erasure_operation_id=privacy_operation_id,
         content_hash=digest.hexdigest(),
         summary_json=summary,
     )

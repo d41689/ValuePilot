@@ -1625,6 +1625,48 @@ Market-price authority, user intrinsic-value publication, valuation methods,
 industry/economic applicability, new acquisition rights, and evidence
 retirement/account erasure remain outside FT-06.
 
+### H.11 Reviewed method applicability (FT-07)
+
+Analytical completeness is not economic applicability. Owner Earnings, ROIC,
+per-share trend, and system valuation may publish a numeric conclusion only
+when one immutable approved policy rule permits the method for the company's
+reviewed economic class and all required business-risk reviews and canonical
+inputs are present. Otherwise the affected output is `unsupported` with a
+stable typed reason and no partial numeric value. Raw canonical actuals remain
+visible subject to their own authority; the gate does not create a preferred
+financial source or a second fact store.
+
+Economic class and the high-SBC, acquisitive, cyclical, and commodity-exposed
+states are explicit human reviews. An active administrator creates each review
+through the bounded operator surface, with a non-empty rationale and an exact
+effective interval. Reviews are append-only and database-stamped with knowledge
+time and transaction identity; a correction names the exact terminal review it
+supersedes. A later prospective interval supersedes the earlier state only
+where its effective interval covers the requested date. Queries at a knowledge
+cutoff before the later database stamp continue to replay the prior state.
+Issuer name, ticker, sector/SIC label, foreign status, price volatility, and
+beta are never classification or reviewed-risk authority.
+
+The immutable method-policy registry owns versioned runtime permission and must
+cover every governed method/economic-class pair with either an approved
+method/evidence contract or an unsupported reason. A decision records policy
+identity and digest, method version, reviewed class ID/state, each required risk
+attribute bound to its review ID/state, required inputs, adjustments and
+outputs, effective date, and knowledge cutoff. Persisted calculated facts keep
+that exact decision snapshot so deterministic replay does not consult today's
+mutable projection.
+
+The approved FT-07 policy permits the existing ordinary-company Owner Earnings,
+Value Line return-on-total-capital proxy, and Value Line per-share-rate methods
+only when all four required risk reviews explicitly record false. Banks,
+insurers, REITs, other/unclassified companies, and any material or unknown
+required risk state are unsupported unless a future reviewed policy adds a
+normative method and evidence contract. FT-07 adds no sector formula from the
+non-normative Vision. System valuation remains
+`system_valuation_method_pending_ft09` for every system path until FT-09
+approves its inputs and calculation contract; user-authored valuation authority
+remains separate.
+
 ---
 
 ## Appendix A: Metric Keys & Mapping Contracts (V1)

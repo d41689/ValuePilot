@@ -233,3 +233,22 @@ class SecMethodPolicyVersion(Base):
     review_reason: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_txid: Mapped[int] = mapped_column(BigInteger)
+
+
+class SecMethodPolicyRule(Base):
+    __tablename__ = "sec_method_policy_rules"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    method_policy_version_id: Mapped[str] = mapped_column(
+        String(80), ForeignKey("sec_method_policy_versions.id")
+    )
+    method_key: Mapped[str] = mapped_column(String(80))
+    economic_class: Mapped[str] = mapped_column(String(24))
+    method_version_id: Mapped[str | None] = mapped_column(String(80))
+    applicability: Mapped[str] = mapped_column(String(24))
+    required_evidence_json: Mapped[list[str]] = mapped_column(JSONB)
+    required_outputs_json: Mapped[list[str]] = mapped_column(JSONB)
+    required_risk_reviews_json: Mapped[list[str]] = mapped_column(JSONB)
+    required_adjustments_json: Mapped[list[str]] = mapped_column(JSONB)
+    unsupported_reason_code: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_txid: Mapped[int] = mapped_column(BigInteger)

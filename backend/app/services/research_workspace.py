@@ -1,7 +1,7 @@
 """User-authorized, stock-centric read model for a research case."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -17,6 +17,10 @@ from app.services.market_data_service import (
     read_current_eod_price,
     serialize_canonical_eod_price,
 )
+from app.services.evaluation_snapshot import (
+    EvaluationSnapshot,
+    database_evaluation_snapshot,
+)
 from app.services.research_cases import (
     ResearchCaseError,
     serialize_case,
@@ -27,12 +31,32 @@ from app.services.research_cases import (
 from app.services.research_coverage import serialize_requirements
 from app.services.thirteenf_user_api import build_user_stock_holders
 from app.services.valuation import read_valuation_context
-from app.services.active_report_resolver import resolve_active_reports
-from app.services.actual_conflict_service import detect_actual_conflicts
+from app.services.active_report_resolver import (
+    ActiveReportAuthorityBoundExceededError,
+    resolve_active_reports,
+)
+from app.services.actual_conflict_service import (
+    ActualConflictAuthorityAmbiguousError,
+    ActualConflictAuthorityBoundExceededError,
+    detect_actual_conflicts,
+)
+from app.services.value_line_report_identity import (
+    ReportIdentityUnverifiableError,
+    resolve_fact_report_identities,
+)
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    CurrentnessScopeError,
+    HistoricalCurrentnessUnverifiableError,
+    current_metric_fact_ids_at,
+)
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.canonical_financials import (
     apply_reviewed_method_gates,
     current_sec_unresolved_states,
+    evaluation_business_date,
     reviewed_method_gate,
+    system_method_for_fact,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
@@ -79,7 +103,7 @@ def _reconciled_workspace_facts(
     *,
     facts: list[MetricFact],
     user_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
 ) -> tuple[list[MetricFact], list[dict[str, Any]]]:
     """Return only slot-safe facts, plus typed redactions for blocked slots.
 
@@ -100,7 +124,7 @@ def _reconciled_workspace_facts(
             session,
             facts=metric_facts,
             user_id=user_id,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         ):
             try:
                 for source_type in sorted({fact.source_type for fact in slot}):
@@ -108,7 +132,7 @@ def _reconciled_workspace_facts(
                         slot,
                         consumer="research_workspace",
                         selected_source_type=source_type,
-                        knowledge_cutoff=knowledge_cutoff,
+                        evaluation_snapshot=evaluation_snapshot,
                         session=session,
                         user_id=user_id,
                     )
@@ -145,9 +169,13 @@ def build_research_workspace(
     *,
     user_id: int,
     case_id: int,
-    as_of: date,
+    as_of: date | None = None,
+    evaluated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    evaluated_at = datetime.now(timezone.utc)
+    evaluation_snapshot = database_evaluation_snapshot(session, evaluated_at)
+    evaluated_at = evaluation_snapshot.cutoff
+    current_as_of = evaluation_business_date(evaluated_at)
+    as_of = as_of or current_as_of
     case = (
         session.query(ResearchCase)
         .filter(ResearchCase.id == case_id, ResearchCase.user_id == user_id)
@@ -155,7 +183,7 @@ def build_research_workspace(
     )
     if case is None:
         raise ResearchCaseError("case_not_found", "Research case not found.", status_code=404)
-    if as_of != date.today():
+    if as_of != current_as_of:
         raise ResearchCaseError(
             "historical_as_of_not_supported",
             "Only the current research workspace is supported; point-in-time reconstruction is unavailable.",
@@ -177,25 +205,22 @@ def build_research_workspace(
         .limit(100)
         .all()
     )
-    documents = (
-        session.query(PdfDocument)
-        .filter(
-            PdfDocument.user_id == user_id,
-            PdfDocument.stock_id == stock.id,
+    try:
+        current_fact_ids = current_metric_fact_ids_at(
+            session,
+            knowledge_cutoff=evaluated_at,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope.one_stock(
+                stock.id, user_ids=(user_id, None)
+            ),
         )
-        .order_by(
-            PdfDocument.report_date.desc().nullslast(),
-            PdfDocument.upload_time.desc(),
-            PdfDocument.id.desc(),
-        )
-        .limit(20)
-        .all()
-    )
+    except (HistoricalCurrentnessUnverifiableError, CurrentnessScopeError) as error:
+        raise ResearchCaseError(error.code, str(error), status_code=409) from error
     facts = session.scalars(
         select(MetricFact)
         .where(
             MetricFact.stock_id == stock.id,
-            MetricFact.is_current.is_(True),
+            MetricFact.id.in_(current_fact_ids),
             visible_metric_fact_predicate(MetricFact, user_id=user_id),
         )
         .order_by(
@@ -209,6 +234,21 @@ def build_research_workspace(
     reconciliation_bound_exceeded = len(facts) > MAX_RECONCILIATION_FACTS
     facts = facts[:MAX_RECONCILIATION_FACTS]
     reconciliation_blocked_states: list[dict[str, Any]] = []
+    method_gate_decisions = {
+        method_key: reviewed_method_gate(
+            session,
+            stock_id=stock.id,
+            method_key=method_key,
+            effective_as_of=as_of,
+            knowledge_at=evaluated_at,
+        )
+        for method_key in (
+            "owner_earnings",
+            "roic",
+            "per_share_trend",
+            "system_valuation",
+        )
+    }
     if reconciliation_bound_exceeded:
         # A truncated prefix cannot support any trustworthy slot conclusion.
         facts = []
@@ -237,6 +277,9 @@ def build_research_workspace(
             stock_id=stock.id,
             facts=facts,
             effective_as_of=as_of,
+            knowledge_at=evaluated_at,
+            evaluation_snapshot=evaluation_snapshot,
+            precomputed_decisions=method_gate_decisions,
         )
     coverage_rows = (
         session.query(ResearchCoverageRequirement)
@@ -258,18 +301,40 @@ def build_research_workspace(
         [(row, stock) for row in coverage_rows],
         evaluated_at=evaluated_at,
     )
-    valuation = read_valuation_context(session, user_id=user_id, stock_id=stock.id)
-    active_report = resolve_active_reports(
+    valuation = read_valuation_context(
         session,
-        stock_ids=[stock.id],
-        current_user_id=user_id,
-    ).get(stock.id)
-    actual_conflicts = detect_actual_conflicts(
-        session,
+        user_id=user_id,
         stock_id=stock.id,
-        active_report=active_report,
-        current_user_id=user_id,
+        knowledge_cutoff=evaluated_at,
     )
+    try:
+        active_report = resolve_active_reports(
+            session,
+            stock_ids=[stock.id],
+            current_user_id=user_id,
+            knowledge_cutoff=evaluated_at,
+        ).get(stock.id)
+        actual_conflicts = detect_actual_conflicts(
+            session,
+            stock_id=stock.id,
+            active_report=active_report,
+            current_user_id=user_id,
+            knowledge_cutoff=evaluated_at,
+        )
+    except (
+        ReportIdentityUnverifiableError,
+        ActiveReportAuthorityBoundExceededError,
+        ActualConflictAuthorityBoundExceededError,
+        ActualConflictAuthorityAmbiguousError,
+        CurrentnessScopeError,
+        HistoricalCurrentnessUnverifiableError,
+        ValueLineSourceUnavailableError,
+    ) as error:
+        raise ResearchCaseError(
+            error.code,
+            str(error),
+            status_code=409,
+        ) from error
     try:
         if reconciliation_bound_exceeded:
             source_reconciliation = {
@@ -284,7 +349,7 @@ def build_research_workspace(
                 facts=facts,
                 user_id=user_id,
                 stock_id=stock.id,
-                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
             )
     except ValueError as error:
         source_reconciliation = {
@@ -297,8 +362,45 @@ def build_research_workspace(
             session,
             facts=facts,
             user_id=user_id,
+            evaluation_snapshot=evaluation_snapshot,
+        )
+    try:
+        report_identities_by_fact = resolve_fact_report_identities(
+            session,
+            facts=facts,
             knowledge_cutoff=evaluated_at,
         )
+    except ReportIdentityUnverifiableError as error:
+        raise ResearchCaseError(
+            error.code,
+            str(error),
+            status_code=409,
+        ) from error
+
+    # Documents are provenance of the exact visible fact set, not a projection
+    # from mutable pdf_documents stock metadata. This preserves a multi-company
+    # container whose document-level stock is NULL while a bound fact belongs
+    # to the requested stock. The fact query above supplies the resource bound.
+    document_identities = {}
+    for identity in report_identities_by_fact.values():
+        current = document_identities.get(identity.document_id)
+        if current is None or (identity.known_at, identity.revision_id) > (
+            current.known_at,
+            current.revision_id,
+        ):
+            document_identities[identity.document_id] = identity
+    documents = session.scalars(
+        select(PdfDocument).where(PdfDocument.id.in_(sorted(document_identities)))
+    ).all()
+    documents = sorted(
+        documents,
+        key=lambda document: (
+            document_identities[document.id].report_date or date.min,
+            document.upload_time,
+            document.id,
+        ),
+        reverse=True,
+    )[:20]
     signal = (
         session.query(OraclesLensSignal)
         .filter(OraclesLensSignal.stock_id == stock.id)
@@ -363,7 +465,14 @@ def build_research_workspace(
                 "id": document.id,
                 "file_name": document.file_name,
                 "source": document.source,
-                "report_date": document.report_date.isoformat() if document.report_date else None,
+                "report_date": (
+                    document_identities[document.id].report_date.isoformat()
+                    if document_identities[document.id].report_date
+                    else None
+                ),
+                "report_identity_revision_id": document_identities[
+                    document.id
+                ].revision_id,
                 "parse_status": document.parse_status,
                 "identity_needs_review": document.identity_needs_review,
                 "uploaded_at": document.upload_time.isoformat(),
@@ -383,15 +492,16 @@ def build_research_workspace(
                 "source_type": fact.source_type,
                 "source_document_id": fact.source_document_id,
                 "source_ref_id": fact.source_ref_id,
-                "source_report_date": next(
-                    (
-                        document.report_date.isoformat()
-                        if document.report_date
-                        else None
-                        for document in documents
-                        if document.id == fact.source_document_id
-                    ),
-                    None,
+                "source_report_date": (
+                    report_identities_by_fact[fact.id].report_date.isoformat()
+                    if fact.id in report_identities_by_fact
+                    and report_identities_by_fact[fact.id].report_date
+                    else None
+                ),
+                "source_report_identity_revision_id": (
+                    report_identities_by_fact[fact.id].revision_id
+                    if fact.id in report_identities_by_fact
+                    else None
                 ),
                 "original_evidence_route": (
                     f"/documents/{fact.source_document_id}/review"
@@ -402,19 +512,25 @@ def build_research_workspace(
                         else None
                     )
                 ),
+                **(
+                    {
+                        "method_gate": method_gate_decisions[
+                            system_method_for_fact(fact)
+                        ].as_dict()
+                    }
+                    if system_method_for_fact(fact) in method_gate_decisions
+                    else {}
+                ),
             }
             for fact in facts
         ]
         + reconciliation_blocked_states
         + unsupported_method_states
-        + current_sec_unresolved_states(session, stock_id=stock.id),
+        + current_sec_unresolved_states(
+            session, stock_id=stock.id, knowledge_cutoff=evaluated_at
+        ),
         "system_method_gates": {
-            method_key: reviewed_method_gate(
-                session,
-                stock_id=stock.id,
-                method_key=method_key,
-                effective_as_of=as_of,
-            ).as_dict()
+            method_key: method_gate_decisions[method_key].as_dict()
             for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")
         },
         "piotroski_f_score": _piotroski_series(facts),
@@ -429,6 +545,9 @@ def build_research_workspace(
         "valuation": {
             "user_intrinsic_value": valuation.user_intrinsic_value,
             "user_intrinsic_value_status": valuation.user_intrinsic_value_status,
+            "user_intrinsic_value_reason_code": (
+                valuation.user_intrinsic_value_reason_code
+            ),
             "user_intrinsic_value_as_of": (
                 valuation.user_intrinsic_value_as_of.isoformat()
                 if valuation.user_intrinsic_value_as_of

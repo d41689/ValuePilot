@@ -876,7 +876,11 @@ def test_reparse_appends_run_revision_and_preserves_manual_lineage(db_session):
     )
     assert len(revisions) == 2
     assert revisions[0].id == old_fact.id
-    assert revisions[0].is_current is False
+    # The same publication date now has two exact report-identity revisions
+    # with materially different canonical prices.  Neither revision may win
+    # merely because it was reparsed later; both stay current so downstream
+    # canonical consumers return typed ambiguity.
+    assert revisions[0].is_current is True
     assert (
         revisions[0].value_json["source_mapping_version"]
         == service.mapping_spec.source_mapping_version

@@ -21,6 +21,13 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from app.models.artifacts import PdfDocument, ValueLineMappingPolicy
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import EvaluationSnapshot
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    current_metric_fact_ids_at,
+    currentness_state_subquery,
+    require_currentness_authority,
+)
 from app.services.mapping_spec import (
     MappingSpec,
     load_resolved_value_line_mapping_spec,
@@ -47,6 +54,7 @@ BLOCKING_EXCLUSION_REASONS = frozenset(
         "source_retired",
         "unsupported_source_type",
         "unresolved_amendment_parse_failure",
+        "fact_currentness_unverifiable_at_snapshot",
     }
 )
 PASSTHROUGH_EXCLUSION_REASONS = frozenset(
@@ -1004,17 +1012,43 @@ def _sec_authority(
     return {int(row.metric_fact_id): dict(row) for row in rows}
 
 
+def _currentness_states(
+    session: Session,
+    *,
+    fact_ids: Iterable[int],
+    evaluation_snapshot: EvaluationSnapshot,
+) -> dict[int, bool]:
+    """Project exact fact IDs from one retained currentness timeline snapshot."""
+
+    ids = tuple(sorted(set(fact_ids)))
+    if not ids:
+        return {}
+    require_currentness_authority(
+        session, knowledge_cutoff=evaluation_snapshot.cutoff
+    )
+    state = currentness_state_subquery(
+        knowledge_cutoff=evaluation_snapshot.cutoff,
+        knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+        scope=CurrentnessScope(fact_ids=ids),
+    )
+    return {
+        int(fact_id): bool(is_current)
+        for fact_id, is_current in session.execute(
+            select(state.c.fact_id, state.c.is_current)
+        )
+    }
+
+
 def materialize_reconciliation_candidates(
     session: Session,
     facts: Iterable[MetricFact],
     *,
     user_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
 ) -> tuple[list[ReconciliationCandidate], list[dict[str, Any]]]:
     """Project visible ``metric_facts`` into bounded comparison descriptors."""
 
-    if knowledge_cutoff.tzinfo is None:
-        raise ValueError("knowledge_cutoff must be timezone-aware")
+    knowledge_cutoff = evaluation_snapshot.cutoff
     rows = list(facts)
     documents = _document_authority(session, rows)
     value_line_runs = _value_line_parse_run_authority(session, rows)
@@ -1042,11 +1076,19 @@ def materialize_reconciliation_candidates(
             )
         )
     } if rows and any(_lineage_ids(_json_dict(f.value_json), source_type=f.source_type) for f in rows) else {}
+    currentness_by_fact_id = _currentness_states(
+        session,
+        fact_ids=[*map(lambda fact: fact.id, rows), *visible_lineage],
+        evaluation_snapshot=evaluation_snapshot,
+    )
 
     for fact in rows:
         reason: str | None = None
         metadata = _json_dict(fact.value_json)
-        known_at = max(_aware(fact.created_at), _aware(fact.updated_at))
+        # Content is immutable for governed facts. Currentness updates advance
+        # ``updated_at`` but are represented independently by the append-only
+        # timeline, so mutable update time is never a fact-knowledge boundary.
+        known_at = _aware(fact.created_at)
         effective_at = known_at
         authorization_state = "authorized"
         source_role = ""
@@ -1272,6 +1314,12 @@ def materialize_reconciliation_candidates(
                     )
                 )
             )
+        if reason is None and fact.id not in currentness_by_fact_id:
+            reason = (
+                "fact_known_after_cutoff"
+                if known_at > knowledge_cutoff
+                else "fact_currentness_unverifiable_at_snapshot"
+            )
         if fact.source_type in {"manual", "calculated"} and lineage:
             expected_lineage = lineage
             visible_valid_lineage = tuple(
@@ -1279,11 +1327,8 @@ def materialize_reconciliation_candidates(
                 for value in lineage
                 if value in visible_lineage
                 and visible_lineage[value].stock_id == fact.stock_id
-                and max(
-                    _aware(visible_lineage[value].created_at),
-                    _aware(visible_lineage[value].updated_at),
-                )
-                <= knowledge_cutoff
+                and value in currentness_by_fact_id
+                and _aware(visible_lineage[value].created_at) <= knowledge_cutoff
                 and value != fact.id
             )
             lineage = (
@@ -1330,7 +1375,7 @@ def materialize_reconciliation_candidates(
                 known_at=known_at,
                 effective_at=effective_at,
                 authorization_state=authorization_state,
-                is_current=fact.is_current,
+                is_current=currentness_by_fact_id[fact.id],
                 period_duration_kind=period_duration_kind,
                 lineage_fact_ids=lineage,
                 identity_complete=identity_complete,
@@ -1369,16 +1414,18 @@ def _current_same_slot_competitors(
     facts: Sequence[MetricFact],
     user_id: int,
     stock_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
     max_facts: int,
 ) -> tuple[list[MetricFact], bool]:
     """Find current visible competitors using canonical, source-backed slots."""
+
+    knowledge_cutoff = evaluation_snapshot.cutoff
 
     seed_candidates, _ = materialize_reconciliation_candidates(
         session,
         facts,
         user_id=user_id,
-        knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
     seed_candidates = [
         candidate
@@ -1399,7 +1446,20 @@ def _current_same_slot_competitors(
                 .where(
                     MetricFact.stock_id == stock_id,
                     MetricFact.metric_key == metric_key,
-                    MetricFact.is_current.is_(True),
+                    MetricFact.id.in_(
+                        current_metric_fact_ids_at(
+                            session,
+                            knowledge_cutoff=knowledge_cutoff,
+                            knowledge_txid_snapshot=(
+                                evaluation_snapshot.visibility_snapshot
+                            ),
+                            scope=CurrentnessScope.one_stock(
+                                stock_id,
+                                metric_keys=(metric_key,),
+                                user_ids=(user_id, None),
+                            ),
+                        )
+                    ),
                     visible_metric_fact_predicate(MetricFact, user_id=user_id),
                 )
                 .order_by(MetricFact.id)
@@ -1412,7 +1472,7 @@ def _current_same_slot_competitors(
             session,
             pool,
             user_id=user_id,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
         pool_candidates = [
             candidate
@@ -1458,11 +1518,12 @@ def _expand_visible_lineage(
     *,
     facts: Sequence[MetricFact],
     user_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
     max_facts: int,
 ) -> tuple[list[MetricFact], list[dict[str, Any]]]:
     """Resolve a bounded tenant-visible lineage closure and reject cycles."""
 
+    knowledge_cutoff = evaluation_snapshot.cutoff
     if not facts:
         return [], []
     stock_id = facts[0].stock_id
@@ -1523,9 +1584,11 @@ def _expand_visible_lineage(
                         )
                     )
                     continue
-                if max(
-                    _aware(fact.created_at), _aware(fact.updated_at)
-                ) > knowledge_cutoff:
+                # Currentness changes may advance ``updated_at`` after the
+                # captured boundary. They are projected from the retained
+                # timeline below and must not rewrite the immutable fact
+                # knowledge boundary.
+                if _aware(fact.created_at) > knowledge_cutoff:
                     errors.append(
                         _lineage_blocking_item(
                             fact, reason_code="lineage_known_after_cutoff"
@@ -1550,7 +1613,7 @@ def _expand_visible_lineage(
             facts=list(by_id.values()),
             user_id=user_id,
             stock_id=stock_id,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             max_facts=max_facts,
         )
         new_competitors = [fact for fact in competitors if fact.id not in by_id]
@@ -1574,15 +1637,36 @@ def _expand_visible_lineage(
             )
 
     if not errors:
+        currentness_by_fact_id = _currentness_states(
+            session,
+            fact_ids=by_id,
+            evaluation_snapshot=evaluation_snapshot,
+        )
         for fact in by_id.values():
-            if fact.source_type != "calculated" or not fact.is_current:
+            if fact.id not in currentness_by_fact_id:
+                if _aware(fact.created_at) > knowledge_cutoff:
+                    # Materialization records the more specific temporal
+                    # exclusion. It cannot participate in lineage at T.
+                    continue
+                errors.append(
+                    _lineage_blocking_item(
+                        fact,
+                        reason_code="fact_currentness_unverifiable_at_snapshot",
+                    )
+                )
+                break
+            if (
+                fact.source_type != "calculated"
+                or not currentness_by_fact_id[fact.id]
+            ):
                 continue
             superseded_inputs = [
                 by_id[lineage_id]
                 for lineage_id in _lineage_ids(
                     _json_dict(fact.value_json), source_type=fact.source_type
                 )
-                if lineage_id in by_id and not by_id[lineage_id].is_current
+                if lineage_id in by_id
+                and not currentness_by_fact_id.get(lineage_id, False)
             ]
             if superseded_inputs:
                 errors.append(
@@ -1628,7 +1712,7 @@ def _partition_available_sec_facts(
     *,
     stock_id: int,
     facts: Sequence[MetricFact],
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
 ) -> tuple[list[MetricFact], list[dict[str, Any]], list[dict[str, Any]]]:
     """Apply the canonical unresolved-amendment boundary before comparison."""
 
@@ -1636,7 +1720,7 @@ def _partition_available_sec_facts(
         session,
         stock_id=stock_id,
         facts=facts,
-        knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
     available_object_ids = {id(fact) for fact in available}
     blocked = [
@@ -1675,7 +1759,7 @@ def build_source_reconciliation_report(
     *,
     user_id: int,
     stock_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
     metric_keys: Sequence[str] | None = None,
     max_facts: int = MAX_RECONCILIATION_FACTS,
     historical_request: bool = False,
@@ -1700,7 +1784,6 @@ def build_source_reconciliation_report(
                 MetricFact.metric_key,
                 MetricFact.period_end_date,
                 MetricFact.source_type,
-                MetricFact.is_current.desc(),
                 MetricFact.created_at.desc(),
                 MetricFact.id,
             ).limit(max_facts + 1)
@@ -1713,7 +1796,7 @@ def build_source_reconciliation_report(
         facts=facts,
         user_id=user_id,
         stock_id=stock_id,
-        knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
         historical_request=historical_request,
         max_facts=max_facts,
     )
@@ -1725,7 +1808,7 @@ def build_source_reconciliation_report_from_facts(
     facts: Iterable[MetricFact],
     user_id: int,
     stock_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
     historical_request: bool = False,
     max_facts: int = MAX_RECONCILIATION_FACTS,
 ) -> dict[str, Any]:
@@ -1736,9 +1819,7 @@ def build_source_reconciliation_report_from_facts(
         raise ValueError("reconciliation fact set exceeds bounded contract")
     if any(fact.stock_id != stock_id for fact in fact_rows):
         raise ValueError("reconciliation fact set contains another stock")
-    if knowledge_cutoff.tzinfo is None:
-        raise ValueError("knowledge_cutoff must be timezone-aware")
-    knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
+    knowledge_cutoff = evaluation_snapshot.cutoff
     registered_policy = _registered_mapping_spec_identity(session)
     if registered_policy is None:
         return _mapping_policy_unavailable_report(
@@ -1768,7 +1849,7 @@ def build_source_reconciliation_report_from_facts(
         session,
         facts=fact_rows,
         user_id=user_id,
-        knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
         max_facts=max_facts,
     )
     available_rows, sec_excluded, sec_unavailable_states = (
@@ -1776,14 +1857,14 @@ def build_source_reconciliation_report_from_facts(
             session,
             stock_id=stock_id,
             facts=expanded_rows,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
     )
     candidates, materialization_excluded = materialize_reconciliation_candidates(
         session,
         available_rows,
         user_id=user_id,
-        knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
     report = reconcile_candidates(candidates, knowledge_cutoff=knowledge_cutoff)
     report["items"].extend(lineage_errors)
@@ -1823,7 +1904,7 @@ def group_metric_facts_by_reconciliation_slot(
     *,
     facts: Sequence[MetricFact],
     user_id: int,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot,
     max_facts: int = MAX_RECONCILIATION_FACTS,
 ) -> list[list[MetricFact]]:
     """Group one metric's facts by the canonical comparison projection."""
@@ -1841,9 +1922,11 @@ def group_metric_facts_by_reconciliation_slot(
         session,
         rows,
         user_id=user_id,
-        knowledge_cutoff=knowledge_cutoff,
+        evaluation_snapshot=evaluation_snapshot,
     )
-    report = reconcile_candidates(candidates, knowledge_cutoff=knowledge_cutoff)
+    report = reconcile_candidates(
+        candidates, knowledge_cutoff=evaluation_snapshot.cutoff
+    )
     parent = {fact.id: fact.id for fact in rows}
 
     def find(fact_id: int) -> int:
@@ -1880,7 +1963,8 @@ def guard_reconciled_source_selection(
     facts: Iterable[ReconciliationCandidate | MetricFact],
     *,
     consumer: str,
-    knowledge_cutoff: datetime,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
+    knowledge_cutoff: datetime | None = None,
     selected_source_type: str | None = None,
     session: Session | None = None,
     user_id: int | None = None,
@@ -1888,9 +1972,18 @@ def guard_reconciled_source_selection(
     """Apply FT-06 blocking outcomes before any explicit source selection."""
 
     originals = list(facts)
-    if knowledge_cutoff.tzinfo is None:
-        raise ValueError("knowledge_cutoff must be timezone-aware")
-    knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
+    if evaluation_snapshot is not None:
+        knowledge_cutoff = evaluation_snapshot.cutoff
+    elif not originals or all(
+        isinstance(item, ReconciliationCandidate) for item in originals
+    ):
+        if knowledge_cutoff is None or knowledge_cutoff.tzinfo is None:
+            raise ValueError("knowledge_cutoff must be timezone-aware")
+        knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
+    else:
+        raise ValueError(
+            "evaluation_snapshot is required for metric_facts reconciliation"
+        )
     if len(originals) > MAX_RECONCILIATION_FACTS:
         raise CanonicalReconciliationError(
             consumer=consumer,
@@ -1906,6 +1999,7 @@ def guard_reconciled_source_selection(
             ],
         )
     if originals and isinstance(originals[0], MetricFact):
+        assert evaluation_snapshot is not None
         if session is None or user_id is None:
             raise ValueError("session and user_id are required for metric_facts")
         registered_policy = _registered_mapping_spec_identity(session)
@@ -1951,7 +2045,7 @@ def guard_reconciled_source_selection(
             session,
             facts=originals,  # type: ignore[arg-type]
             user_id=user_id,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
             max_facts=MAX_RECONCILIATION_FACTS,
         )
         if lineage_errors:
@@ -1963,13 +2057,13 @@ def guard_reconciled_source_selection(
             session,
             stock_id=next(iter(stock_ids)),
             facts=expanded_facts,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
         candidates, materialization_excluded = materialize_reconciliation_candidates(
             session,
             available_originals,
             user_id=user_id,
-            knowledge_cutoff=knowledge_cutoff,
+            evaluation_snapshot=evaluation_snapshot,
         )
         materialization_excluded = [*materialization_excluded, *sec_excluded]
     else:

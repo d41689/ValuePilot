@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -8,6 +9,7 @@ from app.models.users import User
 from app.models.stocks import Stock, StockPool, PoolMembership, StockPrice
 from app.models.facts import MetricFact
 from app.core.security import hash_password
+from tests.piotroski_test_helpers import seed_strict_piotroski_total
 
 
 ET = ZoneInfo("America/New_York")
@@ -48,7 +50,16 @@ def _piotroski_total_fact(
         "fact_nature": fact_nature,
         "calculation_version": "piotroski-test-v1",
         "inputs": (
-            [{"fact_id": lineage_fact_id}]
+            [
+                {
+                    "fact_id": lineage_fact_id,
+                    "metric_key": "piotroski.user_input",
+                    "period_end_date": None,
+                    "value_numeric": "1",
+                    "source_type": "manual",
+                    "fact_nature": None,
+                }
+            ]
             if lineage_fact_id is not None
             else []
         ),
@@ -279,7 +290,9 @@ def test_watchlist_rows_batch_101_members_with_fixed_query_count(
         event.remove(connection, "before_cursor_execute", capture)
 
     assert len(rows) == 101
-    assert len(statements) == 5
+    # Both empty fact families stop after their compact-candidate probes; no
+    # timeline query is issued for an empty candidate page.
+    assert len(statements) == 6
     assert {row["delta_today"] for row in rows} == {1}
     assert len({row["current_price"]["as_of_date"] for row in rows}) == 1
     assert len(
@@ -293,14 +306,48 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
     from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
     from app.services import market_data_service
 
-    evaluated_at = datetime(2026, 2, 4, 17, tzinfo=timezone.utc)
+    evaluated_at = datetime(2027, 2, 4, 17, tzinfo=timezone.utc)
 
-    class FixedDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return evaluated_at if tz is not None else evaluated_at.replace(tzinfo=None)
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "database_evaluation_cutoff",
+        lambda _session, supplied=None: supplied or evaluated_at,
+        raising=False,
+    )
+    observed_cutoffs: list[datetime] = []
+    original_piotroski = stock_pools_endpoint._piotroski_scores_for_stocks
+    original_current_prices = stock_pools_endpoint.read_current_eod_prices
+    original_previous_prices = stock_pools_endpoint.read_canonical_eod_prices
+    original_valuations = stock_pools_endpoint.read_valuation_contexts
 
-    monkeypatch.setattr(stock_pools_endpoint, "datetime", FixedDateTime)
+    def capture_piotroski(*args, **kwargs):
+        observed_cutoffs.append(kwargs["evaluated_at"])
+        return original_piotroski(*args, **kwargs)
+
+    def capture_current_prices(*args, **kwargs):
+        observed_cutoffs.append(kwargs["evaluated_at"])
+        return original_current_prices(*args, **kwargs)
+
+    def capture_previous_prices(*args, **kwargs):
+        observed_cutoffs.append(kwargs["knowledge_cutoff"])
+        return original_previous_prices(*args, **kwargs)
+
+    def capture_valuations(*args, **kwargs):
+        observed_cutoffs.append(kwargs["knowledge_cutoff"])
+        return original_valuations(*args, **kwargs)
+
+    monkeypatch.setattr(
+        stock_pools_endpoint, "_piotroski_scores_for_stocks", capture_piotroski
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint, "read_current_eod_prices", capture_current_prices
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint, "read_canonical_eod_prices", capture_previous_prices
+    )
+    monkeypatch.setattr(
+        stock_pools_endpoint, "read_valuation_contexts", capture_valuations
+    )
     monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "yfinance")
     monkeypatch.setattr(
         market_data_service.settings,
@@ -327,7 +374,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
         [
             StockPrice(
                 stock_id=stock.id,
-                price_date=date(2026, 2, 3),
+                price_date=date(2027, 2, 3),
                 open=100,
                 high=100,
                 low=100,
@@ -335,7 +382,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
                 volume=1,
                 source="yfinance",
                 currency="USD",
-                created_at=datetime(2026, 2, 3, 22, tzinfo=timezone.utc),
+                    created_at=datetime(2027, 2, 3, 22, tzinfo=timezone.utc),
             )
             for stock in (known_stock, future_stock)
         ]
@@ -344,7 +391,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
         [
             StockPrice(
                 stock_id=known_stock.id,
-                price_date=date(2026, 2, 2),
+                price_date=date(2027, 2, 2),
                 open=98,
                 high=98,
                 low=98,
@@ -353,11 +400,11 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
                 source="yfinance",
                 currency="USD",
                 # After target-date NY midnight (05:00 UTC), but known now.
-                created_at=datetime(2026, 2, 3, 6, tzinfo=timezone.utc),
+                created_at=datetime(2027, 2, 3, 6, tzinfo=timezone.utc),
             ),
             StockPrice(
                 stock_id=future_stock.id,
-                price_date=date(2026, 2, 2),
+                price_date=date(2027, 2, 2),
                 open=97,
                 high=97,
                 low=97,
@@ -365,7 +412,7 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
                 volume=1,
                 source="yfinance",
                 currency="USD",
-                created_at=datetime(2026, 2, 4, 18, tzinfo=timezone.utc),
+                created_at=datetime(2027, 2, 4, 18, tzinfo=timezone.utc),
             ),
         ]
     )
@@ -388,6 +435,47 @@ def test_watchlist_previous_price_uses_same_live_knowledge_cutoff(
         "reason_code": "price_missing",
         "currency": None,
     }
+    assert observed_cutoffs
+    assert all(cutoff is evaluated_at for cutoff in observed_cutoffs)
+
+
+def test_stock_pool_piotroski_guard_uses_new_york_business_date(monkeypatch):
+    from app.api.v1.endpoints import stock_pools as stock_pools_endpoint
+
+    evaluated_at = datetime(2026, 9, 4, 0, 30, tzinfo=timezone.utc)
+    fact = SimpleNamespace(id=1)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "guard_reconciled_source_selection",
+        lambda facts, **_kwargs: facts,
+    )
+
+    def capture_method_guard(_session, **kwargs):
+        captured.update(kwargs)
+        return kwargs["facts"], []
+
+    monkeypatch.setattr(
+        stock_pools_endpoint,
+        "guard_piotroski_method_authority",
+        capture_method_guard,
+    )
+
+    guarded, state = stock_pools_endpoint._guard_piotroski_display_facts(
+        object(),
+        user_id=7,
+        stock_id=11,
+        facts=[fact],
+        evaluation_snapshot=stock_pools_endpoint.EvaluationSnapshot(
+            cutoff=evaluated_at,
+            visibility_snapshot="test-snapshot",
+        ),
+    )
+
+    assert guarded == [fact]
+    assert state["status"] == "available"
+    assert captured["knowledge_at"] is evaluated_at
+    assert captured["effective_as_of"] == date(2026, 9, 3)
 
 
 def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
@@ -401,10 +489,6 @@ def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
 
     stock_a = _make_stock(db_session, "ASML")
     stock_b = _make_stock(db_session, "FICO")
-    source_a = _piotroski_lineage_source(user.id, stock_a.id)
-    source_b = _piotroski_lineage_source(user.id, stock_b.id)
-    db_session.add_all([source_a, source_b])
-    db_session.flush()
     db_session.add_all(
         [
             PoolMembership(
@@ -423,49 +507,47 @@ def test_pool_f_score_compare_returns_five_actual_and_two_estimate_years(
             ),
         ]
     )
-    db_session.add_all(
-        [
-            *[
-                _piotroski_total_fact(
-                    user.id,
-                    stock_a.id,
-                    year,
-                    float(score),
-                    lineage_fact_id=source_a.id,
-                )
-                for year, score in [
-                    (2019, 4),
-                    (2020, 5),
-                    (2021, 6),
-                    (2022, 7),
-                    (2023, 8),
-                    (2024, 9),
-                ]
-            ],
-            _piotroski_total_fact(
-                user.id, stock_a.id, 2025, 7.0,
-                fact_nature="estimate", lineage_fact_id=source_a.id,
-            ),
-            _piotroski_total_fact(
-                user.id, stock_a.id, 2026, 6.0,
-                fact_nature="estimate", lineage_fact_id=source_a.id,
-            ),
-            _piotroski_total_fact(
-                user.id, stock_a.id, 2027, 5.0,
-                fact_nature="estimate", lineage_fact_id=source_a.id,
-            ),
-            _piotroski_total_fact(
-                user.id,
-                stock_b.id,
-                2024,
-                None,
-                partial_score=6,
-                max_available_score=8,
-                lineage_fact_id=source_b.id,
-            ),
-        ]
-    )
     db_session.commit()
+    for year, score in [
+        (2019, 4),
+        (2020, 5),
+        (2021, 6),
+        (2022, 7),
+        (2023, 8),
+    ]:
+        seed_strict_piotroski_total(
+            db_session,
+            user_id=user.id,
+            stock_id=stock_a.id,
+            score=score,
+            period_end=date(year, 12, 31),
+            complete=True,
+        )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=9,
+        period_end=date(2024, 12, 31),
+        complete=True,
+    )
+    for year, score in [(2025, 7), (2026, 6), (2027, 5)]:
+        seed_strict_piotroski_total(
+            db_session,
+            user_id=user.id,
+            stock_id=stock_a.id,
+            score=score,
+            period_end=date(year, 12, 31),
+            complete=True,
+            fact_nature="estimate",
+        )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_b.id,
+        score=6,
+        period_end=date(2024, 12, 31),
+    )
 
     resp = client.get(f"/api/v1/stock_pools/{pool.id}/f-score-compare", headers=headers)
     assert resp.status_code == 200, resp.text
@@ -508,19 +590,20 @@ def test_overview_f_score_compare_deduplicates_members(client, db_session, auth_
     db_session.commit()
 
     stock = _make_stock(db_session, "MSFT")
-    source = _piotroski_lineage_source(user.id, stock.id)
-    db_session.add(source)
-    db_session.flush()
     db_session.add_all(
         [
             PoolMembership(user_id=user.id, pool_id=pool_a.id, stock_id=stock.id, inclusion_type="manual"),
             PoolMembership(user_id=user.id, pool_id=pool_b.id, stock_id=stock.id, inclusion_type="manual"),
-            _piotroski_total_fact(
-                user.id, stock.id, 2024, 8.0, lineage_fact_id=source.id
-            ),
         ]
     )
     db_session.commit()
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        score=8,
+        period_end=date(2024, 12, 31),
+    )
 
     resp = client.get("/api/v1/stock_pools/overview/f-score-compare", headers=headers)
     assert resp.status_code == 200, resp.text
@@ -579,10 +662,6 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
     stock_a = _make_stock(db_session, "AOS")
     stock_b = _make_stock(db_session, "MSFT")
     stock_c = _make_stock(db_session, "SHOP")
-    piotroski_source = _piotroski_lineage_source(user.id, stock_a.id)
-    db_session.add(piotroski_source)
-    db_session.flush()
-    piotroski_lineage = [{"fact_id": piotroski_source.id}]
 
     db_session.add(
         PoolMembership(
@@ -757,106 +836,39 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
             is_current=True,
         )
     )
-    db_session.add_all(
-        [
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=9.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "valueline_proxy",
-                    "fiscal_year": 2999,
-                    "fact_nature": "estimate",
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2999, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=8.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "valueline_proxy",
-                    "fiscal_year": 2024,
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2024, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=None,
-                value_json={
-                    "status": "partial",
-                    "variant": "insurance_adjusted",
-                    "fiscal_year": 2023,
-                    "partial_score": 6,
-                    "available_indicators": 8,
-                    "max_available_score": 8,
-                    "missing_indicators": ["score.piotroski.current_ratio_improving"],
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2023, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=4.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "standard",
-                    "fiscal_year": 2022,
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2022, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-            MetricFact(
-                user_id=user.id,
-                stock_id=stock_a.id,
-                metric_key=PIOTROSKI_TOTAL_KEY,
-                value_numeric=3.0,
-                value_json={
-                    "status": "calculated",
-                    "variant": "standard",
-                    "fiscal_year": 2021,
-                    "calculation_version": "piotroski-test-v1",
-                    "inputs": piotroski_lineage,
-                },
-                unit="score_total",
-                period_type="FY",
-                period_end_date=date(2021, 12, 31),
-                source_type="calculated",
-                is_current=True,
-            ),
-        ]
-    )
     db_session.commit()
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=4,
+        period_end=date(2022, 12, 31),
+        complete=True,
+    )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=6,
+        period_end=date(2023, 12, 31),
+    )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=8,
+        period_end=date(2024, 12, 31),
+        complete=True,
+    )
+    seed_strict_piotroski_total(
+        db_session,
+        user_id=user.id,
+        stock_id=stock_a.id,
+        score=9,
+        period_end=date(2999, 12, 31),
+        complete=True,
+        fact_nature="estimate",
+    )
 
     resp = client.get(f"/api/v1/stock_pools/{pool.id}/members", headers=headers)
     assert resp.status_code == 200
@@ -889,7 +901,7 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
             "fiscal_year": 2024,
             "score": 8.0,
             "status": "calculated",
-            "variant": "valueline_proxy",
+            "variant": "standard",
             "partial_score": None,
             "available_indicators": None,
             "max_available_score": None,
@@ -900,11 +912,11 @@ def test_pool_members_include_price_and_fair_value(client, db_session, monkeypat
             "fiscal_year": 2023,
             "score": None,
             "status": "partial",
-            "variant": "insurance_adjusted",
+            "variant": "standard",
             "partial_score": 6,
             "available_indicators": 8,
             "max_available_score": 8,
-            "missing_indicators": ["score.piotroski.current_ratio_improving"],
+            "missing_indicators": ["score.piotroski.asset_turnover_improving"],
         },
         {
             "period_end_date": "2022-12-31",

@@ -41,10 +41,31 @@ def _bootstrap_lock_entities() -> tuple[int, int, int]:
 def _cleanup_lock_entities(user_id: int, first_id: int, second_id: int) -> None:
     cleanup = SessionLocal()
     try:
-        cleanup.execute(
-            text("DELETE FROM metric_facts WHERE stock_id IN (:first_id, :second_id)"),
-            {"first_id": first_id, "second_id": second_id},
-        )
+        for stock_id in (first_id, second_id):
+            document_id = cleanup.execute(
+                text(
+                    "INSERT INTO pdf_documents "
+                    "(user_id,stock_id,file_name,file_storage_key,source,parse_status,"
+                    "identity_needs_review) VALUES (:user_id,:stock_id,:file,:file,"
+                    "'value_line','pending',false) RETURNING id"
+                ),
+                {
+                    "user_id": user_id,
+                    "stock_id": stock_id,
+                    "file": f"lock-cleanup-{stock_id}.pdf",
+                },
+            ).scalar_one()
+            cleanup.execute(
+                text(
+                    "UPDATE metric_facts SET source_document_id=:document_id "
+                    "WHERE stock_id=:stock_id"
+                ),
+                {"document_id": document_id, "stock_id": stock_id},
+            )
+            cleanup.execute(
+                text("DELETE FROM pdf_documents WHERE id=:document_id"),
+                {"document_id": document_id},
+            )
         cleanup.execute(
             text("DELETE FROM stocks WHERE id IN (:first_id, :second_id)"),
             {"first_id": first_id, "second_id": second_id},
@@ -56,7 +77,11 @@ def _cleanup_lock_entities(user_id: int, first_id: int, second_id: int) -> None:
 
 
 def _assert_mutation_waits_for_stock_lock(
-    *, locked_stock_id: int, statement: str, parameters: dict[str, int]
+    *,
+    locked_stock_id: int,
+    statement: str,
+    parameters: dict[str, int],
+    expected_error: str | None = None,
 ) -> None:
     owner = SessionLocal()
     finished = threading.Event()
@@ -92,7 +117,11 @@ def _assert_mutation_waits_for_stock_lock(
         owner.commit()
         assert finished.wait(timeout=10)
         worker.join(timeout=10)
-        assert not errors
+        if expected_error is None:
+            assert not errors
+        else:
+            assert len(errors) == 1
+            assert expected_error in str(errors[0])
     finally:
         owner.rollback()
         owner.close()
@@ -254,11 +283,13 @@ def test_metric_fact_trigger_locks_both_update_identities_and_delete():
             locked_stock_id=second_id,
             statement="UPDATE metric_facts SET stock_id=:new_stock_id WHERE id=:fact_id",
             parameters={"new_stock_id": second_id, "fact_id": update_fact_id},
+            expected_error="canonical slot identity is immutable",
         )
         _assert_mutation_waits_for_stock_lock(
             locked_stock_id=first_id,
             statement="DELETE FROM metric_facts WHERE id=:fact_id",
             parameters={"fact_id": delete_fact_id},
+            expected_error="metric facts cannot be deleted directly",
         )
     finally:
         _cleanup_lock_entities(user_id, first_id, second_id)

@@ -1,16 +1,84 @@
-from typing import List, Dict, Any, Callable
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from typing import List, Dict, Any
+from datetime import datetime
+import re
 from sqlalchemy.orm import Session, aliased
-from decimal import Decimal
-from sqlalchemy import select, and_, or_
+from decimal import Decimal, DecimalException
+from sqlalchemy import select, and_, false, or_, tuple_
 from app.models.stocks import Stock
 from app.models.facts import MetricFact
+from app.services.evaluation_snapshot import database_evaluation_snapshot
+from app.services.metric_fact_currentness import (
+    CurrentnessScope,
+    current_metric_fact_ids_at,
+    iter_current_metric_fact_id_chunks_at,
+)
 from app.services.canonical_financials import (
     CANONICAL_SOURCE_TYPES,
+    CanonicalUnavailableError,
+    evaluation_business_date,
     guard_sec_run_availability,
+    require_applicable_method_facts,
     visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import guard_reconciled_source_selection
+
+
+MAX_SCREENER_GUARD_FACTS = 10_000
+MAX_SCREENER_CONDITIONS = 20
+MAX_SCREENER_METRIC_KEY_LENGTH = 128
+MAX_SCREENER_ABS_TARGET = Decimal("1e25")
+MAX_SCREENER_SQL_BIND_BUDGET = 12_000
+SCREENER_ALLOWED_PAIR_BIND_COUNT = 2
+# Each condition also binds its metric/value, two cutoffs, tenant visibility,
+# and optionally its source type. Keep substantial headroom below PostgreSQL's
+# protocol limit and expression-stack ceiling for the stock predicate and
+# future bounded filters.
+SCREENER_CONDITION_BIND_OVERHEAD = 8
+SCREEN_OPERATORS = frozenset({">", ">=", "<", "<=", "=", "=="})
+SCREEN_METRIC_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_.]*$")
+
+
+class ScreenerRuleError(ValueError):
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class _ScreenerCondition:
+    metric_key: str
+    operator: str
+    target_value: Decimal
+
+
+@dataclass(frozen=True)
+class _NormalizedScreenerRule:
+    conditions: tuple[_ScreenerCondition, ...]
+    selected_source_type: str | None
+
+
+@dataclass(frozen=True)
+class _ScreenerSourceAuthority:
+    evaluated_at: datetime
+    allowed_by_stock_metric: dict[
+        tuple[int, str], tuple[tuple[int, Decimal], ...]
+    ]
+
+    def pairs_for_metric(self, metric_key: str) -> tuple[tuple[int, Decimal], ...]:
+        return tuple(
+            pair
+            for (stock_id, key), pairs in self.allowed_by_stock_metric.items()
+            if key == metric_key
+            for pair in pairs
+        )
+
+
+@dataclass(frozen=True)
+class ScreenerEvaluation:
+    stocks: list[Stock]
+    evaluated_at: datetime
+
 
 class ScreenerService:
     def __init__(self, db: Session):
@@ -78,22 +146,38 @@ class ScreenerService:
         current_user_id: int,
         *,
         selected_source_type: str | None = None,
+        knowledge_cutoff: datetime | None = None,
     ) -> dict[int, dict[str, Any]]:
         if not stock_ids:
             return {}
+        evaluation_snapshot = database_evaluation_snapshot(self.db, knowledge_cutoff)
+        evaluated_at = evaluation_snapshot.cutoff
 
         fact_nature_expr = MetricFact.value_json["fact_nature"].as_string()
-        stmt = select(MetricFact).where(
-            MetricFact.stock_id.in_(stock_ids),
-            MetricFact.metric_key.in_(self.metric_keys()),
-            MetricFact.is_current.is_(True),
-            visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
-            or_(
-                fact_nature_expr.is_(None),
-                fact_nature_expr != "estimate",
+        facts: list[MetricFact] = []
+        for current_ids in iter_current_metric_fact_id_chunks_at(
+            self.db,
+            evaluation_snapshot=evaluation_snapshot,
+            scope=CurrentnessScope(
+                stock_ids=tuple(stock_ids),
+                metric_keys=tuple(sorted(self.metric_keys())),
+                user_ids=(current_user_id, None),
             ),
-        )
-        facts = self.db.scalars(stmt).all()
+        ):
+            facts.extend(
+                self.db.scalars(
+                    select(MetricFact).where(
+                        MetricFact.id.in_(current_ids),
+                        visible_metric_fact_predicate(
+                            MetricFact, user_id=current_user_id
+                        ),
+                        or_(
+                            fact_nature_expr.is_(None),
+                            fact_nature_expr != "estimate",
+                        ),
+                    )
+                )
+            )
 
         facts_by_stock: dict[int, dict[str, list[MetricFact]]] = {}
         for fact in facts:
@@ -106,7 +190,7 @@ class ScreenerService:
             selected = guard_reconciled_source_selection(
                 [fact for rows in fact_map.values() for fact in rows],
                 consumer="screener_metrics",
-                knowledge_cutoff=datetime.now(timezone.utc),
+                evaluation_snapshot=evaluation_snapshot,
                 selected_source_type=selected_source_type,
                 session=self.db,
                 user_id=current_user_id,
@@ -115,6 +199,8 @@ class ScreenerService:
                 self.db,
                 stock_id=stock_id,
                 facts=selected,
+                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
             )
             selected_ids = {fact.id for fact in selected}
             for output_key, spec in self.METRIC_OUTPUT_SPECS.items():
@@ -155,13 +241,20 @@ class ScreenerService:
 
         return metrics_by_stock
 
-    def execute_screen(self, rule_json: Dict[str, Any], current_user_id: int) -> List[Stock]:
+    def execute_screen(
+        self, rule_json: Dict[str, Any], current_user_id: int
+    ) -> List[Stock]:
+        return self.evaluate_screen(rule_json, current_user_id).stocks
+
+    def evaluate_screen(
+        self, rule_json: Dict[str, Any], current_user_id: int
+    ) -> ScreenerEvaluation:
         """
         Executes a screen based on the rule definition.
         
         Rule JSON Structure V1:
         {
-            "type": "AND", # or OR
+            "type": "AND",
             "conditions": [
                 {
                     "metric": "pe_ratio",
@@ -176,6 +269,8 @@ class ScreenerService:
             ]
         }
         """
+        rule = self._normalize_rule(rule_json)
+
         # Base query: Start with all active stocks
         query = select(Stock).where(Stock.is_active.is_(True))
         
@@ -188,44 +283,151 @@ class ScreenerService:
         # WHERE f1.value_numeric < 20 AND f2.value_numeric > 0.02
         
         # We need to parse the rule and construct these joins dynamically.
-        selected_source_type = rule_json.get("source_type")
-        if selected_source_type is not None and selected_source_type not in CANONICAL_SOURCE_TYPES:
-            raise ValueError("unsupported source_type selection")
-        conditions = rule_json.get("conditions", [])
-        self._guard_screen_sources(
+        selected_source_type = rule.selected_source_type
+        conditions = rule.conditions
+        authority = self._guard_screen_sources(
             conditions,
             current_user_id=current_user_id,
             selected_source_type=selected_source_type,
         )
         
-        if rule_json.get("type") == "AND":
-             query = self._build_and_query(
-                 query,
-                 conditions,
-                 current_user_id,
-                 selected_source_type=selected_source_type,
-             )
-        else:
-            # "OR" logic is trickier with simple inner joins (might need left joins + coalescing, or union)
-            # Keeping V1 scope to AND logic for simplicity as per common screener MVPs.
-            # If OR is strictly required, we'd use separate subqueries or aliases.
-            pass
+        query = self._build_and_query(
+            query,
+            conditions,
+            current_user_id,
+            selected_source_type=selected_source_type,
+            authority=authority,
+        )
 
-        return self.db.scalars(query).all()
+        return ScreenerEvaluation(
+            stocks=list(self.db.scalars(query).all()),
+            evaluated_at=authority.evaluated_at,
+        )
+
+    def _normalize_rule(self, rule_json: object) -> _NormalizedScreenerRule:
+        if not isinstance(rule_json, dict):
+            raise ScreenerRuleError(
+                "screener_rule_invalid", "screener rule must be an object"
+            )
+        if not set(rule_json).issubset({"type", "conditions", "source_type"}):
+            raise ScreenerRuleError(
+                "screener_rule_invalid", "screener rule contains unknown fields"
+            )
+        if rule_json.get("type") != "AND":
+            raise ScreenerRuleError(
+                "screener_rule_type_unsupported",
+                "only AND screener rules are supported",
+            )
+        conditions = rule_json.get("conditions")
+        if not isinstance(conditions, list) or not conditions:
+            raise ScreenerRuleError(
+                "screener_rule_conditions_invalid",
+                "screener conditions must be a non-empty list",
+            )
+        if len(conditions) > MAX_SCREENER_CONDITIONS:
+            raise CanonicalUnavailableError(
+                {"reason_code": "screener_source_guard_bound_exceeded"}
+            )
+        selected_source_type = rule_json.get("source_type")
+        if (
+            selected_source_type is not None
+            and selected_source_type not in CANONICAL_SOURCE_TYPES
+        ):
+            raise ScreenerRuleError(
+                "screener_rule_source_type_unsupported",
+                "unsupported screener source type",
+            )
+
+        normalized: list[_ScreenerCondition] = []
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                raise ScreenerRuleError(
+                    "screener_rule_condition_invalid",
+                    "each screener condition must be an object",
+                )
+            if set(condition) != {"metric", "operator", "value"}:
+                raise ScreenerRuleError(
+                    "screener_rule_condition_invalid",
+                    "each screener condition requires metric, operator, and value",
+                )
+            metric = condition["metric"]
+            if (
+                not isinstance(metric, str)
+                or not metric
+                or len(metric) > MAX_SCREENER_METRIC_KEY_LENGTH
+                or SCREEN_METRIC_KEY_PATTERN.fullmatch(metric) is None
+            ):
+                raise ScreenerRuleError(
+                    "screener_rule_metric_invalid", "invalid screener metric key"
+                )
+            operator = condition["operator"]
+            if not isinstance(operator, str) or operator not in SCREEN_OPERATORS:
+                raise ScreenerRuleError(
+                    "screener_rule_operator_unsupported",
+                    "unsupported screener comparison operator",
+                )
+            value = condition["value"]
+            if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+                raise ScreenerRuleError(
+                    "screener_rule_value_invalid",
+                    "screener comparison value must be a finite number",
+                )
+            try:
+                target_value = Decimal(str(value))
+            except DecimalException as error:
+                raise ScreenerRuleError(
+                    "screener_rule_value_invalid",
+                    "screener comparison value must be a finite number",
+                ) from error
+            if (
+                not target_value.is_finite()
+                or abs(target_value) > MAX_SCREENER_ABS_TARGET
+            ):
+                raise ScreenerRuleError(
+                    "screener_rule_value_invalid",
+                    "screener comparison value must be a finite in-range number",
+                )
+            normalized.append(
+                _ScreenerCondition(
+                    metric_key=self._canonical_metric_key(metric),
+                    operator=operator,
+                    target_value=target_value,
+                )
+            )
+        return _NormalizedScreenerRule(
+            conditions=tuple(normalized),
+            selected_source_type=selected_source_type,
+        )
 
     def _build_and_query(
         self,
         query,
-        conditions: List[Dict[str, Any]],
+        conditions: tuple[_ScreenerCondition, ...],
         current_user_id: int,
         *,
         selected_source_type: str | None,
+        authority: _ScreenerSourceAuthority,
     ):
+        prepared_conditions: list[
+            tuple[_ScreenerCondition, tuple[tuple[int, Decimal], ...]]
+        ] = []
+        estimated_bind_count = 0
         for cond in conditions:
-            metric_key = self._canonical_metric_key(cond["metric"])
-            operator = cond["operator"]
-            target_value = Decimal(str(cond["value"]))
-            
+            allowed_pairs = authority.pairs_for_metric(cond.metric_key)
+            estimated_bind_count += (
+                len(allowed_pairs) * SCREENER_ALLOWED_PAIR_BIND_COUNT
+                + SCREENER_CONDITION_BIND_OVERHEAD
+            )
+            if estimated_bind_count > MAX_SCREENER_SQL_BIND_BUDGET:
+                raise CanonicalUnavailableError(
+                    {
+                        "reason_code": "screener_source_guard_bound_exceeded",
+                    }
+                )
+            prepared_conditions.append((cond, allowed_pairs))
+
+        for cond, allowed_pairs in prepared_conditions:
+
             # Create an alias for MetricFact for this specific condition
             fact_alias = aliased(MetricFact)
             
@@ -234,9 +436,15 @@ class ScreenerService:
                 fact_alias,
                 and_(
                     Stock.id == fact_alias.stock_id,
-                    fact_alias.metric_key == metric_key,
-                    fact_alias.is_current.is_(True),
+                    fact_alias.metric_key == cond.metric_key,
                     visible_metric_fact_predicate(fact_alias, user_id=current_user_id),
+                    (
+                        tuple_(fact_alias.id, fact_alias.value_numeric).in_(
+                            allowed_pairs
+                        )
+                        if allowed_pairs
+                        else false()
+                    ),
                     *(
                         [fact_alias.source_type == selected_source_type]
                         if selected_source_type is not None
@@ -246,54 +454,117 @@ class ScreenerService:
             )
             
             # Apply filter
-            if operator == ">":
-                query = query.where(fact_alias.value_numeric > target_value)
-            elif operator == ">=":
-                query = query.where(fact_alias.value_numeric >= target_value)
-            elif operator == "<":
-                query = query.where(fact_alias.value_numeric < target_value)
-            elif operator == "<=":
-                query = query.where(fact_alias.value_numeric <= target_value)
-            elif operator == "=" or operator == "==":
-                query = query.where(fact_alias.value_numeric == target_value)
+            if cond.operator == ">":
+                query = query.where(fact_alias.value_numeric > cond.target_value)
+            elif cond.operator == ">=":
+                query = query.where(fact_alias.value_numeric >= cond.target_value)
+            elif cond.operator == "<":
+                query = query.where(fact_alias.value_numeric < cond.target_value)
+            elif cond.operator == "<=":
+                query = query.where(fact_alias.value_numeric <= cond.target_value)
+            else:
+                query = query.where(fact_alias.value_numeric == cond.target_value)
                 
-        return query
+        return query.distinct()
 
     def _guard_screen_sources(
         self,
-        conditions: list[dict[str, Any]],
+        conditions: tuple[_ScreenerCondition, ...],
         *,
         current_user_id: int,
         selected_source_type: str | None,
-    ) -> None:
-        metric_keys = {
-            self._canonical_metric_key(str(condition.get("metric")))
-            for condition in conditions
-            if condition.get("metric") is not None
-        }
-        if not metric_keys:
-            return
-        facts = self.db.scalars(
-            select(MetricFact).where(
-                MetricFact.metric_key.in_(metric_keys),
-                MetricFact.is_current.is_(True),
-                visible_metric_fact_predicate(MetricFact, user_id=current_user_id),
+    ) -> _ScreenerSourceAuthority:
+        evaluation_snapshot = database_evaluation_snapshot(self.db)
+        evaluated_at = evaluation_snapshot.cutoff
+        metric_keys = {condition.metric_key for condition in conditions}
+        condition_repetitions = max(
+            sum(condition.metric_key == key for condition in conditions)
+            for key in metric_keys
+        )
+        candidate_fact_limit = min(
+            MAX_SCREENER_GUARD_FACTS,
+            (
+                MAX_SCREENER_SQL_BIND_BUDGET
+                - len(conditions) * SCREENER_CONDITION_BIND_OVERHEAD
             )
-        ).all()
+            // (SCREENER_ALLOWED_PAIR_BIND_COUNT * condition_repetitions),
+        )
+        facts: list[MetricFact] = []
+        for current_ids in iter_current_metric_fact_id_chunks_at(
+            self.db,
+            evaluation_snapshot=evaluation_snapshot,
+            scope=CurrentnessScope(
+                metric_keys=tuple(sorted(metric_keys)),
+                user_ids=(current_user_id, None),
+            ),
+        ):
+            facts.extend(
+                self.db.scalars(
+                    select(MetricFact)
+                    .where(
+                        MetricFact.id.in_(current_ids),
+                        visible_metric_fact_predicate(
+                            MetricFact, user_id=current_user_id
+                        ),
+                    )
+                    .execution_options(populate_existing=True, autoflush=False)
+                ).all()
+            )
+            if len(facts) > candidate_fact_limit:
+                raise CanonicalUnavailableError(
+                    {
+                        "reason_code": "screener_source_guard_bound_exceeded",
+                    }
+                )
         by_stock: dict[int, list[MetricFact]] = {}
         for fact in facts:
             by_stock.setdefault(fact.stock_id, []).append(fact)
+        allowed: dict[tuple[int, str], list[tuple[int, Decimal]]] = {}
         for stock_id, stock_facts in by_stock.items():
             stock_facts = guard_reconciled_source_selection(
                 stock_facts,
                 consumer="screener",
-                knowledge_cutoff=datetime.now(timezone.utc),
+                evaluation_snapshot=evaluation_snapshot,
                 selected_source_type=selected_source_type,
                 session=self.db,
                 user_id=current_user_id,
             )
-            guard_sec_run_availability(
+            stock_facts = guard_sec_run_availability(
                 self.db,
                 stock_id=stock_id,
                 facts=stock_facts,
+                knowledge_cutoff=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
             )
+            applicable = require_applicable_method_facts(
+                self.db,
+                stock_id=stock_id,
+                facts=stock_facts,
+                effective_as_of=evaluation_business_date(evaluated_at),
+                knowledge_at=evaluated_at,
+                evaluation_snapshot=evaluation_snapshot,
+            )
+            for fact in applicable:
+                if (
+                    isinstance(fact.id, int)
+                    and not isinstance(fact.id, bool)
+                    and fact.id > 0
+                    and fact.metric_key in metric_keys
+                    and fact.value_numeric is not None
+                ):
+                    allowed.setdefault((fact.stock_id, fact.metric_key), []).append(
+                        (fact.id, fact.value_numeric)
+                    )
+        allowed_count = sum(len(pairs) for pairs in allowed.values())
+        if allowed_count > MAX_SCREENER_GUARD_FACTS:
+            raise CanonicalUnavailableError(
+                {
+                    "reason_code": "screener_source_guard_bound_exceeded",
+                }
+            )
+        return _ScreenerSourceAuthority(
+            evaluated_at=evaluated_at,
+            allowed_by_stock_metric={
+                key: tuple(sorted(set(pairs))) for key, pairs in allowed.items()
+            },
+        )

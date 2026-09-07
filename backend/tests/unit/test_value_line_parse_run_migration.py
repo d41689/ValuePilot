@@ -29,7 +29,7 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 ).render_as_string(hide_password=False)
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260901280000"
-HEAD = "20260904140000"
+HEAD = "20260904180000"
 APPROVED_MAPPING_VERSION = MappingSpec.load(
     BACKEND / "docs" / "metric_facts_mapping_spec.yml"
 ).source_mapping_version
@@ -65,7 +65,7 @@ def isolated():
 
 def test_value_line_parse_run_empty_upgrade_roundtrip(isolated) -> None:
     url, engine = isolated
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
 
     with engine.connect() as connection:
         assert connection.execute(
@@ -79,7 +79,7 @@ def test_value_line_parse_run_empty_upgrade_roundtrip(isolated) -> None:
             )
         ).scalar_one() == APPROVED_MAPPING_VERSION
     _alembic(url, "downgrade", PARENT)
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
 
 
 def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) -> None:
@@ -120,7 +120,7 @@ def test_value_line_parse_run_allows_history_but_rejects_late_binding(isolated) 
             {"user": user_id, "stock": stock_id, "document": document_id},
         ).scalar_one()
 
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
 
     with engine.connect() as connection:
         assert connection.execute(
@@ -502,7 +502,7 @@ def test_value_line_reparse_document_lock_serializes_concurrent_attempts(
     isolated,
 ) -> None:
     url, engine = isolated
-    _alembic(url, "upgrade", "head")
+    _alembic(url, "upgrade", HEAD)
     first = engine.connect()
     second = engine.connect()
     try:

@@ -1,10 +1,14 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+
+from sqlalchemy import text
 
 from app.models.auth_tokens import RefreshToken
+from app.models.facts import MetricFact
 from app.models.notifications import NotificationDestination
 from app.models.portfolios import PositionJournalEvent
-from app.models.research import ResearchCase, ResearchCaseRevision
+from app.models.research import ResearchCase, ResearchCaseEvent, ResearchCaseRevision
 from app.models.stocks import Stock
 from app.models.users import AccountErasureEvent
 from app.schemas.portfolios import ManualPortfolioCreate, ManualPositionCreate
@@ -18,6 +22,8 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
         "erase-me@example.com",
         password="ErasePass123!",
     )
+    admin = user_factory("erase-admin@example.com", role="admin")
+    old_access_headers = auth_headers(user)
     stock = Stock(ticker="ERASE", exchange="NYSE", company_name="Erase Corp")
     db_session.add(stock)
     db_session.flush()
@@ -55,6 +61,15 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
         created_by_user_id=user.id,
     )
     db_session.add(revision)
+    voided_case = ResearchCase(
+        user_id=user.id,
+        stock_id=stock.id,
+        state="voided",
+        void_reason="Private reason for abandoning this cycle",
+        head_revision_number=0,
+        closed_at=datetime.now(timezone.utc),
+    )
+    db_session.add(voided_case)
     portfolio = create_portfolio(
         db_session,
         user_id=user.id,
@@ -97,7 +112,7 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
 
     response = client.post(
         "/api/v1/users/me/erase",
-        headers=auth_headers(user),
+        headers=old_access_headers,
         json={
             "password": "ErasePass123!",
             "confirmation": "ERASE MY ACCOUNT",
@@ -109,6 +124,7 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
     assert payload["status"] == "erased"
     db_session.refresh(user)
     db_session.refresh(revision)
+    db_session.refresh(voided_case)
     db_session.refresh(position)
     db_session.refresh(destination)
     db_session.refresh(token)
@@ -117,6 +133,14 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
     assert revision.is_redacted is True
     assert revision.thesis == "[redacted]"
     assert revision.assumptions_json == []
+    assert revision.redaction_reason == "[redacted]"
+    assert revision.redaction_reason_content_hash == hashlib.sha256(
+        b"account_erasure"
+    ).hexdigest()
+    assert voided_case.void_reason == "[redacted]"
+    assert voided_case.void_reason_content_hash == hashlib.sha256(
+        b"Private reason for abandoning this cycle"
+    ).hexdigest()
     assert position.state == "closed"
     assert position.quantity == 0
     assert position.average_unit_cost is None
@@ -130,7 +154,22 @@ def test_account_erasure_revokes_credentials_and_tombstones_authored_content(
     assert token.revoked_reason == "account_erasure"
     audit = db_session.query(AccountErasureEvent).filter_by(user_id=user.id).one()
     assert audit.content_hash
-    assert client.get("/api/v1/research/cases", headers=auth_headers(user)).status_code == 403
+    assert audit.privacy_erasure_operation_id
+    assert audit.created_txid
+    assert {
+        event.payload_json.get("reason")
+        for event in db_session.query(ResearchCaseEvent)
+        .filter_by(event_type="revision_redacted")
+        .all()
+    } == {"[redacted]"}
+    assert client.get(
+        "/api/v1/research/cases", headers=old_access_headers
+    ).status_code == 403
+    assert client.patch(
+        f"/api/v1/admin/users/{user.id}",
+        headers=auth_headers(admin),
+        json={"is_active": True},
+    ).status_code == 409
 
 
 def test_account_erasure_requires_password_and_exact_confirmation(
@@ -145,3 +184,239 @@ def test_account_erasure_requires_password_and_exact_confirmation(
     assert response.status_code == 403
     db_session.refresh(user)
     assert user.is_active is True
+
+
+def test_account_erasure_tombstones_mixed_manual_reasons_without_changing_values(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(
+        "erase-manual-facts@example.com", password="ErasePass123!"
+    )
+    stock = Stock(ticker="ERFACT", exchange="NYSE", company_name="Erase Facts")
+    db_session.add(stock)
+    db_session.flush()
+    numeric = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.revenue",
+        value_numeric=Decimal("123.45"),
+        value_json={
+            "reason": "private numeric rationale",
+            "note": "private correction note",
+            "raw": "123.45",
+            "status": "available",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    numeric_valuation = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.fair_value",
+        value_numeric=Decimal("111.25"),
+        value_text="retained numeric valuation",
+        value_json={
+            "reason": "private numeric valuation rationale",
+            "note": "private numeric valuation note",
+            "raw": "111.25",
+            "status": "available",
+            "valuation_origin": {
+                "version": "research-valuation-origin-v1",
+                "source": "manual",
+                "research_revision_id": 91,
+            },
+        },
+        unit="USD",
+        currency="USD",
+        source_type="manual",
+        source_ref_id=91,
+        period_type="AS_OF",
+        period_end_date=date(2026, 1, 31),
+        is_current=True,
+    )
+    unavailable = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="val.fair_value",
+        value_numeric=None,
+        value_text="retained unavailable marker",
+        value_json={
+            "reason": "private unavailable rationale",
+            "note": "private unavailable valuation note",
+            "raw": "not valued",
+            "status": "unavailable",
+            "valuation_origin": {
+                "version": "research-valuation-origin-v1",
+                "source": "manual",
+                "research_revision_id": 92,
+            },
+        },
+        unit="USD",
+        currency="USD",
+        source_type="manual",
+        source_ref_id=92,
+        period_type="AS_OF",
+        period_end_date=date(2026, 2, 28),
+        is_current=True,
+    )
+    no_reason = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.net_income",
+        value_numeric=Decimal("9"),
+        value_json={"status": "available"},
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    previously_redacted_reason = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.operating_income",
+        value_numeric=Decimal("7"),
+        value_json={
+            "reason": "[redacted]",
+            "redaction_content_hash": "a" * 64,
+            "note": "private note added before erasure",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    matching_prehashed_note = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.pretax_income",
+        value_numeric=Decimal("6"),
+        value_json={
+            "note": "prehashed private note",
+            "redaction_note_content_hash": hashlib.sha256(
+                b"prehashed private note"
+            ).hexdigest(),
+            "status": "available",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    mismatched_prehashed_reason = MetricFact(
+        user_id=user.id,
+        stock_id=stock.id,
+        metric_key="is.ebitda",
+        value_numeric=Decimal("5"),
+        value_json={
+            "reason": "private text whose retained hash is wrong",
+            "redaction_content_hash": "f" * 64,
+            "status": "available",
+        },
+        source_type="manual",
+        period_type="FY",
+        period_end_date=date(2025, 12, 31),
+        is_current=True,
+    )
+    db_session.add_all(
+        [
+            numeric,
+            numeric_valuation,
+            unavailable,
+            no_reason,
+            previously_redacted_reason,
+            matching_prehashed_note,
+            mismatched_prehashed_reason,
+        ]
+    )
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/users/me/erase",
+        headers=auth_headers(user),
+        json={"password": "ErasePass123!", "confirmation": "ERASE MY ACCOUNT"},
+    )
+
+    assert response.status_code == 200, response.text
+    db_session.refresh(numeric)
+    db_session.refresh(numeric_valuation)
+    db_session.refresh(unavailable)
+    db_session.refresh(no_reason)
+    db_session.refresh(previously_redacted_reason)
+    assert numeric.value_numeric == Decimal("123.45")
+    assert numeric.value_json["reason"] == "[redacted]"
+    assert len(numeric.value_json["redaction_content_hash"]) == 64
+    assert numeric.value_json["note"] == "[redacted]"
+    assert len(numeric.value_json["redaction_note_content_hash"]) == 64
+    assert numeric.value_json["raw"] == "123.45"
+    assert numeric_valuation.value_numeric == Decimal("111.25")
+    assert numeric_valuation.value_text == "retained numeric valuation"
+    assert numeric_valuation.value_json["reason"] == "[redacted]"
+    assert numeric_valuation.value_json["note"] == "[redacted]"
+    assert numeric_valuation.value_json["redaction_content_hash"] == (
+        hashlib.sha256(b"private numeric valuation rationale").hexdigest()
+    )
+    assert numeric_valuation.value_json["redaction_note_content_hash"] == (
+        hashlib.sha256(b"private numeric valuation note").hexdigest()
+    )
+    assert numeric_valuation.value_json["raw"] == "111.25"
+    assert numeric_valuation.value_json["valuation_origin"] == {
+        "version": "research-valuation-origin-v1",
+        "source": "manual",
+        "research_revision_id": 91,
+    }
+    assert numeric_valuation.source_type == "manual"
+    assert numeric_valuation.source_ref_id == 91
+    assert numeric_valuation.unit == "USD"
+    assert numeric_valuation.currency == "USD"
+    assert numeric_valuation.period_type == "AS_OF"
+    assert numeric_valuation.period_end_date == date(2026, 1, 31)
+    assert unavailable.value_json["reason"] == "[redacted]"
+    assert unavailable.value_json["note"] == "[redacted]"
+    assert unavailable.value_json["redaction_content_hash"] == (
+        hashlib.sha256(b"private unavailable rationale").hexdigest()
+    )
+    assert unavailable.value_json["redaction_note_content_hash"] == (
+        hashlib.sha256(b"private unavailable valuation note").hexdigest()
+    )
+    assert unavailable.value_json["raw"] == "not valued"
+    assert unavailable.value_text == "retained unavailable marker"
+    assert unavailable.value_json["valuation_origin"] == {
+        "version": "research-valuation-origin-v1",
+        "source": "manual",
+        "research_revision_id": 92,
+    }
+    assert unavailable.source_type == "manual"
+    assert unavailable.source_ref_id == 92
+    assert unavailable.unit == "USD"
+    assert unavailable.currency == "USD"
+    assert unavailable.period_type == "AS_OF"
+    assert unavailable.period_end_date == date(2026, 2, 28)
+    assert no_reason.value_numeric == Decimal("9")
+    assert no_reason.value_json == {"status": "available"}
+    assert previously_redacted_reason.value_json["reason"] == "[redacted]"
+    assert previously_redacted_reason.value_json["redaction_content_hash"] == (
+        "a" * 64
+    )
+    assert previously_redacted_reason.value_json["note"] == "[redacted]"
+    assert len(
+        previously_redacted_reason.value_json["redaction_note_content_hash"]
+    ) == 64
+    db_session.refresh(matching_prehashed_note)
+    db_session.refresh(mismatched_prehashed_reason)
+    assert matching_prehashed_note.value_json["note"] == "[redacted]"
+    assert matching_prehashed_note.value_json["redaction_note_content_hash"] == (
+        hashlib.sha256(b"prehashed private note").hexdigest()
+    )
+    assert mismatched_prehashed_reason.value_json["reason"] == "[redacted]"
+    assert mismatched_prehashed_reason.value_json["redaction_content_hash"] == "f" * 64
+    assert response.json()["manual_rationale_integrity_anomalies"] == 1
+    assert db_session.scalar(
+        text(
+            "SELECT count(*) FROM manual_rationale_erasure_anomalies "
+            "WHERE fact_id=:fact AND field_name='reason' "
+            "AND reason_code='retained_hash_mismatch'"
+        ),
+        {"fact": mismatched_prehashed_reason.id},
+    ) == 1
