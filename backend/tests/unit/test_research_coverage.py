@@ -1167,3 +1167,59 @@ def test_coverage_endpoint_uses_database_business_date_at_utc_boundary(
         .one()
     )
     assert stored.evaluated_at == evaluated_at
+
+
+def test_current_business_date_price_read_keeps_exact_utc_knowledge_cutoff(
+    db_session, user_factory
+):
+    from app.services.canonical_financials import evaluation_business_date
+    from app.services.research_coverage import evaluate_research_coverage
+
+    user = user_factory(email="coverage-exact-cutoff@example.com")
+    stock = _stock(db_session, "EXACTCUT")
+    _watchlist(db_session, user.id, stock)
+    evaluated_at = datetime(2026, 9, 7, 0, 30, tzinfo=timezone.utc)
+    as_of = evaluation_business_date(evaluated_at)
+    session_date = expected_session_on_or_before(stock.exchange, as_of).session_date
+    before_cutoff = StockPrice(
+        stock_id=stock.id,
+        price_date=session_date,
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=1_000,
+        currency="USD",
+        source="twelvedata",
+        created_at=evaluated_at - timedelta(minutes=15),
+    )
+    after_cutoff = StockPrice(
+        stock_id=stock.id,
+        price_date=session_date,
+        open=200,
+        high=201,
+        low=199,
+        close=200,
+        volume=1_000,
+        currency="USD",
+        source="twelvedata",
+        created_at=evaluated_at + timedelta(minutes=15),
+    )
+    db_session.add_all([before_cutoff, after_cutoff])
+    db_session.flush()
+
+    evaluate_research_coverage(
+        db_session,
+        user_id=user.id,
+        as_of=as_of,
+        include_as_of_session=True,
+        evaluated_at=evaluated_at,
+    )
+
+    price_requirement = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(user_id=user.id, stock_id=stock.id, kind="eod_price")
+        .one()
+    )
+    assert price_requirement.source_ref_id == before_cutoff.id
+    assert price_requirement.evidence_json["close"] == "100.0"

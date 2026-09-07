@@ -124,3 +124,11 @@ PR to the independent read-only reviewer before merge.
   event timestamps with UTC-midnight boundaries. The minimal compatibility fix
   converts only those established New York week boundaries to UTC; no broader
   time abstraction or unrelated consumer change is included.
+- 2026-09-06: Independent review found two FT-10 defects before the closing
+  gate. Current coverage now recognizes the New York business date while
+  retaining the exact UTC knowledge cutoff, and Inbox source versions exclude
+  daily observation labels while retaining source references, actual evidence
+  dates, authorization state, policy identity, and reviewed method IDs. Focused
+  tests prove a post-cutoff price is excluded, unchanged multi-day gaps remain
+  stable, and genuine provider-permission/method-review changes supersede prior
+  actions.

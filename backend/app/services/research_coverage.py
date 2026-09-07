@@ -13,7 +13,10 @@ from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase
 from app.models.stocks import PoolMembership, Stock
-from app.services.canonical_financials import reviewed_method_gate
+from app.services.canonical_financials import (
+    evaluation_business_date,
+    reviewed_method_gate,
+)
 from app.services.market_data_service import (
     CanonicalEodPrice,
     PRICE_FRESHNESS_POLICY_VERSION,
@@ -490,7 +493,9 @@ def evaluate_research_coverage(
         {"key": f"coverage:{user_id}:{PRIORITY_POLICY_VERSION}"},
     )
     evaluated_at = evaluated_at or datetime.now(timezone.utc)
-    price_knowledge_cutoff = evaluated_at if as_of == evaluated_at.date() else None
+    price_knowledge_cutoff = (
+        evaluated_at if as_of == evaluation_business_date(evaluated_at) else None
+    )
     candidates, lens_eligible_count, lens_evaluated_count = _candidates(
         session,
         user_id=user_id,

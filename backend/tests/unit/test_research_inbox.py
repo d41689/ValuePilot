@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase, ResearchInboxAction, ResearchInboxActionEvent
-from app.models.stocks import PoolMembership, Stock, StockPool
+from app.models.stocks import PoolMembership, Stock, StockPool, StockPrice
+from app.services.method_applicability import review_company_classification
 from app.services.oracles_lens.constants import SCORE_VERSION
 from app.services.research_inbox import regenerate_inbox
 
@@ -267,18 +268,42 @@ def test_inbox_source_version_supersedes_old_action_without_deleting_history(
     assert actions[1].supersedes_action_id == old.id
 
 
-def test_coverage_state_change_supersedes_prior_gap_action(
-    client, db_session, user_factory, auth_headers
+def test_coverage_permission_change_supersedes_prior_gap_action(
+    db_session, user_factory, monkeypatch
 ):
-    user = user_factory(email="inbox-coverage-version@example.com")
+    from app.services import market_data_service
+
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "twelvedata")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_SECONDARY", "none")
+    monkeypatch.setattr(market_data_service.settings, "TWELVE_DATA_API_KEY", "test-key")
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_COMMERCIAL_ENABLED", True)
+    user = user_factory(email="inbox-coverage-permission@example.com")
     stock = _stock(db_session, "CVERS")
     case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
-    db_session.add(case)
+    db_session.add_all(
+        [
+            case,
+            StockPrice(
+                stock_id=stock.id,
+                price_date=date(2026, 9, 4),
+                open=100,
+                high=101,
+                low=99,
+                close=100,
+                volume=1_000,
+                currency="USD",
+                source="twelvedata",
+                created_at=datetime(2026, 9, 5, 0, tzinfo=timezone.utc),
+            ),
+        ]
+    )
     db_session.commit()
 
-    client.post(
-        "/api/v1/research/inbox/regenerate",
-        headers=auth_headers(user),
+    regenerate_inbox(
+        db_session,
+        user_id=user.id,
+        as_of=date(2026, 9, 9),
+        evaluated_at=datetime(2026, 9, 9, 14, tzinfo=timezone.utc),
     )
     logical_key = f"case-coverage:{case.id}:eod_price"
     prior = (
@@ -286,13 +311,16 @@ def test_coverage_state_change_supersedes_prior_gap_action(
         .filter_by(user_id=user.id, logical_key=logical_key)
         .one()
     )
-    assert prior.evidence_json["state"] == "missing"
+    assert prior.evidence_json["state"] == "stale"
 
-    stock.is_active = False
-    db_session.commit()
-    client.post(
-        "/api/v1/research/inbox/regenerate",
-        headers=auth_headers(user),
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_PRIMARY", "none")
+    monkeypatch.setattr(market_data_service.settings, "TWELVE_DATA_API_KEY", None)
+    monkeypatch.setattr(market_data_service.settings, "MARKET_DATA_COMMERCIAL_ENABLED", False)
+    regenerate_inbox(
+        db_session,
+        user_id=user.id,
+        as_of=date(2026, 9, 9),
+        evaluated_at=datetime(2026, 9, 9, 15, tzinfo=timezone.utc),
     )
 
     actions = (
@@ -304,8 +332,78 @@ def test_coverage_state_change_supersedes_prior_gap_action(
     assert len(actions) == 2
     assert actions[0].state == "superseded"
     assert actions[1].state == "open"
-    assert actions[1].evidence_json["state"] == "blocked"
+    assert actions[1].evidence_json["state"] == "inaccessible"
     assert actions[1].supersedes_action_id == actions[0].id
+
+
+def test_multiday_unchanged_coverage_is_stable_but_method_review_supersedes(
+    db_session, user_factory
+):
+    user = user_factory(email="inbox-coverage-method@example.com", role="admin")
+    stock = _stock(db_session, "CMETHOD")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    db_session.commit()
+
+    regenerate_inbox(
+        db_session,
+        user_id=user.id,
+        as_of=date(2026, 9, 8),
+        evaluated_at=datetime(2026, 9, 8, 14, tzinfo=timezone.utc),
+    )
+    coverage_actions = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=user.id, action_family="coverage_gap")
+        .order_by(ResearchInboxAction.logical_key, ResearchInboxAction.id)
+        .all()
+    )
+    initial_ids = [action.id for action in coverage_actions]
+    initial_event_count = db_session.query(ResearchInboxActionEvent).count()
+
+    regenerate_inbox(
+        db_session,
+        user_id=user.id,
+        as_of=date(2026, 9, 9),
+        evaluated_at=datetime(2026, 9, 9, 14, tzinfo=timezone.utc),
+    )
+    unchanged = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(user_id=user.id, action_family="coverage_gap")
+        .order_by(ResearchInboxAction.logical_key, ResearchInboxAction.id)
+        .all()
+    )
+    assert [action.id for action in unchanged] == initial_ids
+    assert db_session.query(ResearchInboxActionEvent).count() == initial_event_count
+
+    review_company_classification(
+        db_session,
+        reviewer_user_id=user.id,
+        stock_id=stock.id,
+        economic_class="ordinary",
+        effective_from=date(2020, 1, 1),
+        review_reason="Reviewed classification for coverage authority.",
+    )
+    db_session.commit()
+    regenerate_inbox(
+        db_session,
+        user_id=user.id,
+        as_of=date(2026, 9, 9),
+        evaluated_at=datetime(2026, 9, 9, 15, tzinfo=timezone.utc),
+    )
+
+    valuation_actions = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(
+            user_id=user.id,
+            logical_key=f"case-coverage:{case.id}:valuation_input",
+        )
+        .order_by(ResearchInboxAction.id)
+        .all()
+    )
+    assert len(valuation_actions) == 2
+    assert valuation_actions[0].state == "superseded"
+    assert valuation_actions[1].state == "open"
+    assert valuation_actions[1].supersedes_action_id == valuation_actions[0].id
 
 
 def test_inbox_is_user_scoped_and_cross_user_action_is_404(

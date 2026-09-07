@@ -59,6 +59,33 @@ class _DesiredAction:
         return self.tier * 10_000 + self.within_tier
 
 
+def _coverage_source_identity(requirement: dict[str, Any]) -> dict[str, Any]:
+    """Keep evidence revisions, not the request clock, in an action version."""
+
+    evidence = dict(requirement["evidence"])
+    # These dates describe when an unchanged projection was observed. Actual
+    # source dates remain below (price_date, report_date) and source_ref_id.
+    evidence.pop("as_of_date", None)
+    evidence.pop("expected_session_date", None)
+    method_gate = evidence.get("method_gate")
+    if isinstance(method_gate, dict):
+        evidence["method_gate"] = {
+            key: value
+            for key, value in method_gate.items()
+            if key not in {"effective_as_of", "knowledge_at"}
+        }
+    return {
+        "priority_policy_version": requirement["priority_policy_version"],
+        "freshness_policy_version": requirement["freshness_policy_version"],
+        "kind": requirement["kind"],
+        "state": requirement["state"],
+        "reason_code": requirement["reason_code"],
+        "source_type": requirement["source_type"],
+        "source_ref_id": requirement["source_ref_id"],
+        "evidence": evidence,
+    }
+
+
 def _case_tier(case: ResearchCase) -> int:
     if case.state == "monitoring" and case.decision == "own":
         return 1
@@ -189,27 +216,7 @@ def _desired_actions(
         for requirement in requirements:
             if requirement["state"] == "ready":
                 continue
-            evidence_identity = dict(requirement["evidence"])
-            method_gate = evidence_identity.get("method_gate")
-            if isinstance(method_gate, dict):
-                # The cutoff records when the same authoritative decision was
-                # observed; it is not a new source version by itself.
-                evidence_identity["method_gate"] = {
-                    key: value
-                    for key, value in method_gate.items()
-                    if key != "knowledge_at"
-                }
-            source_identity = {
-                "priority_policy_version": requirement["priority_policy_version"],
-                "freshness_policy_version": requirement["freshness_policy_version"],
-                "kind": requirement["kind"],
-                "state": requirement["state"],
-                "reason_code": requirement["reason_code"],
-                "source_type": requirement["source_type"],
-                "source_ref_id": requirement["source_ref_id"],
-                "as_of": requirement["as_of"],
-                "evidence": evidence_identity,
-            }
+            source_identity = _coverage_source_identity(requirement)
             source_digest = hashlib.sha256(
                 json.dumps(source_identity, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()[:24]
@@ -353,6 +360,8 @@ def _append_event(
 def _material_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
     material = dict(evidence or {})
     material.pop("evaluated_at", None)
+    if "coverage_requirement_id" in material:
+        material.pop("as_of", None)
     return material
 
 
