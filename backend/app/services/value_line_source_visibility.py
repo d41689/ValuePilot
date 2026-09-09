@@ -30,6 +30,7 @@ def current_value_line_source_unavailable_predicate():
         ~PdfDocument.source.in_(VALUE_LINE_CURRENT_SOURCES),
         ~PdfDocument.parse_status.in_(VALUE_LINE_CURRENT_PARSE_STATUSES),
         PdfDocument.identity_needs_review.is_(True),
+        PdfDocument.source_unavailable_at.is_not(None),
         and_(
             PdfDocument.stock_id.is_not(None),
             PdfDocument.stock_id != MetricFact.stock_id,
@@ -39,3 +40,12 @@ def current_value_line_source_unavailable_predicate():
 
 def current_value_line_source_available_predicate():
     return ~current_value_line_source_unavailable_predicate()
+
+
+def current_value_line_report_predicate():
+    """Current analysis additionally excludes ordinarily archived evidence."""
+
+    return and_(
+        current_value_line_source_available_predicate(),
+        PdfDocument.archived_at.is_(None),
+    )

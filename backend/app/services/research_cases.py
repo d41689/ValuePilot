@@ -332,7 +332,12 @@ def evidence_is_available(
         return True
     if source_type == "pdf_document":
         source = session.get(PdfDocument, source_id)
-        return bool(source and source.user_id == user_id and source.stock_id == stock_id)
+        return bool(
+            source
+            and source.user_id == user_id
+            and source.stock_id == stock_id
+            and source.source_unavailable_at is None
+        )
     if source_type == "metric_fact":
         source = session.get(MetricFact, source_id)
         return bool(source and source.user_id == user_id and source.stock_id == stock_id)

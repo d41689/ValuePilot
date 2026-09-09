@@ -449,7 +449,7 @@ def test_document_download_endpoint_reports_missing_storage_file(
     assert resp.json()["detail"] == "Stored document file not found"
 
 
-def test_delete_document_removes_dependents_and_reconciles_current(
+def test_delete_document_archives_lineage_and_reconciles_current(
     client,
     db_session,
     user_factory,
@@ -585,13 +585,16 @@ def test_delete_document_removes_dependents_and_reconciles_current(
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["deleted_document_id"] == target_doc_id
-    assert payload["deleted_fact_count"] == 2
-    assert db_session.get(PdfDocument, target_doc_id) is None
-    assert db_session.get(DocumentPage, page_id) is None
-    assert db_session.get(MetricExtraction, extraction_id) is None
-    assert db_session.get(MetricFact, target_fact_id) is None
-    assert db_session.get(MetricFact, manual_fact_id) is None
+    assert payload["archived_document_id"] == target_doc_id
+    archived = db_session.get(PdfDocument, target_doc_id)
+    assert archived is not None
+    assert archived.archived_at is not None
+    assert db_session.get(DocumentPage, page_id) is not None
+    assert db_session.get(MetricExtraction, extraction_id) is not None
+    target_fact = db_session.get(MetricFact, target_fact_id)
+    assert target_fact is not None
+    assert target_fact.is_current is False
+    assert db_session.get(MetricFact, manual_fact_id) is not None
     stale_calculated = db_session.get(MetricFact, stale_calculated_fact_id)
     assert stale_calculated is not None
     assert stale_calculated.is_current is False
@@ -605,6 +608,56 @@ def test_delete_document_removes_dependents_and_reconciles_current(
         ("ratios", user.id, stock.id),
         ("fscore", user.id, stock.id),
     ]
+
+    # Ordinary archive retains authorized historical source reads.
+    assert client.get(
+        f"/api/v1/documents/{target_doc_id}/raw_text", headers=headers
+    ).status_code == 200
+
+
+def test_archived_and_unavailable_documents_leave_current_list_and_fail_closed_reads(
+    client, db_session, user_factory, auth_headers, tmp_path
+):
+    user = user_factory("documents-retirement@example.com")
+    intruder = user_factory("documents-retirement-intruder@example.com")
+    headers = auth_headers(user)
+    pdf_path = tmp_path / "retained.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\nretained\n%%EOF\n")
+    doc = PdfDocument(
+        user_id=user.id,
+        file_name="retained.pdf",
+        source="upload",
+        file_storage_key=str(pdf_path),
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+        raw_text="licensed source text",
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    archived = client.delete(f"/api/v1/documents/{doc.id}", headers=headers)
+    assert archived.status_code == 200, archived.text
+    assert client.get("/api/v1/documents", headers=headers).json() == []
+    assert client.get(f"/api/v1/documents/{doc.id}/download", headers=headers).status_code == 200
+
+    unavailable = client.post(
+        f"/api/v1/documents/{doc.id}/source-unavailable", headers=headers
+    )
+    assert unavailable.status_code == 200, unavailable.text
+    assert unavailable.json()["status"] == "source_unavailable"
+    reparse = client.post(f"/api/v1/documents/{doc.id}/reparse", headers=headers)
+    assert reparse.status_code == 409
+    assert reparse.json()["detail"]["code"] == "source_unavailable"
+    for suffix in ("download", "raw_text", "evidence", "review"):
+        response = client.get(f"/api/v1/documents/{doc.id}/{suffix}", headers=headers)
+        assert response.status_code == 409, (suffix, response.text)
+        assert response.json()["detail"]["code"] == "source_unavailable"
+
+    cross_user = client.post(
+        f"/api/v1/documents/{doc.id}/source-unavailable",
+        headers=auth_headers(intruder),
+    )
+    assert cross_user.status_code == 404
 
 
 def test_delete_document_requires_owner(client, db_session, user_factory, auth_headers):

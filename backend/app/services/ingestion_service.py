@@ -41,6 +41,7 @@ from app.services.value_line_report_identity import (
     resolve_document_report_identities,
     resolve_fact_report_identities,
 )
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.metric_fact_currentness import CurrentnessScope, current_metric_fact_ids_at
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
@@ -442,6 +443,8 @@ class IngestionService:
                 PdfDocument.source == "upload",
                 PdfDocument.id != doc.id,
                 PdfDocument.file_storage_key != archived_path_str,
+                PdfDocument.archived_at.is_(None),
+                PdfDocument.source_unavailable_at.is_(None),
             )
         ).all()
         archived_hash = self.storage.sha256_file(archived_path)
@@ -483,6 +486,8 @@ class IngestionService:
         doc = self.db.get(PdfDocument, document_id)
         if not doc or doc.user_id != user_id:
             raise ValueError("Document not found for user")
+        if doc.archived_at is not None or doc.source_unavailable_at is not None:
+            raise ValueLineSourceUnavailableError()
 
         self.db.execute(
             VALUE_LINE_REPARSE_LOCK_SQL,

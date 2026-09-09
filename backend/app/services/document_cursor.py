@@ -142,6 +142,8 @@ def create_document_snapshot(
                 ORDER BY r.known_at DESC,r.id DESC LIMIT 1
               ) report_identity ON true
               WHERE d.user_id=:user_id
+                AND d.archived_at IS NULL
+                AND d.source_unavailable_at IS NULL
               ORDER BY d.upload_time DESC NULLS LAST,d.id DESC
               LIMIT :candidate_limit
             ), candidates AS MATERIALIZED (
@@ -312,6 +314,8 @@ def load_document_snapshot_page(
             document is None
             or document.user_id != snapshot.user_id
             or document.source != retained.source
+            or document.archived_at is not None
+            or document.source_unavailable_at is not None
         ):
             raise DocumentsSnapshotSourceUnavailableError()
         visible.append(

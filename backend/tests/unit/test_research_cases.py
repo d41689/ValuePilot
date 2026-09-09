@@ -497,6 +497,45 @@ def test_workspace_maps_value_line_source_loss_to_typed_conflict(
     assert response.json()["detail"]["code"] == "source_unavailable"
 
 
+def test_archived_research_evidence_remains_historical_until_source_unavailable(
+    db_session, user_factory
+):
+    from app.models.artifacts import PdfDocument
+    from app.services.research_cases import evidence_is_available
+
+    user = user_factory("research-retired-evidence@example.com")
+    stock = _stock(db_session, "RETIREDEVID")
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="history.pdf",
+        source="upload",
+        file_storage_key="retained/history.pdf",
+        parse_status="parsed",
+        archived_at=datetime.now(timezone.utc),
+    )
+    db_session.add(document)
+    db_session.commit()
+
+    assert evidence_is_available(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        source_type="pdf_document",
+        source_id=document.id,
+    )
+
+    document.source_unavailable_at = datetime.now(timezone.utc)
+    db_session.commit()
+    assert not evidence_is_available(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        source_type="pdf_document",
+        source_id=document.id,
+    )
+
+
 def test_workspace_maps_actual_conflict_observation_bound_to_typed_conflict(
     client, db_session, user_factory, auth_headers, monkeypatch
 ):

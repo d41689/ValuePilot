@@ -97,14 +97,14 @@ def test_cleanup_duplicates_dry_run_keeps_newest_parsed_document_without_mutatio
 
     assert result["mode"] == "dry_run"
     assert result["duplicate_group_count"] == 1
-    assert result["deleted_document_count"] == 1
+    assert result["archived_document_count"] == 1
     assert result["groups"][0]["keep_document"]["id"] == keep_doc.id
     assert result["groups"][0]["duplicate_documents"][0]["id"] == old_doc.id
     assert db_session.get(PdfDocument, old_doc.id) is not None
     assert db_session.get(PdfDocument, keep_doc.id) is not None
 
 
-def test_cleanup_duplicates_apply_deletes_dependents_without_resurrecting_history(
+def test_cleanup_duplicates_apply_archives_dependents_without_resurrecting_history(
     db_session,
     monkeypatch,
 ):
@@ -202,11 +202,13 @@ def test_cleanup_duplicates_apply_deletes_dependents_without_resurrecting_histor
     db_session.expire_all()
 
     assert result["mode"] == "apply"
-    assert result["deleted_document_count"] == 1
-    assert db_session.get(PdfDocument, duplicate_doc.id) is None
-    assert db_session.get(DocumentPage, page_id) is None
-    assert db_session.get(MetricExtraction, extraction_id) is None
-    assert db_session.get(MetricFact, duplicate_fact_id) is None
+    assert result["archived_document_count"] == 1
+    assert db_session.get(PdfDocument, duplicate_doc.id).archived_at is not None
+    assert db_session.get(DocumentPage, page_id) is not None
+    assert db_session.get(MetricExtraction, extraction_id) is not None
+    duplicate_fact = db_session.get(MetricFact, duplicate_fact_id)
+    assert duplicate_fact is not None
+    assert duplicate_fact.is_current is False
     stale_calculated = db_session.get(MetricFact, stale_calculated_fact_id)
     assert stale_calculated is not None
     assert stale_calculated.is_current is False
@@ -347,11 +349,10 @@ def test_cleanup_duplicates_preserves_manual_facts_by_moving_them_to_kept_docume
     result = DocumentDedupeService(db_session).cleanup_duplicates(apply=True)
     db_session.expire_all()
 
-    assert result["preserved_non_parsed_fact_count"] == 1
     refreshed_manual_fact = db_session.get(MetricFact, manual_fact_id)
     refreshed_keep_parsed_fact = db_session.get(MetricFact, keep_parsed_fact_id)
     assert refreshed_manual_fact is not None
-    assert refreshed_manual_fact.source_document_id is None
+    assert refreshed_manual_fact.source_document_id == duplicate_doc.id
     assert refreshed_manual_fact.is_current is True
     assert refreshed_keep_parsed_fact is not None
     assert refreshed_keep_parsed_fact.is_current is False

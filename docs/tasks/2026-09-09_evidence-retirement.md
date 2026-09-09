@@ -112,3 +112,7 @@ gate commands:
 - 2026-09-09: archive preserves history but adds no restoration promise or API;
   source-unavailable marking is an explicit authenticated owner operation rather
   than a test-only database state.
+- 2026-09-09: red checkpoint produced three expected failures (missing lifecycle
+  fields, delete still physically removed the document, and archived history was
+  unreadable). The first focused green checkpoint passed 102 document, cursor,
+  research-case, dedupe, and reparse tests.

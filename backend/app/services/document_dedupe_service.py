@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models.artifacts import DocumentPage, PdfDocument
-from app.models.extractions import MetricExtraction
+from app.models.artifacts import PdfDocument
 from app.models.facts import MetricFact
 from app.services.calculated_metrics.piotroski_f_score import (
     COMPONENT_KEYS,
@@ -64,6 +63,8 @@ class DocumentDedupeService:
         filters = [
             PdfDocument.stock_id.is_not(None),
             PdfDocument.report_date.is_not(None),
+            PdfDocument.archived_at.is_(None),
+            PdfDocument.source_unavailable_at.is_(None),
         ]
         if user_id is not None:
             filters.append(PdfDocument.user_id == user_id)
@@ -121,7 +122,7 @@ class DocumentDedupeService:
         summary: dict[str, Any] = {
             "mode": "apply" if apply else "dry_run",
             "duplicate_group_count": len(groups),
-            "deleted_document_count": sum(
+            "archived_document_count": sum(
                 len(group.duplicate_documents) for group in groups
             ),
             "groups": [group.to_dict() for group in groups],
@@ -132,7 +133,7 @@ class DocumentDedupeService:
         try:
             for affected_user_id in sorted({group.user_id for group in groups}):
                 lock_user_privacy_write(self.db, user_id=affected_user_id)
-            deleted_document_ids = [
+            archived_document_ids = [
                 document.id
                 for group in groups
                 for document in group.duplicate_documents
@@ -141,45 +142,19 @@ class DocumentDedupeService:
                 {(group.user_id, group.stock_id) for group in groups}
             )
 
-            duplicate_to_keep_document_id = {
-                duplicate_document.id: group.keep_document.id
-                for group in groups
-                for duplicate_document in group.duplicate_documents
-            }
-
-            affected_slots = self.db.execute(
-                select(
-                    MetricFact.user_id,
-                    MetricFact.stock_id,
-                    MetricFact.metric_key,
-                    MetricFact.period_type,
-                    MetricFact.period_end_date,
-                    MetricFact.as_of_date,
-                )
+            self.db.execute(
+                update(PdfDocument)
+                .where(PdfDocument.id.in_(archived_document_ids))
+                .values(archived_at=datetime.now(timezone.utc))
+            )
+            self.db.execute(
+                update(MetricFact)
                 .where(
-                    MetricFact.source_document_id.in_(deleted_document_ids),
+                    MetricFact.source_document_id.in_(archived_document_ids),
                     MetricFact.source_type == "parsed",
+                    MetricFact.is_current.is_(True),
                 )
-                .distinct()
-            ).all()
-
-            preserved_fact_count = self._relocate_manual_facts_from_deleted_documents(
-                duplicate_to_keep_document_id=duplicate_to_keep_document_id
-            )
-            self.db.flush()
-
-            self.db.execute(
-                delete(MetricExtraction).where(
-                    MetricExtraction.document_id.in_(deleted_document_ids)
-                )
-            )
-            self.db.execute(
-                delete(DocumentPage).where(
-                    DocumentPage.document_id.in_(deleted_document_ids)
-                )
-            )
-            self.db.execute(
-                delete(PdfDocument).where(PdfDocument.id.in_(deleted_document_ids))
+                .values(is_current=False)
             )
             self.db.flush()
 
@@ -190,7 +165,6 @@ class DocumentDedupeService:
                 {"user_id": pair_user_id, "stock_id": pair_stock_id}
                 for pair_user_id, pair_stock_id in affected_user_stock_pairs
             ]
-            summary["preserved_non_parsed_fact_count"] = preserved_fact_count
             return summary
         except Exception:
             self.db.rollback()
@@ -235,26 +209,17 @@ class DocumentDedupeService:
             if document.stock_id is not None:
                 affected_user_stock_pairs.add((document.user_id, document.stock_id))
 
-            deleted_fact_count = self.db.scalar(
-                select(func.count(MetricFact.id)).where(
-                    MetricFact.source_document_id == document_id
+            document.archived_at = datetime.now(timezone.utc)
+            self.db.add(document)
+            self.db.execute(
+                update(MetricFact)
+                .where(
+                    MetricFact.source_document_id == document_id,
+                    MetricFact.source_type == "parsed",
+                    MetricFact.is_current.is_(True),
                 )
+                .values(is_current=False)
             )
-            deleted_extraction_count = (
-                self.db.execute(
-                    delete(MetricExtraction).where(
-                        MetricExtraction.document_id == document_id
-                    )
-                ).rowcount
-                or 0
-            )
-            deleted_page_count = (
-                self.db.execute(
-                    delete(DocumentPage).where(DocumentPage.document_id == document_id)
-                ).rowcount
-                or 0
-            )
-            self.db.execute(delete(PdfDocument).where(PdfDocument.id == document_id))
             self.db.flush()
 
             affected_pairs = sorted(affected_user_stock_pairs)
@@ -262,10 +227,8 @@ class DocumentDedupeService:
 
             self.db.commit()
             return {
-                "deleted_document_id": document_id,
-                "deleted_page_count": deleted_page_count,
-                "deleted_extraction_count": deleted_extraction_count,
-                "deleted_fact_count": deleted_fact_count,
+                "archived_document_id": document_id,
+                "archived_at": document.archived_at.isoformat(),
                 "affected_user_stock_pairs": [
                     {"user_id": pair_user_id, "stock_id": pair_stock_id}
                     for pair_user_id, pair_stock_id in affected_pairs
@@ -275,45 +238,61 @@ class DocumentDedupeService:
             self.db.rollback()
             raise
 
-    def _relocate_manual_facts_from_deleted_documents(
+    def mark_source_unavailable(
         self,
         *,
-        duplicate_to_keep_document_id: dict[int, int],
-    ) -> int:
-        preserved_fact_count = 0
-        for (
-            duplicate_document_id,
-            keep_document_id,
-        ) in duplicate_to_keep_document_id.items():
-            facts = self.db.scalars(
-                select(MetricFact).where(
-                    MetricFact.source_document_id == duplicate_document_id,
-                    # FT-06 explicitly permits provenance relocation only for
-                    # user-authored manual facts. Calculated/derived facts are
-                    # immutable outputs: the parent cascade retires them and
-                    # the refresh below appends replacements.
-                    MetricFact.source_type == "manual",
-                )
-            ).all()
-            for fact in facts:
-                conflicting_fact_id = self.db.scalar(
-                    select(MetricFact.id)
+        user_id: int,
+        document_id: int,
+    ) -> Optional[dict[str, Any]]:
+        """One-way withdrawal of retained proprietary-source readability."""
+
+        lock_user_privacy_write(self.db, user_id=user_id)
+        document = self.db.scalar(
+            select(PdfDocument)
+            .where(
+                PdfDocument.id == document_id,
+                PdfDocument.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        if document is None:
+            return None
+        if document.source_unavailable_at is None:
+            try:
+                affected_pairs = {
+                    (fact_user_id, fact_stock_id)
+                    for fact_user_id, fact_stock_id in self.db.execute(
+                        select(MetricFact.user_id, MetricFact.stock_id)
+                        .where(
+                            MetricFact.source_document_id == document_id,
+                            MetricFact.source_type == "parsed",
+                        )
+                        .distinct()
+                    ).all()
+                }
+                if document.stock_id is not None:
+                    affected_pairs.add((document.user_id, document.stock_id))
+                document.source_unavailable_at = datetime.now(timezone.utc)
+                self.db.add(document)
+                self.db.execute(
+                    update(MetricFact)
                     .where(
-                        MetricFact.stock_id == fact.stock_id,
-                        MetricFact.metric_key == fact.metric_key,
-                        MetricFact.period_type == fact.period_type,
-                        MetricFact.period_end_date == fact.period_end_date,
-                        MetricFact.source_document_id == keep_document_id,
-                        MetricFact.id != fact.id,
+                        MetricFact.source_document_id == document_id,
+                        MetricFact.source_type == "parsed",
+                        MetricFact.is_current.is_(True),
                     )
-                    .limit(1)
+                    .values(is_current=False)
                 )
-                fact.source_document_id = (
-                    None if conflicting_fact_id is not None else keep_document_id
-                )
-                self.db.add(fact)
-                preserved_fact_count += 1
-        return preserved_fact_count
+                self._refresh_calculated_facts(sorted(affected_pairs))
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+        return {
+            "document_id": document.id,
+            "status": "source_unavailable",
+            "source_unavailable_at": document.source_unavailable_at.isoformat(),
+        }
 
     def _refresh_calculated_facts(
         self,
