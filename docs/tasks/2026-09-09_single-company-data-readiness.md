@@ -51,7 +51,38 @@ PRD §H.3–H.7、§H.9–H.11；mapping spec；source policy；
 新增持久数据最多 2 GiB，超限停止；零外部 SEC 请求，不触生产。
 用户同时授权按小步 commit/push/Draft PR；merge 和生产部署仍需另行确认。
 
+## 根因复核与工作树检查
+
+- 已建立 Draft PR #147；初始文档提交 `6ebb1506`。
+- 保留 AAPL 的成功 parse 为 v2.4。现有 v2.7 已能恢复 2025 报表的 balance-sheet 和部分 cash-flow occurrence，
+  无需为这些已修复问题再开发代码。
+- 当前代码对 FY2025 capex 仍拒绝：原始 XBRL 为正 `12715000000`，生成报表为 `(12,715)`（millions）。
+  presentation arc 的 exact preferredLabel 为 `http://www.xbrl.org/2009/role/negatedLabel`，
+  label 文本精确对应。FY2024/2023 同一行也采用反号显示；这不是 raw 金额冲突。
+- [XBRL 官方说明](https://www.xbrl.org/guidance/label-roles/)确认 negated label 控制显示符号而非改写原值。
+  已另行请求批准最小 parser/PRD/新增 guard migration 修复；批准前不修改生产解析或数据库规则。
+- 现有 `build_retained_financial_replay_client` 成功只读验证 AAPL 的 2,902 个 URL、318,544,064 bytes，
+  missing instances=0，external requests=0。可复用现有路径，不需要通用导入平台。
+- 常驻 `valuepilot-dev-api-1` 实际挂载 `ValuePilot-source-contract/backend`，不是本工作树。
+  首次 `docker compose exec ... -k negated_label` 只得到 79 deselected（exit 5），不构成 red/green 证据。
+  迭代使用当前 compose 的一次性容器；closing gate 再核实并重建到当前工作树。
+- 已加入 8 个 negated-label 参数化测试。当前工作树执行
+  `docker compose run --rm --no-deps -T api pytest -q tests/unit/test_sec_statement_authority.py -k negated_label`
+  得到 8 failed / 79 deselected：新增显式 opt-in 参数尚未实现（TypeError），属于 test-first red，
+  不替代上面的真实报表复现，也不是应用原有测试回归。测试仍在本地，生产代码/迁移尚未修改。
+
 ## Test plan / sign-off
+
+### 待批准的最小契约变更
+
+仅为新的 parser 版本启用精确 URI `http://www.xbrl.org/2009/role/negatedLabel`：
+当既有 presentation arc 与 label 校验通过时，比较 `-display × scale` 与原始规范化值；
+其他 label 保持既有比较。原始金额、canonical mapping、正 scale、证据身份均不改。
+禁止 `abs()`、按名称猜符号、接受相似 URI，或为了通过而接受两种符号。
+新 migration 只扩展版本识别及对应数值校验，不改旧 migration；旧 parser 保持原语义。
+迁移测试须证明升级/空历史降级可逆、存在新版本 lineage 时拒绝破坏性降级，
+并实际验证数据库拒绝错误符号/金额而接受证据明确的显示反号。不能只检查 SQL 字符串。
+批准前这段仅为审查提案，不修改 PRD 或运行时权限。
 
 先对保留证据做只读最小复现，再写回归测试（red），只修根因（green）。
 不重签旧 gold acceptance，不改变 locked manifest，不因为缺数据把 unavailable 当 S1 成功。
