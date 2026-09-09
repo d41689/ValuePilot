@@ -127,3 +127,22 @@ gate commands:
   fixture that predated the new document columns and a fixed-clock inbox test
   that evaluated before the database-known method review. The compatibility and
   point-in-time fixtures were corrected without changing production authority.
+- 2026-09-09: a later independent CI run found one additional historical-schema
+  fixture invoking the current reparse ORM. Its historical revision-180
+  assertion remains in place; the isolated schema advances to application head
+  only before the current service call. The final canonical gate passed: 2,734
+  backend tests and 233 frontend tests, plus frontend lint and production build.
+
+## Extraction evidence checkpoint
+
+- Issue #134 → PR #140; issue #138 → PR #141; issue #135 → PR #142;
+  issue #136 → PR #143; issue #133 → PR #144; issue #137 → PR #145.
+- The SEC foundation and bounded publication work are represented by PRs #127
+  and #132. The frozen PR #128 supplied requirements and test ideas only; no
+  code or migrations were copied or cherry-picked from it.
+- This delivery resolves the active document/evidence archival slice. Account
+  erasure and the R26 remaining-writer inventory are explicitly deferred, and
+  the locked 24-case/gold-set acceptance remains outstanding.
+- Final cross-delivery extraction audit, old-PR-128 deletion, and global Terra
+  review remain pending for the root release step after merge; they are not
+  claimed complete here.
