@@ -316,6 +316,18 @@ deferral above.
 - **Problem:** the workspace is organized around fields and metric keys rather
   than the questions required before allocating capital.
 - **Outcome:** guide evidence-based judgment without authoring the decision.
+- **Audit supplement (2026-09-09; main `18c7f15e`; severity: medium):**
+  `research_workspace.py` clears numeric fundamentals when the complete-company
+  candidate count exceeds 250; the case page also silently displays only the
+  first 60 fundamentals. This prevents ordinary ten-year/multi-source research
+  from scaling. The global fail-closed behavior is explicitly required by PRD
+  §H.10, so repair requires a reviewed, narrowly scoped query-contract change,
+  not just a raised limit or truncated comparison. Preserve complete slot and
+  dependency reconciliation before display pagination. Method-review and source
+  conflict APIs also lack a complete researcher-facing resolution workflow;
+  do not claim backend availability is usable product completion. See
+  [audit A01–A06](tasks/2026-09-09_investor-value-code-audit.md) and the proposed
+  [single-company slice](plans/single-company-research-minimal-plan.md).
 - **Acceptance criteria:**
   - The workspace covers circle of competence; business model/value drivers;
     moat; management integrity and capital allocation; balance-sheet/refinancing
