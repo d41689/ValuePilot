@@ -210,6 +210,87 @@ def _request(
     return PublicationRequest(stock.id,identity.id,"sec-us-gaap-v1",parse.available_at+timedelta(seconds=1),"latest-known-v1",(source,))
 
 
+def _negated_generated_client():
+    client = GeneratedStatementAuthorityClient()
+    for url, content in list(client.responses.items()):
+        if url.endswith(("_pre.xml", "_lab.xml")):
+            client.responses[url] = content.replace(
+                b"http://www.xbrl.org/2003/role/terseLabel",
+                b"http://www.xbrl.org/2009/role/negatedLabel",
+            )
+        elif url.endswith("R2.htm"):
+            for amount in (b"94,000", b"90,000", b"250,000", b"240,000"):
+                content = content.replace(b"$ " + amount, b"($ " + amount + b")")
+            client.responses[url] = content
+    index_url = next(url for url in client.responses if url.endswith("/index.json"))
+    index = json.loads(client.responses[index_url])
+    for item in index["directory"]["item"]:
+        url = index_url.removesuffix("index.json") + item["name"]
+        if url in client.responses:
+            item["size"] = len(client.responses[url])
+    client.responses[index_url] = json.dumps(index).encode()
+    return client
+
+
+def test_negated_label_database_publication_preserves_raw_value_and_blocks_downgrade(
+    db, tmp_path, isolated_engine
+):
+    request = _request(db, tmp_path, client=_negated_generated_client())
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+    facts = db.execute(text(
+        "SELECT value_numeric FROM metric_facts WHERE source_type='sec'"
+    )).scalars().all()
+    assert facts and all(value > 0 for value in facts)
+    assert db.execute(text(
+        "SELECT count(*) FROM sec_statement_occurrence_evidence "
+        "WHERE locator_json->>'preferred_label_role'="
+        "'http://www.xbrl.org/2009/role/negatedLabel'"
+    )).scalar_one() > 0
+    db.commit()
+    result = subprocess.run(
+        ["alembic", "downgrade", "20260909120000"], cwd=BACKEND,
+        env={**os.environ, "DATABASE_URL": isolated_engine.url.render_as_string(hide_password=False)},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert "retained parser-v2.8 lineage exists" in result.stderr
+    assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260909140000"
+
+
+@pytest.mark.parametrize("mutation", ["wrong_role", "wrong_amount"])
+def test_negated_label_database_rejects_incorrect_occurrence_identity(
+    db, tmp_path, monkeypatch, mutation
+):
+    from dataclasses import replace
+    resolver = financial_ingestion.parse_generated_statement_occurrences
+
+    def malformed_result(*args, **kwargs):
+        result = resolver(*args, **kwargs)
+        occurrences = []
+        for occurrence in result.occurrences:
+            locator = dict(occurrence.locator)
+            if mutation == "wrong_role":
+                locator["preferred_label_role"] = "http://www.xbrl.org/2003/role/terseLabel"
+            else:
+                # A different retained cell is not this raw fact's display value.
+                locator["display_value"] = "($ 90,000)"
+            occurrences.append(replace(occurrence, locator=locator))
+        return replace(result, occurrences=tuple(occurrences))
+
+    monkeypatch.setattr(financial_ingestion, "parse_generated_statement_occurrences", malformed_result)
+    with pytest.raises(AssertionError):
+        _request(db, tmp_path, client=_negated_generated_client())
+    failures = db.execute(text(
+        "SELECT status,error_detail FROM sec_financial_parse_runs"
+    )).all()
+    assert failures and all(status == "failed" for status, _ in failures)
+    assert any("generated statement exact numeric identity mismatch" in (detail or "") for _, detail in failures)
+    assert db.execute(text("SELECT count(*) FROM metric_facts")).scalar_one() == 0
+
+
 class _AnnualGeneratedStatementClient(GeneratedStatementAuthorityClient):
     def __init__(
         self,

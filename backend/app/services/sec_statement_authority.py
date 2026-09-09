@@ -694,6 +694,7 @@ def parse_generated_statement_occurrences(
     allow_dimension_member_anchors: bool = False,
     allow_balance_sheet_date_only_instant: bool = False,
     require_exact_raw_label_fragment: bool = False,
+    allow_negated_label: bool = False,
 ) -> GeneratedStatementResolution:
     """Resolve SEC generated statement cells to one exact retained instance fact.
 
@@ -874,7 +875,13 @@ def parse_generated_statement_occurrences(
                         continue
                     numeric = _candidate_numeric(candidate)
                     multiplier = _declared_multiplier(table_title, candidate)
-                    if numeric is not None and display * multiplier == numeric:
+                    comparison_display = (
+                        -display
+                        if allow_negated_label
+                        and arc[1] == "http://www.xbrl.org/2009/role/negatedLabel"
+                        else display
+                    )
+                    if numeric is not None and comparison_display * multiplier == numeric:
                         matching.append((candidate, multiplier))
                 if not matching:
                     reject(

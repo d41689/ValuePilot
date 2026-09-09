@@ -87,7 +87,8 @@ PARSER_V2_3 = "xbrl-lineage-v2.3"
 PARSER_V2_4 = "xbrl-lineage-v2.4"
 PARSER_V2_5 = "xbrl-lineage-v2.5"
 PARSER_V2_6 = "xbrl-lineage-v2.6"
-PARSER_V2 = "xbrl-lineage-v2.7"
+PARSER_V2_7 = "xbrl-lineage-v2.7"
+PARSER_V2 = "xbrl-lineage-v2.8"
 ARTIFACT_RETENTION_POLICY_V1 = "sec-financial-artifacts-v1"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v2"
 ANNUAL_FORMS_BY_REGIME = {
@@ -908,6 +909,7 @@ def _is_parser_v2(parser_version: str) -> bool:
         PARSER_V2_4,
         PARSER_V2_5,
         PARSER_V2_6,
+        PARSER_V2_7,
         PARSER_V2,
     }
 
@@ -916,6 +918,7 @@ def _is_sgml_instance_parser(parser_version: str) -> bool:
     return parser_version in {
         PARSER_V2_1, PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5,
         PARSER_V2_6,
+        PARSER_V2_7,
         PARSER_V2,
     }
 
@@ -923,20 +926,20 @@ def _is_sgml_instance_parser(parser_version: str) -> bool:
 def _is_generated_statement_parser(parser_version: str) -> bool:
     return parser_version in {
         PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5, PARSER_V2_6,
-        PARSER_V2
+        PARSER_V2_7, PARSER_V2
     }
 
 
 def _is_parser_v24(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2}
+    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2}
 
 
 def _is_parser_v25(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2}
+    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2}
 
 
 def _is_parser_v26(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_6, PARSER_V2}
+    return parser_version in {PARSER_V2_6, PARSER_V2_7, PARSER_V2}
 
 
 def _artifact_retention_policy_version(parser_version: str) -> str:
@@ -2580,6 +2583,7 @@ def _parse_primary_artifact(
                             require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
+                            allow_negated_label=parser_version == PARSER_V2,
                         )
                         occurrences = resolution.occurrences
                         rejected_generated_concepts.update(
@@ -2629,6 +2633,7 @@ def _parse_primary_artifact(
                             require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
+                            allow_negated_label=parser_version == PARSER_V2,
                         )
                         occurrences = resolution.occurrences
                         rejected_generated_concepts.update(

@@ -1110,6 +1110,18 @@ authority URI is exactly `http://www.xbrl.org/2003/instance`. Compound units
 retain ordered numerator and denominator QName lists; a prefix is never
 authority.
 
+Parser `xbrl-lineage-v2.8` additionally supports the exact preferred-label URI
+`http://www.xbrl.org/2009/role/negatedLabel` on a verified generated-statement
+presentation arc and its matching label. This role reverses the **display**
+sign only: the negated display value times the positive declared scale must
+equal the normalized raw fact exactly. The retained raw sign/value and
+canonical metric semantics do not change. No absolute-value comparison,
+rounding, suffix/name heuristic, or alternate-sign fallback is permitted.
+Other label roles retain the existing comparison, and earlier parser versions
+retain their original semantics. PostgreSQL checks the same version-specific
+numeric identity against the retained occurrence/linkbase lineage. Supporting
+additional negated-label roles requires a separately reviewed extension.
+
 ### H.6 Point-in-time and supersession
 
 For cutoff `T`, a replay may use only:

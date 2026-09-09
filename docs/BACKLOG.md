@@ -9,6 +9,19 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Exclude generated files from development Docker build contexts
+- **Found:** 2026-09-09, PR #147 / S1 closing gate
+- **Severity:** low (build time and local disk use)
+- **Problem:** the api and web build contexts transferred approximately 622 MB
+  and 647 MB respectively; local generated artifacts enter the image build.
+  This is separate from the authorized AAPL persistent-data budget.
+- **Acceptance criteria:** add narrowly scoped Docker exclusions for generated
+  files after checking runtime and fixture requirements; all canonical gates
+  still pass and clean-build context sizes are recorded before/after.
+- **Context:** `backend/Dockerfile`, `frontend/Dockerfile`;
+  [S1 task](tasks/2026-09-09_single-company-data-readiness.md).
+- **Issue:** —
+
 ### FT-07 — operator-triggered Piotroski authority recomputation
 - **Found:** 2026-09-04, PR #143 Terra R6 review
 - **Severity:** medium (all legacy scores without the strict versioned input

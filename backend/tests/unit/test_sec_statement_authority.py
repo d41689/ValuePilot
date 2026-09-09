@@ -279,6 +279,58 @@ def _real_sec_shared_label_resource_linkbase() -> bytes:
     </link:linkbase>""".encode()
 
 
+@pytest.mark.parametrize(
+    "role,displayed,raw_value,enabled,accepted",
+    [
+        ("http://www.xbrl.org/2009/role/negatedLabel", "(12,715)", "12715000000", True, True),
+        ("http://www.xbrl.org/2009/role/negatedLabel", "12,715", "-12715000000", True, True),
+        ("http://www.xbrl.org/2009/role/negatedLabel", "0", "0", True, True),
+        ("http://www.xbrl.org/2009/role/negatedLabel", "(12,714)", "12715000000", True, False),
+        ("http://www.xbrl.org/2009/role/negatedLabel", "12,715", "12715000000", True, False),
+        ("http://www.xbrl.org/2003/role/terseLabel", "(12,715)", "12715000000", True, False),
+        ("https://example.test/role/negatedLabel", "(12,715)", "12715000000", True, False),
+        ("http://www.xbrl.org/2009/role/negatedLabel", "(12,715)", "12715000000", False, False),
+    ],
+)
+def test_generated_negated_label_preserves_raw_sign_and_requires_exact_role(
+    role, displayed, raw_value, enabled, accepted
+):
+    """AAPL cash-outflow presentation is inverted, not a negative raw capex fact."""
+    concept = "us-gaap_PaymentsToAcquirePropertyPlantAndEquipment"
+    label = "Payments for acquisition of property, plant and equipment"
+    original_role = b"http://www.xbrl.org/2003/role/terseLabel"
+    kwargs = dict(
+        filename="R8.htm",
+        statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(concept=concept).replace(
+            original_role, role.encode()
+        ),
+        label_linkbase=_label_linkbase(concept=concept, label=label).replace(
+            original_role, role.encode()
+        ),
+        candidates=[_generated_raw(
+            concept=concept.replace("_", ":", 1), raw_value=raw_value
+        )],
+        presentation_artifact_id=21,
+        presentation_sha256="a" * 64,
+        label_artifact_id=22,
+        label_sha256="b" * 64,
+        allow_negated_label=enabled,
+    )
+    html = _generated_statement_html(concept=concept, label=label, displayed=displayed)
+    if not accepted:
+        with pytest.raises(StatementAuthorityParseError, match="unresolved_generated_statement_occurrence"):
+            parse_generated_statement_occurrences(html, **kwargs)
+        return
+    result = parse_generated_statement_occurrences(html, **kwargs)
+    assert len(result.occurrences) == 1
+    occurrence = result.occurrences[0]
+    assert occurrence.raw_value == raw_value
+    assert occurrence.locator["display_value"] == displayed
+    assert occurrence.locator["preferred_label_role"] == role
+    assert occurrence.locator["scale_multiplier"] == "1000000"
+
+
 def _generated_raw(**changes):
     values = dict(
         raw_fact_id=11,
