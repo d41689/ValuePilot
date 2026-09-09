@@ -892,3 +892,33 @@ def serialize_revision(revision: ResearchCaseRevision) -> dict[str, Any]:
         "redacted_at": revision.redacted_at.isoformat() if revision.redacted_at else None,
         "created_at": revision.created_at.isoformat(),
     }
+
+
+def serialize_revision_with_evidence_access(
+    session: Session,
+    *,
+    user_id: int,
+    stock_id: int,
+    revision: ResearchCaseRevision,
+) -> dict[str, Any]:
+    """Overlay current access without rewriting the recorded historical claim."""
+
+    serialized = serialize_revision(revision)
+    serialized["evidence"] = [
+        {
+            **evidence,
+            "access_status": (
+                "available"
+                if evidence_is_available(
+                    session,
+                    user_id=user_id,
+                    stock_id=stock_id,
+                    source_type=str(evidence.get("source_type") or ""),
+                    source_id=evidence.get("source_id"),
+                )
+                else "source_unavailable"
+            ),
+        }
+        for evidence in (serialized["evidence"] or [])
+    ]
+    return serialized

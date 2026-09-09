@@ -120,3 +120,6 @@ gate commands:
   consumers. Extraction reads/corrections, coverage readiness, actual-conflict
   selection, and the archive toast now share the retirement contract; four
   focused regressions pass.
+- 2026-09-09: follow-up review found direct revision-history serialization and
+  source reconciliation did not apply current source withdrawal. Both now use
+  typed access/exclusion overlays without changing the stored historical claim.

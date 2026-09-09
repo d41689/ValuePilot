@@ -24,9 +24,8 @@ from app.services.evaluation_snapshot import (
 from app.services.research_cases import (
     ResearchCaseError,
     serialize_case,
-    evidence_is_available,
     serialize_origin,
-    serialize_revision,
+    serialize_revision_with_evidence_access,
 )
 from app.services.research_coverage import serialize_requirements
 from app.services.thirteenf_user_api import build_user_stock_holders
@@ -423,28 +422,15 @@ def build_research_workspace(
             "data_caveats": [],
         }
 
-    serialized_revisions = []
-    for revision in revisions:
-        serialized = serialize_revision(revision)
-        serialized["evidence"] = [
-            {
-                **evidence,
-                "access_status": (
-                    "available"
-                    if evidence_is_available(
-                        session,
-                        user_id=user_id,
-                        stock_id=stock.id,
-                        source_type=str(evidence.get("source_type") or ""),
-                        source_id=evidence.get("source_id"),
-                    )
-                    else "source_unavailable"
-                ),
-            }
-            for evidence in serialized["evidence"]
-        ]
-
-        serialized_revisions.append(serialized)
+    serialized_revisions = [
+        serialize_revision_with_evidence_access(
+            session,
+            user_id=user_id,
+            stock_id=stock.id,
+            revision=revision,
+        )
+        for revision in revisions
+    ]
 
     return {
         "as_of": as_of.isoformat(),

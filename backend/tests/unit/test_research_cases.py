@@ -646,6 +646,57 @@ def _researching_revision(expected_head: int = 0) -> dict:
     }
 
 
+def test_case_and_revision_history_overlay_current_source_unavailability(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory(email="case-source-history@example.com")
+    stock = _stock(db_session, "CASEHIST")
+    document = PdfDocument(
+        user_id=user.id,
+        stock_id=stock.id,
+        file_name="case-history.pdf",
+        source="upload",
+        file_storage_key="retained/case-history.pdf",
+        parse_status="parsed",
+    )
+    db_session.add(document)
+    db_session.commit()
+    headers = auth_headers(user)
+    case_id = _create(client, headers, stock.id).json()["case"]["id"]
+    revision_body = _researching_revision()
+    revision_body["evidence"] = [
+        {
+            "source_type": "pdf_document",
+            "source_id": document.id,
+            "label": "Historical report",
+            "claim": "Revenue remained durable.",
+        }
+    ]
+    saved = client.post(
+        f"/api/v1/research/cases/{case_id}/revisions",
+        headers=headers,
+        json=revision_body,
+    )
+    assert saved.status_code == 200, saved.text
+
+    document.source_unavailable_at = datetime.now(timezone.utc)
+    db_session.commit()
+    head = client.get(f"/api/v1/research/cases/{case_id}", headers=headers)
+    history = client.get(
+        f"/api/v1/research/cases/{case_id}/revisions", headers=headers
+    )
+
+    assert head.status_code == 200, head.text
+    assert history.status_code == 200, history.text
+    head_evidence = head.json()["head_revision"]["evidence"][0]
+    history_evidence = history.json()["items"][0]["evidence"][0]
+    for evidence in (head_evidence, history_evidence):
+        assert evidence["access_status"] == "source_unavailable"
+        assert evidence["source_id"] == document.id
+        assert evidence["label"] == "Historical report"
+        assert evidence["claim"] == "Revenue remained durable."
+
+
 def test_create_is_idempotent_and_preserves_distinct_origins(
     client, db_session, user_factory, auth_headers
 ):
