@@ -1122,6 +1122,34 @@ retain their original semantics. PostgreSQL checks the same version-specific
 numeric identity against the retained occurrence/linkbase lineage. Supporting
 additional negated-label roles requires a separately reviewed extension.
 
+Parser `xbrl-lineage-v2.9` inherits v2.8 and adds the bounded
+`consolidated_empty_dimensions_v1` generated-statement candidate scope. It is
+eligible only for an explicitly consolidated, recognized income, comprehensive
+income, balance-sheet or cash-flow report, whose first table has no nested table
+and whose first heading matches the retained report name. If the document has
+additional tables, the first must be the unique table with exact `class="report"`;
+only that main table supplies scoped occurrences, not taxonomy-reference popups.
+Neither that table's concept/member
+targets nor the selected presentation role's locators may contain dimensional
+Axis/Member/Domain markers, or any axis/member local name actually present in
+the retained structured contexts (including custom names and prefix aliases).
+Equity reports and reports with unproven or mixed
+dimensional scope keep the earlier all-context candidate rule. In the proven
+scope, only empty-dimension raw candidates participate; multiple contexts/units
+or any other unresolved identity within that scope still fail closed. No raw
+fact is removed or changed and no dimensional canonical publication is added.
+
+Concept-wide rejection remains conservative within each of these two candidate
+scopes, across reports: a rejected unproven/dimensional report does not revoke
+an independently proven consolidated occurrence. This is scope separation, not
+source priority or a permission to prefer one conflicting value. Every new
+occurrence identifies the new scope in its existing locator. PostgreSQL rejects
+that marker on earlier parsers, nonempty raw dimensions, unsupported report
+types, mismatched retained names/headings or dimensional HTML. The trusted
+parser additionally checks the verified retained presentation linkbase; the
+database does not claim to read that file. All prior exact display, numeric,
+label and lineage guards continue to apply. Older parser behavior is unchanged.
+
 ### H.6 Point-in-time and supersession
 
 For cutoff `T`, a replay may use only:

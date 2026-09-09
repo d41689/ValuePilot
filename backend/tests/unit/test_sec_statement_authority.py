@@ -331,6 +331,52 @@ def test_generated_negated_label_preserves_raw_sign_and_requires_exact_role(
     assert occurrence.locator["scale_multiplier"] == "1000000"
 
 
+@pytest.mark.parametrize("variant,accepted", [
+    ("valid", True), ("old_version", False), ("unnamed", False),
+    ("equity", False), ("dimension_anchor", False), ("dimension_role", False),
+    ("duplicate_empty_context", False), ("dimensional_only", False),
+    ("wrong_title", False), ("custom_dimension_role", False),
+    ("reference_popups", True), ("two_report_tables", False),
+])
+def test_consolidated_candidate_scope_is_explicit_and_keeps_same_scope_conflicts(variant, accepted):
+    name = "CONSOLIDATED STATEMENTS OF CASH FLOWS"
+    html = _generated_statement_html().replace(b"CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS", name.encode())
+    pre = _presentation_linkbase()
+    candidates = [_generated_raw(), _generated_raw(raw_fact_id=12, context_id="retained", dimensions=(("axis", "member"),))]
+    if variant == "dimension_anchor":
+        html = html.replace(b"</table>", b"<tr><td><a onclick=\"Show.showAR(this, 'defref_us-gaap_StatementEquityComponentsAxis=us-gaap_RetainedEarningsMember', window)\">Retained earnings</a></td></tr></table>")
+    if variant == "dimension_role":
+        pre = pre.replace(b"</link:presentationLink>", b'<link:loc xlink:label="dim" xlink:href="a.xsd#us-gaap_SegmentAxis"/></link:presentationLink>')
+    if variant == "custom_dimension_role":
+        candidates[1] = _generated_raw(raw_fact_id=12, context_id="region", dimensions=({"kind":"explicit","axis":{"local_name":"Region","prefix":"custom"},"member":{"local_name":"North","prefix":"custom"}},))
+        pre = pre.replace(b"</link:presentationLink>", b'<link:loc xlink:label="dim" xlink:href="a.xsd#alias_Region"/></link:presentationLink>')
+    if variant == "duplicate_empty_context":
+        candidates.append(_generated_raw(raw_fact_id=13, context_id="other"))
+    if variant == "dimensional_only":
+        candidates = candidates[1:]
+    if variant == "wrong_title":
+        html = _generated_statement_html()
+    if variant in {"reference_popups", "two_report_tables"}:
+        html = html.replace(b'<table>', b'<table class="report">', 1)
+        other_class = b'authRefData' if variant == 'reference_popups' else b'report'
+        html = html.replace(b'</body>', b'<table class="'+other_class+b'"><tr><td>Taxonomy documentation</td></tr></table></body>')
+    result = parse_generated_statement_occurrences(
+        html, filename="R8.htm", statement_role="http://www.apple.com/role/Operations",
+        statement_type="equity" if variant == "equity" else "cash_flow",
+        report_name="" if variant == "unnamed" else name,
+        presentation_linkbase=pre, label_linkbase=_label_linkbase(), candidates=candidates,
+        presentation_artifact_id=21, presentation_sha256="1"*64,
+        label_artifact_id=22, label_sha256="2"*64, allow_partial=True,
+        allow_dimension_member_anchors=True,
+        allow_consolidated_candidate_scope=variant != "old_version",
+    )
+    assert bool(result.occurrences) is accepted
+    if accepted:
+        assert result.candidate_scope == "consolidated_empty_dimensions_v1"
+        assert result.occurrences[0].context_id == "c-18"
+        assert result.occurrences[0].locator["candidate_scope"] == result.candidate_scope
+
+
 def _generated_raw(**changes):
     values = dict(
         raw_fact_id=11,

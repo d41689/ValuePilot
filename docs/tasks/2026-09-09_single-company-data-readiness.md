@@ -253,3 +253,54 @@ derived quarter 的 `unresolved_derived_context_mismatch` 等拒绝未放宽；�
 上述两个契约变更尚未执行。当前仅完成数据准备与失败原因核实；PR #147 保持 Draft，不 merge。
 这次续跑没有新增生产代码修改，不声称新的完整 closing gate 或 S1 PASS；
 上方代码 gate 仍准确对应 `d2957032`，后续修复后必须重跑全套并补真实产品验收。
+
+### 必要性门槛与 v2.9 窄契约（续跑授权）
+
+用户追加授权：只有不改就无法达成完整最小计划的改动才执行。上一轮已产生真实数据和
+失败证据，属于 progress，而非无进展；本轮不重复申请同一必要修复授权。
+
+- 必要：parser/新 guard migration/测试。年度净利润 0/10，缺少最低三年分析基础；
+  手工填值或绕过 publication 均违反目标，不能代替修复。
+- 必要：currentness 与 S2 比较单元查询契约、测试及原页面；真实 handler 409 使数据不可读。
+  先完成 S1 parser，查询契约在实现前单独评审记录，不抬高常量。
+- 不必要：清理 Docker build contexts、扩抓其他公司、补全部离散季度、自动估值；本轮不改。
+
+进一步只读实测收紧了方案：AAPL FY2025 R3 实际包含 Product/Service 维度标记，不能用
+“合并损益表”标题猜测每个单元的维度。R8 现金流报表及对应 presentation role 均没有维度标记，
+可用其期初净利润行证明年度净利润；不需要实现带维度表的行/列展开算法。
+
+v2.9 仅增加 `consolidated_empty_dimensions_v1` 候选域：FilingSummary 的名称明确包含
+独立词 consolidated，且是已识别的 income/comprehensive/balance/cash-flow 主表（不含 equity）；
+生成 HTML 只有一个表，其首个标题单元与该名称对应；该表的 ShowAR targets 以及该 role 的
+全部 presentation locators 没有 Axis/Member/Domain 维度标记。仅在这个域内排除非空维度的
+instance candidates；同域的不同 context/unit/数值歧义仍按原规则拒绝。其它表不改变匹配语义。
+拒绝仍是 concept-wide，但按“明确无维度合并域 / 未证明域”隔离：同域任一拒绝撤销该域全部
+同 concept occurrence；未证明的分项表不能撤销已证明合并域的 occurrence。不是选来源优先级。
+
+自审：仅检查标题不足（R3 反例），因此加入整表及 role 的维度排除；仅按 report 隔离拒绝会
+漏掉同域矛盾，因此按上述两个域汇总；只取 dimensionless 前缀也不允许，同域候选必须完整。
+raw 数据、canonical mapping empty-only 定义、等价去重与旧 v2.8 行为均不改变。
+新 migration 扩展版本并拒绝旧版本使用新域标记；对新域强制空维度、支持的主表类型、
+retained 名称/HTML 标题和无维度标记校验，沿用 exact role/label/value/manifest 约束。
+presentation role 解析由已有可信 backend 对 retained SHA/size 验证后的 linkbase 执行，
+不另建签名、复制文件或伪称数据库读取了文件系统。
+
+测试顺序：先纯 parser 正/负及旧版测试 red；最小实现；真实 DB publication/错误域拒绝及
+migration round-trip；AAPL 同文件追加新版、发布和重复执行；最后完整 canonical gate。
+
+第二次自审补充：custom dimension 不一定以 Axis 结尾。新增反例先 red，再将 retained contexts
+中的实际 axis/member local name 纳入否定检查（只收紧资格，prefix alias 不会放行）；
+不把后缀启发式当作维度身份。DB 也拒绝 HTML 引用这些实际维度名的新域标记。
+当前数据库时钟另发现比上一轮已写入的 knowledge time 早约 31 分钟；不改时钟、不回填时间，
+继续在隔离 schema 完成必要测试，数据续跑需先再次确认实际时钟已越过保留记录的 knowledge time。
+
+真实 R8 包含一个 `class="report"` 主表和 70 个 taxonomy 说明/弹窗内表。
+单一 HTML table 假设不能恢复真实数据，已用这个证据收紧为“无嵌套的首表；多表文档必须是
+唯一 exact report class 主表”，限定 occurrence 必须来自主表。新增说明弹窗正例、双主表负例，
+DB 同样检查主表边界及 occurrence 原始 anchor fragment 属于该表。详细准则归属 PRD §H.5。
+
+v2.9 checkpoint：12 个候选域场景、8 个 negatedLabel 场景及真实 DB 发布/拒绝/跨域拒绝隔离
+定向回归通过；迁移 round-trip 通过。真实 FY2025 只读 resolver 已从 R4/R8 各恢复三个年度
+NetIncomeLoss occurrence：FY2025 112,010,000,000、FY2024 93,736,000,000、FY2023 96,995,000,000；
+R3 的产品/服务歧义和 R7 的分项拒绝保留，未写成 canonical 值。准备执行完整 gate，
+尚未声称新版 AAPL 全链路或 S1 通过。

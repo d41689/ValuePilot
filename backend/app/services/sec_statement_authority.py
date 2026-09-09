@@ -139,6 +139,7 @@ class GeneratedStatementResolution:
     occurrences: tuple[StatementOccurrence, ...]
     rejected_concepts: frozenset[str]
     rejections: tuple[GeneratedConceptRejection, ...]
+    candidate_scope: str = "all_contexts_v1"
 
 @dataclass(frozen=True)
 class ExplicitFiscalFocus:
@@ -677,6 +678,63 @@ def _period_matches(
     return False
 
 
+def _primary_generated_table(soup: BeautifulSoup) -> Tag | None:
+    tables = soup.find_all("table")
+    if not tables or tables[0].find("table") is not None:
+        return None
+    if len(tables) > 1 and (
+        tables[0].get("class") != ["report"]
+        or len(soup.find_all("table", class_="report")) != 1
+    ):
+        return None
+    return tables[0]
+
+
+def _consolidated_empty_dimensions_report(
+    soup: BeautifulSoup, report_name: str, statement_type: str | None,
+    presentation_linkbase: bytes, statement_role: str,
+    candidates: Sequence[RawOccurrenceIdentity],
+) -> bool:
+    """Only an explicitly consolidated, wholly non-dimensional primary table.
+
+    A consolidated title alone is insufficient: income statements can contain
+    product/member sub-tables. Such reports retain the original candidate scope.
+    """
+    name = " ".join(report_name.split())
+    if (statement_type not in {"income_statement", "comprehensive_income", "balance_sheet", "cash_flow"}
+        or re.search(r"\bconsolidated\b", name, re.I) is None
+        or _statement_type("", name, allow_compact_statement_names=True) != statement_type):
+        return False
+    table = _primary_generated_table(soup)
+    if table is None:
+        return False
+    heading = table.find("th")
+    if heading is None or not " ".join(heading.get_text(" ", strip=True).split()).upper().startswith(name.upper()):
+        return False
+    dimensional_names = {
+        qname["local_name"] for candidate in candidates for dimension in candidate.dimensions
+        if isinstance(dimension, dict) for field in ("axis", "member")
+        if isinstance(qname := dimension.get(field), dict) and qname.get("local_name")
+    }
+    if any(re.search(r"(?:Axis|Member|Domain)(?:\b|=)", a.get("onclick", ""))
+           for a in table.find_all("a")):
+        return False
+    # Custom dimensions need not use an Axis/Member suffix. Prefix aliases are
+    # not authority; a local-name collision only narrows eligibility here.
+    if any(target.split("_", 1)[-1] in dimensional_names
+           for a in table.find_all("a")
+           for target in re.findall(r"defref_([A-Za-z0-9_.-]+)", a.get("onclick", ""))):
+        return False
+    root = ET.fromstring(presentation_linkbase)  # already size/DTD/XML validated
+    links = [n for n in root.iter() if _local(n.tag) == "presentationlink"
+             and n.get(f"{_XLINK}role") == statement_role]
+    return bool(links) and not any(
+        (concept := _concept_from_fragment(n.get(f"{_XLINK}href") or "")).endswith(("Axis", "Member", "Domain"))
+        or concept.split(":", 1)[-1] in dimensional_names
+        for link in links for n in link if _local(n.tag) == "loc"
+    )
+
+
 def parse_generated_statement_occurrences(
     content: bytes,
     *,
@@ -695,6 +753,8 @@ def parse_generated_statement_occurrences(
     allow_balance_sheet_date_only_instant: bool = False,
     require_exact_raw_label_fragment: bool = False,
     allow_negated_label: bool = False,
+    report_name: str = "",
+    allow_consolidated_candidate_scope: bool = False,
 ) -> GeneratedStatementResolution:
     """Resolve SEC generated statement cells to one exact retained instance fact.
 
@@ -733,6 +793,12 @@ def parse_generated_statement_occurrences(
     )
     arcs, arc_rejections = _presentation_arcs(presentation_linkbase, statement_role)
     labels, label_rejections = _label_authorities(label_linkbase)
+    candidate_scope = "all_contexts_v1"
+    if allow_consolidated_candidate_scope and _consolidated_empty_dimensions_report(
+        soup, report_name, statement_type, presentation_linkbase, statement_role, candidates,
+    ):
+        candidate_scope = "consolidated_empty_dimensions_v1"
+        candidates = [candidate for candidate in candidates if not candidate.dimensions]
     items: list[StatementOccurrence] = []
     rejected_concepts = set(arc_rejections) | set(label_rejections)
     rejections = [
@@ -748,7 +814,10 @@ def parse_generated_statement_occurrences(
         rejected_concepts.add(concept)
         rejections.append(GeneratedConceptRejection(concept, reason, row, column))
 
-    for table in soup.find_all("table"):
+    report_tables = ([_primary_generated_table(soup)] if candidate_scope ==
+                     "consolidated_empty_dimensions_v1" else soup.find_all("table"))
+    for table in report_tables:
+        assert table is not None
         grid = _html_grid(table)
         table_title = " ".join(table.get_text(" ", strip=True).split())[:2000]
         for row_index, row in enumerate(grid, start=1):
@@ -956,6 +1025,8 @@ def parse_generated_statement_occurrences(
                     locator["anchor_start_tag_occurrence_count"] = (
                         anchor_start_tag_counts[anchor_start_tag]
                     )
+                if candidate_scope != "all_contexts_v1":
+                    locator["candidate_scope"] = candidate_scope
                 if require_exact_raw_label_fragment:
                     assert raw_anchor.inner_html is not None
                     assert raw_anchor.source_html is not None
@@ -992,7 +1063,7 @@ def parse_generated_statement_occurrences(
     if not items and not allow_partial:
         raise StatementAuthorityParseError("no_explicit_statement_occurrences")
     return GeneratedStatementResolution(
-        tuple(items), frozenset(rejected_concepts), tuple(rejections)
+        tuple(items), frozenset(rejected_concepts), tuple(rejections), candidate_scope
     )
 
 

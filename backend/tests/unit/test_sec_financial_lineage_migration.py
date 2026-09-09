@@ -317,6 +317,30 @@ def test_parser_v28_guard_migration_preserves_old_versions_and_round_trips() -> 
         drop_test_schema(_BASE_DATABASE_URL, schema)
 
 
+def test_parser_v29_guard_round_trip_and_dimension_scope_contract() -> None:
+    backend = Path(__file__).resolve().parents[2]
+    schema = new_test_schema_name()
+    url = build_isolated_database_url(_BASE_DATABASE_URL, schema)
+    create_test_schema(_BASE_DATABASE_URL, schema)
+    engine = create_engine(url)
+    def definition():
+        with engine.connect() as connection:
+            return connection.execute(text("SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname='guard_sec_statement_occurrence_insert'")).scalar_one()
+    try:
+        _alembic(backend, url, "upgrade", "20260909140000")
+        before = definition()
+        _alembic(backend, url, "upgrade", "20260909150000")
+        after = definition()
+        assert "consolidated_empty_dimensions_v1" in after
+        assert "xbrl-lineage-v2.9" in after and "xbrl-lineage-v2.8" in after
+        assert "generated statement consolidated scope mismatch" in after
+        _alembic(backend, url, "downgrade", "20260909140000")
+        assert definition() == before
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema)
+
+
 def test_statement_report_xml_helper_matches_ascii_whitespace_sgml_boundary() -> None:
     backend_dir = Path(__file__).resolve().parents[2]
     schema_name = new_test_schema_name()

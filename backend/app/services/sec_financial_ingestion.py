@@ -88,7 +88,8 @@ PARSER_V2_4 = "xbrl-lineage-v2.4"
 PARSER_V2_5 = "xbrl-lineage-v2.5"
 PARSER_V2_6 = "xbrl-lineage-v2.6"
 PARSER_V2_7 = "xbrl-lineage-v2.7"
-PARSER_V2 = "xbrl-lineage-v2.8"
+PARSER_V2_8 = "xbrl-lineage-v2.8"
+PARSER_V2 = "xbrl-lineage-v2.9"
 ARTIFACT_RETENTION_POLICY_V1 = "sec-financial-artifacts-v1"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v2"
 ANNUAL_FORMS_BY_REGIME = {
@@ -910,6 +911,7 @@ def _is_parser_v2(parser_version: str) -> bool:
         PARSER_V2_5,
         PARSER_V2_6,
         PARSER_V2_7,
+        PARSER_V2_8,
         PARSER_V2,
     }
 
@@ -919,6 +921,7 @@ def _is_sgml_instance_parser(parser_version: str) -> bool:
         PARSER_V2_1, PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5,
         PARSER_V2_6,
         PARSER_V2_7,
+        PARSER_V2_8,
         PARSER_V2,
     }
 
@@ -926,20 +929,20 @@ def _is_sgml_instance_parser(parser_version: str) -> bool:
 def _is_generated_statement_parser(parser_version: str) -> bool:
     return parser_version in {
         PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5, PARSER_V2_6,
-        PARSER_V2_7, PARSER_V2
+        PARSER_V2_7, PARSER_V2_8, PARSER_V2
     }
 
 
 def _is_parser_v24(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2}
+    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2}
 
 
 def _is_parser_v25(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2}
+    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2}
 
 
 def _is_parser_v26(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_6, PARSER_V2_7, PARSER_V2}
+    return parser_version in {PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2}
 
 
 def _artifact_retention_policy_version(parser_version: str) -> str:
@@ -2521,6 +2524,7 @@ def _parse_primary_artifact(
             presentation_content = None
             label_content = None
             rejected_generated_concepts: set[str] = set()
+            rejected_consolidated_concepts: set[str] = set()
             if _is_generated_statement_parser(parser_version) and any(
                 not reference.filename.lower().endswith(".xml")
                 for reference in references
@@ -2583,10 +2587,13 @@ def _parse_primary_artifact(
                             require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
-                            allow_negated_label=parser_version == PARSER_V2,
+                            allow_negated_label=parser_version in {PARSER_V2_8, PARSER_V2},
+                            report_name=reference.report_name,
+                            allow_consolidated_candidate_scope=parser_version == PARSER_V2,
                         )
                         occurrences = resolution.occurrences
-                        rejected_generated_concepts.update(
+                        (rejected_consolidated_concepts if resolution.candidate_scope ==
+                         "consolidated_empty_dimensions_v1" else rejected_generated_concepts).update(
                             resolution.rejected_concepts
                         )
                     else:
@@ -2633,10 +2640,13 @@ def _parse_primary_artifact(
                             require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
-                            allow_negated_label=parser_version == PARSER_V2,
+                            allow_negated_label=parser_version in {PARSER_V2_8, PARSER_V2},
+                            report_name=reference.report_name,
+                            allow_consolidated_candidate_scope=parser_version == PARSER_V2,
                         )
                         occurrences = resolution.occurrences
-                        rejected_generated_concepts.update(
+                        (rejected_consolidated_concepts if resolution.candidate_scope ==
+                         "consolidated_empty_dimensions_v1" else rejected_generated_concepts).update(
                             resolution.rejected_concepts
                         )
                     else:
@@ -2658,11 +2668,15 @@ def _parse_primary_artifact(
                     )
                 statement_evidence.extend((reference, report_artifact, occurrence) for occurrence in occurrences)
 
-            if rejected_generated_concepts:
+            if rejected_generated_concepts or rejected_consolidated_concepts:
                 statement_evidence = [
                     item
                     for item in statement_evidence
-                    if item[2].concept not in rejected_generated_concepts
+                    if item[2].concept not in (
+                        rejected_consolidated_concepts
+                        if item[2].locator.get("candidate_scope") == "consolidated_empty_dimensions_v1"
+                        else rejected_generated_concepts
+                    )
                 ]
 
             if _is_generated_statement_parser(parser_version) and not statement_evidence:
