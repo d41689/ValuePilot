@@ -569,6 +569,9 @@ stock price, user-authored note, and external HTTPS URL references.
 - A shared stock/fact ID cannot reveal another user's private document/snippet.
 - Revisions keep only the permitted minimal recorded claim and source metadata;
   proprietary excerpts stay behind original document access control.
+- Ordinary document removal archives retained bytes/extractions/facts and removes
+  that source from current report and derived projections. Owning-user historical
+  reads remain available only while current source authorization permits them.
 - A lost permission/source renders `source_unavailable`; historical claims are
   not silently replaced by current data.
 - External URLs accept normalized HTTPS only, are never server-fetched, render

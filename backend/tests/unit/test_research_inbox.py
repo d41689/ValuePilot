@@ -375,7 +375,7 @@ def test_multiday_unchanged_coverage_is_stable_but_method_review_supersedes(
     assert [action.id for action in unchanged] == initial_ids
     assert db_session.query(ResearchInboxActionEvent).count() == initial_event_count
 
-    review_company_classification(
+    review = review_company_classification(
         db_session,
         reviewer_user_id=user.id,
         stock_id=stock.id,
@@ -384,11 +384,12 @@ def test_multiday_unchanged_coverage_is_stable_but_method_review_supersedes(
         review_reason="Reviewed classification for coverage authority.",
     )
     db_session.commit()
+    post_review_evaluation = review.known_at + timedelta(seconds=1)
     regenerate_inbox(
         db_session,
         user_id=user.id,
         as_of=date(2026, 9, 9),
-        evaluated_at=datetime(2026, 9, 9, 15, tzinfo=timezone.utc),
+        evaluated_at=post_review_evaluation,
     )
 
     valuation_actions = (

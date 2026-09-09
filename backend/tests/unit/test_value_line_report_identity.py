@@ -799,6 +799,61 @@ def test_same_report_date_equal_values_are_not_an_actual_value_conflict(db_sessi
     ) == []
 
 
+def test_actual_conflicts_exclude_newer_archived_report(db_session):
+    user = User(email="actual-conflict-archived@example.com")
+    stock = Stock(ticker="ACARCH", exchange="NYSE", company_name="Archived Conflict")
+    db_session.add_all([user, stock])
+    db_session.flush()
+    current_document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="current.pdf",
+        report_date=date(2026, 1, 1),
+    )
+    archived_document = _document(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        name="archived.pdf",
+        report_date=date(2026, 2, 1),
+    )
+    archived_document.archived_at = datetime.utcnow()
+    _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=current_document.id,
+        value=100,
+        is_current=True,
+    )
+    _actual_fact(
+        db_session,
+        user_id=user.id,
+        stock_id=stock.id,
+        document_id=archived_document.id,
+        value=120,
+        is_current=True,
+    )
+    db_session.commit()
+    cutoff = database_evaluation_cutoff(db_session)
+    active = resolve_active_reports(
+        db_session,
+        stock_ids=[stock.id],
+        current_user_id=user.id,
+        knowledge_cutoff=cutoff,
+    )[stock.id]
+
+    assert active.document_id == current_document.id
+    assert detect_actual_conflicts(
+        db_session,
+        stock_id=stock.id,
+        active_report=active,
+        current_user_id=user.id,
+        knowledge_cutoff=cutoff,
+    ) == []
+
+
 @pytest.mark.parametrize("visibility_loss", ["source", "owner"])
 def test_report_authority_requires_current_source_visibility(
     db_session, visibility_loss

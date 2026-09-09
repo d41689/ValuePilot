@@ -36,6 +36,14 @@ class PdfDocument(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     stock_id: Mapped[Optional[int]] = mapped_column(ForeignKey("stocks.id"), nullable=True)
     identity_needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Retirement is orthogonal to source authorization: archived reports leave
+    # current projections but remain readable history until authorization is lost.
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source_unavailable_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     user: Mapped["User"] = relationship("User")
     stock: Mapped[Optional["Stock"]] = relationship("Stock")

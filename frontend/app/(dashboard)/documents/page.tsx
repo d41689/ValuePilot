@@ -280,15 +280,15 @@ export default function DocumentsPage() {
       }
       documentsQuery.refetch();
       toast({
-        title: 'Document deleted',
-        description: 'The document and its parsed data were removed.',
+        title: 'Document archived',
+        description: 'The document was removed from current analysis; its history was retained.',
       });
     },
     onError: (error: unknown) => {
       setActiveDeleteId(null);
       toast({
         title: 'Delete failed',
-        description: getErrorMessage(error, 'Unable to delete document.'),
+        description: getErrorMessage(error, 'Unable to archive document.'),
         variant: 'destructive',
       });
     },
@@ -296,7 +296,7 @@ export default function DocumentsPage() {
 
   const handleDelete = (doc: DocumentRow) => {
     const confirmed = window.confirm(
-      `Delete document #${doc.id} (${doc.file_name}) and its parsed data?`
+      `Archive document #${doc.id} (${doc.file_name})? Its historical evidence will be retained.`
     );
     if (!confirmed) return;
     setActiveDeleteId(doc.id);

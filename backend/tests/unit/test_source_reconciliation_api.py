@@ -617,7 +617,7 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     db_session.flush()
     valid_doc = _document(user_id=user.id, stock_id=stock.id)
     revoked_doc = _document(user_id=user.id, stock_id=stock.id, suffix="-revoked")
-    revoked_doc.parse_status = "failed"
+    revoked_doc.source_unavailable_at = datetime.now(timezone.utc)
     db_session.add_all([valid_doc, revoked_doc])
     db_session.flush()
     mapping_version = IngestionService(
@@ -702,8 +702,12 @@ def test_reconciliation_excludes_post_cutoff_and_revoked_source_authority(
     assert valid.id in payload["eligible_fact_ids"]
     reasons = {row["fact_id"]: row["reason_code"] for row in payload["excluded"]}
     assert reasons[post_cutoff.id] == "fact_known_after_cutoff"
-    assert reasons[revoked.id] == "source_unauthorized"
+    assert reasons[revoked.id] == "source_revoked"
     assert reasons[retired.id] == "source_retired"
+    revoked_output = next(
+        row for row in payload["excluded"] if row["fact_id"] == revoked.id
+    )
+    assert "value_numeric" not in revoked_output
 
     future = client.get(
         f"/api/v1/stocks/{stock.id}/source-reconciliation",

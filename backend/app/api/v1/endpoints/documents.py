@@ -211,6 +211,27 @@ DOCUMENT_LIST_RESPONSE_HEADERS = {
 }
 
 
+def _require_source_available(document: PdfDocument) -> None:
+    if document.source_unavailable_at is not None:
+        error = ValueLineSourceUnavailableError()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+
+
+def _require_current_document(document: PdfDocument) -> None:
+    _require_source_available(document)
+    if document.archived_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "document_archived",
+                "message": "Archived documents cannot be changed.",
+            },
+        )
+
+
 @router.get(
     "",
     response_model=list[dict],
@@ -318,13 +339,19 @@ def list_documents(
         legacy_offset = offset or 0
         total = session.scalar(
             select(func.count(PdfDocument.id)).where(
-                PdfDocument.user_id == user_id
+                PdfDocument.user_id == user_id,
+                PdfDocument.archived_at.is_(None),
+                PdfDocument.source_unavailable_at.is_(None),
             )
         ) or 0
         effective_limit = limit or MAX_ACTIVE_REPORT_AUTHORITY_ITEMS
         docs = session.scalars(
             select(PdfDocument)
-            .where(PdfDocument.user_id == user_id)
+            .where(
+                PdfDocument.user_id == user_id,
+                PdfDocument.archived_at.is_(None),
+                PdfDocument.source_unavailable_at.is_(None),
+            )
             .order_by(
                 PdfDocument.upload_time.desc().nulls_last(),
                 PdfDocument.id.desc(),
@@ -648,6 +675,7 @@ def reparse_document(
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != user_id:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_current_document(doc)
 
     service = IngestionService(session)
     try:
@@ -681,6 +709,24 @@ def delete_document(
     return result
 
 
+@router.post("/{document_id}/source-unavailable", response_model=dict)
+def mark_document_source_unavailable(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    document_id: int,
+) -> Any:
+    """Make retained proprietary source content permanently unreadable."""
+
+    result = DocumentDedupeService(session).mark_source_unavailable(
+        user_id=current_user.id,
+        document_id=document_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return result
+
+
 @router.get("/{document_id}/download")
 def download_document(
     *,
@@ -691,6 +737,7 @@ def download_document(
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_source_available(doc)
 
     file_path = Path(doc.file_storage_key)
     if not file_path.is_file():
@@ -719,6 +766,8 @@ def compare_documents(
         raise HTTPException(status_code=404, detail="Left document not found")
     if not right_doc or right_doc.user_id != user_id:
         raise HTTPException(status_code=404, detail="Right document not found")
+    _require_source_available(left_doc)
+    _require_source_available(right_doc)
 
     left_stock_ids = _document_stock_ids(session, left_doc)
     right_stock_ids = _document_stock_ids(session, right_doc)
@@ -779,6 +828,7 @@ def read_document_raw_text(
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != user_id:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_source_available(doc)
 
     raw_text = doc.raw_text
     if raw_text is None:
@@ -807,6 +857,7 @@ def read_document_evidence(
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != user_id:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_source_available(doc)
 
     taxonomy = _load_value_line_taxonomy()
     evidence_reads = taxonomy.get("evidence_reads", {})
@@ -880,6 +931,7 @@ def read_document_review(
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_source_available(doc)
 
     facts = _document_review_selected_facts(session, doc)
     stock_ids = sorted({fact.stock_id for fact in facts if fact.stock_id is not None})
@@ -963,6 +1015,7 @@ def correct_document_review_fact(
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_current_document(doc)
 
     fact = session.get(MetricFact, fact_id)
     if not fact or fact.user_id != current_user.id:

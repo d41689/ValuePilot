@@ -21,7 +21,7 @@ from app.services.evaluation_snapshot import (
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import (
     ValueLineSourceUnavailableError,
-    current_value_line_source_available_predicate,
+    current_value_line_report_predicate,
     current_value_line_source_unavailable_predicate,
 )
 
@@ -287,7 +287,7 @@ def resolve_active_reports(
         .where(
             *scope,
             *temporal_authority,
-            current_value_line_source_available_predicate(),
+            current_value_line_report_predicate(),
         )
         .distinct()
         .order_by(

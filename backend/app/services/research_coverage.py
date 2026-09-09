@@ -9,6 +9,9 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
+from app.services.value_line_source_visibility import (
+    current_value_line_document_predicate,
+)
 from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
 from app.models.research import ResearchCase
@@ -270,6 +273,7 @@ def _value_line_requirement(
             PdfDocument.stock_id == stock.id,
             PdfDocument.parse_status == "parsed",
             func.lower(PdfDocument.source).like("%value%line%"),
+            current_value_line_document_predicate(),
         )
         .order_by(
             PdfDocument.report_date.desc().nullslast(),

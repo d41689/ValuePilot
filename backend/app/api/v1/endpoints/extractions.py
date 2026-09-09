@@ -16,6 +16,7 @@ from app.services.manual_metric_correction import (
     ManualMetricCorrectionError,
     create_manual_metric_correction,
 )
+from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 
 router = APIRouter()
 
@@ -37,6 +38,7 @@ def read_document_extractions(
     doc = session.get(PdfDocument, document_id)
     if not doc or doc.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Document not found")
+    _require_source_available(doc)
 
     stmt = select(MetricExtraction).where(MetricExtraction.document_id == document_id)
     extractions = session.scalars(stmt).all()
@@ -70,6 +72,10 @@ def correct_extraction(
         raise HTTPException(status_code=404, detail="Extraction not found")
     if extraction.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Extraction not found")
+    document = session.get(PdfDocument, extraction.document_id)
+    if document is None or document.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Extraction not found")
+    _require_current_document(document)
 
     try:
         source_fact = _resolve_canonical_fact_for_extraction(
@@ -103,6 +109,27 @@ def correct_extraction(
         "normalized_value": fact.value_numeric,
         "unit": fact.unit,
     }
+
+
+def _require_source_available(document: PdfDocument) -> None:
+    if document.source_unavailable_at is not None:
+        error = ValueLineSourceUnavailableError()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+
+
+def _require_current_document(document: PdfDocument) -> None:
+    _require_source_available(document)
+    if document.archived_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "document_archived",
+                "message": "Archived documents cannot be changed.",
+            },
+        )
 
 
 def _resolve_canonical_fact_for_extraction(

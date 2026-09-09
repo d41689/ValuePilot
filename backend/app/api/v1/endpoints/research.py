@@ -31,6 +31,7 @@ from app.services.research_cases import (
     serialize_case,
     serialize_origin,
     serialize_revision,
+    serialize_revision_with_evidence_access,
 )
 from app.services.research_inbox import (
     ResearchInboxError,
@@ -189,7 +190,16 @@ def get_case(
     return {
         "case": serialize_case(case, stock),
         "origins": [serialize_origin(origin) for origin in origins],
-        "head_revision": serialize_revision(head) if head else None,
+        "head_revision": (
+            serialize_revision_with_evidence_access(
+                session,
+                user_id=current_user.id,
+                stock_id=case.stock_id,
+                revision=head,
+            )
+            if head
+            else None
+        ),
     }
 
 
@@ -274,7 +284,15 @@ def list_revisions(
         .all()
     )
     return {
-        "items": [serialize_revision(revision) for revision in revisions],
+        "items": [
+            serialize_revision_with_evidence_access(
+                session,
+                user_id=current_user.id,
+                stock_id=case.stock_id,
+                revision=revision,
+            )
+            for revision in revisions
+        ],
         "total": total,
         "offset": offset,
         "limit": limit,

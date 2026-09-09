@@ -129,6 +129,20 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `docs/architecture/coverage-source-policy.md`
 - **Issue:** —
 
+#### 2026-09-09 delivery scope decision
+
+Issue #137 now delivers only document/evidence archival and unavailable-source
+history behavior. For this personal application, the user explicitly deferred
+account deletion/erasure and the R26 remaining-writer inventory. Those future
+privacy obligations remain open; this delivery must not be cited as completing
+them. Existing account-erasure guards remain preserved.
+
+The archival slice is resolved by PR #145: ordinary removal retains bytes and
+lineage, reconciles current projections, keeps authorized history readable, and
+returns typed `source_unavailable` after source withdrawal. Account erasure,
+the R26 inventory, and their concurrency acceptance remain open under the
+deferral above.
+
 ### FT-03 — SEC issuer identity, authorized acquisition, raw lineage, and PIT replay
 - **Found:** 2026-08-27, PO real-data review; adversarial review VG-02/VG-06
 - **Severity:** high (without authorized, replayable primary filings later facts
@@ -217,9 +231,10 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   without FX, form-first period classification, ordered exact parse-authority
   sets, compatible exact derived-quarter inputs, slot-level amendments, shared
   SEC ownership, exact NUMERIC publication, PIT, SEC-only per-period current
-  slots, provenance and fail-closed consumer behavior before FT-06. No
-  publication migration, service, API, gold-set fact, or production activation
-  is implemented yet; this item remains open.
+  slots, provenance and fail-closed consumer behavior before FT-06. PR #132 has
+  since merged the bounded publication implementation (migration, service, and
+  API). This item remains open until the locked 24-case acceptance and gold-set
+  evidence satisfy the criteria below.
 - **Acceptance criteria:**
   - Metric keys, units, normalization, period semantics, source roles, and
     mapping rules are approved in `metric_facts_mapping_spec.yml`; schema, APIs,

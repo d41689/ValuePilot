@@ -1206,11 +1206,14 @@ def materialize_reconciliation_candidates(
                 # pages.  Persisted failed documents remain unavailable.
                 and document.parse_status in {"parsing", "parsed", "parsed_partial"}
                 and not document.identity_needs_review
+                and document.source_unavailable_at is None
                 and (document.stock_id is None or document.stock_id == fact.stock_id)
                 and _aware(document.upload_time) <= knowledge_cutoff
                 and run_authorized
             )
             authorization_state = "authorized" if authorized else "unauthorized"
+            if document is not None and document.source_unavailable_at is not None:
+                authorization_state = "revoked"
             if parse_run is not None:
                 known_at = max(
                     known_at,
