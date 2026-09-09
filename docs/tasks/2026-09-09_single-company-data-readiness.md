@@ -90,6 +90,16 @@ PRD §H.3–H.7、§H.9–H.11；mapping spec；source policy；
   `EDGAR_FETCH_MODE=replay`，关闭上述四项及研究/通知调度；不修改仓库默认配置或生产。
   已重建并确认 api 挂载本工作树；开发库已从 `20260909120000` 升至 `20260909140000`。
   后续重启若不指定这个 override 会恢复默认配置；本轮验收期间保留离线运行。
+- 聚焦四文件回归与全套启动重叠时，读取 `pg_database_size` 出现一次 `Cannot allocate memory`。
+  已用 SIGINT 停止本任务自己的重复聚焦容器（167 passed 后中断，不计为全套通过），
+  仅保留 canonical 后端测试；未停止其他项目容器、未重启共享 Postgres。
+  后续同一只读查询成功返回 4,887,606,975 bytes。此时开发库 SEC parse/facts 仍为 0，
+  目标已有存储为 1,323,339,985 bytes，未开始 AAPL 导入；这些读数不是导入完成证据。
+- 修复 checkpoint `1e69c899` 已 commit/push 至 Draft PR #147；完整测试结果待下方 closing sign-off。
+- 全套回归发现 gold acceptance 的静态当前版本断言仍为 v2.7。
+  单独重现为 `ACCEPTANCE_PARSER_VERSION` 实际 v2.8、期望 v2.7 的失败；
+  该常量原本就引用当前 parser，更新测试的明确版本锁定至本次已批准的 v2.8。
+  不更改 mapping/method-policy/21-metric 分母，不改写任何旧 gold 运行或报告。
 
 ## Test plan / sign-off
 
