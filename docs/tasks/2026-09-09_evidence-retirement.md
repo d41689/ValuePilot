@@ -123,3 +123,7 @@ gate commands:
 - 2026-09-09: follow-up review found direct revision-history serialization and
   source reconciliation did not apply current source withdrawal. Both now use
   typed access/exclusion overlays without changing the stored historical claim.
+- 2026-09-09: the first complete backend run exposed an isolated-migration HEAD
+  fixture that predated the new document columns and a fixed-clock inbox test
+  that evaluated before the database-known method review. The compatibility and
+  point-in-time fixtures were corrected without changing production authority.
