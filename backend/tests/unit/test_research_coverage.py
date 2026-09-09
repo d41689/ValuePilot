@@ -90,19 +90,19 @@ def _price(db_session, stock: Stock, *, price_date: date) -> None:
     db_session.flush()
 
 
-def _value_line_doc(db_session, user_id: int, stock: Stock, *, report_date: date) -> None:
-    db_session.add(
-        PdfDocument(
-            user_id=user_id,
-            stock_id=stock.id,
-            file_name=f"{stock.ticker}.pdf",
-            source="Value Line",
-            file_storage_key=f"test/{user_id}/{stock.id}.pdf",
-            parse_status="parsed",
-            report_date=report_date,
-        )
+def _value_line_doc(db_session, user_id: int, stock: Stock, *, report_date: date) -> PdfDocument:
+    document = PdfDocument(
+        user_id=user_id,
+        stock_id=stock.id,
+        file_name=f"{stock.ticker}.pdf",
+        source="Value Line",
+        file_storage_key=f"test/{user_id}/{stock.id}.pdf",
+        parse_status="parsed",
+        report_date=report_date,
     )
+    db_session.add(document)
     db_session.flush()
+    return document
 
 
 def test_coverage_priority_persists_explainable_user_scoped_requirements(
@@ -191,6 +191,39 @@ def test_value_line_freshness_is_user_scoped_and_stale_is_not_ready(
     assert requirement.state == "stale"
     assert requirement.evidence_json["report_date"] == "2026-01-01"
     assert requirement.source_ref_id is not None
+
+
+@pytest.mark.parametrize("lifecycle_field", ["archived_at", "source_unavailable_at"])
+def test_retired_value_line_document_does_not_satisfy_current_coverage(
+    db_session, user_factory, lifecycle_field
+):
+    from app.services.research_coverage import evaluate_research_coverage
+
+    user = user_factory(email=f"coverage-{lifecycle_field}@example.com")
+    stock = _stock(db_session, f"RET{lifecycle_field[0].upper()}")
+    _watchlist(db_session, user.id, stock)
+    document = _value_line_doc(
+        db_session, user.id, stock, report_date=date(2026, 7, 1)
+    )
+    setattr(document, lifecycle_field, datetime.now(timezone.utc))
+    db_session.commit()
+
+    evaluate_research_coverage(
+        db_session, user_id=user.id, as_of=date(2026, 7, 20)
+    )
+
+    requirement = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="value_line_current_report",
+        )
+        .one()
+    )
+    assert requirement.state == "missing"
+    assert requirement.reason_code == "value_line_report_missing"
+    assert requirement.source_ref_id is None
 
 
 def test_coverage_api_never_returns_another_users_projection(

@@ -27,7 +27,7 @@ from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import (
     ValueLineSourceUnavailableError,
-    current_value_line_source_available_predicate,
+    current_value_line_report_predicate,
     current_value_line_source_unavailable_predicate,
 )
 
@@ -247,7 +247,7 @@ def detect_actual_conflicts(
         .where(
             *scope,
             *temporal_authority,
-            current_value_line_source_available_predicate(),
+            current_value_line_report_predicate(),
         )
         .order_by(MetricFact.id.asc())
         .limit(MAX_ACTUAL_CONFLICT_OBSERVATIONS + 1)

@@ -660,6 +660,51 @@ def test_archived_and_unavailable_documents_leave_current_list_and_fail_closed_r
     assert cross_user.status_code == 404
 
 
+def test_extraction_content_and_corrections_obey_document_retirement(
+    client, db_session, user_factory, auth_headers
+):
+    user = user_factory("retired-extractions@example.com")
+    document = PdfDocument(
+        user_id=user.id,
+        file_name="retired-extractions.pdf",
+        source="upload",
+        file_storage_key="retained/retired-extractions.pdf",
+        parse_status="parsed",
+        upload_time=datetime.utcnow(),
+    )
+    db_session.add(document)
+    db_session.flush()
+    extraction = MetricExtraction(
+        user_id=user.id,
+        document_id=document.id,
+        page_number=1,
+        field_key="is.net_income",
+        raw_value_text="100",
+        original_text_snippet="Net income 100",
+    )
+    db_session.add(extraction)
+    db_session.commit()
+    headers = auth_headers(user)
+
+    document.archived_at = datetime.utcnow()
+    db_session.commit()
+    correction = client.post(
+        f"/api/v1/extractions/{extraction.id}/correct",
+        headers=headers,
+        json={"corrected_value": "101"},
+    )
+    assert correction.status_code == 409
+    assert correction.json()["detail"]["code"] == "document_archived"
+
+    document.source_unavailable_at = datetime.utcnow()
+    db_session.commit()
+    read = client.get(
+        f"/api/v1/extractions/document/{document.id}", headers=headers
+    )
+    assert read.status_code == 409
+    assert read.json()["detail"]["code"] == "source_unavailable"
+
+
 def test_delete_document_requires_owner(client, db_session, user_factory, auth_headers):
     owner = user_factory("documents_delete_owner@example.com")
     intruder = user_factory("documents_delete_intruder@example.com")

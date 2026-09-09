@@ -281,7 +281,7 @@ export default function DocumentsPage() {
       documentsQuery.refetch();
       toast({
         title: 'Document archived',
-        description: 'The document and its parsed data were removed.',
+        description: 'The document was removed from current analysis; its history was retained.',
       });
     },
     onError: (error: unknown) => {

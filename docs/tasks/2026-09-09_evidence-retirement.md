@@ -116,3 +116,7 @@ gate commands:
   fields, delete still physically removed the document, and archived history was
   unreadable). The first focused green checkpoint passed 102 document, cursor,
   research-case, dedupe, and reparse tests.
+- 2026-09-09: adversarial review of `f69e6664` found four direct lifecycle
+  consumers. Extraction reads/corrections, coverage readiness, actual-conflict
+  selection, and the archive toast now share the retirement contract; four
+  focused regressions pass.
