@@ -49,3 +49,8 @@ Tests first, in Docker:
 - 2026-09-09: final cross-delivery review found two consumers carrying narrower
   source-label rules than `current_value_line_document_predicate`. Keep the
   canonical policy authoritative; do not broaden lifecycle or lineage rules.
+- 2026-09-09: read-only follow-up review required current Value Line coverage
+  projection to revalidate lifecycle and the 120-day report boundary at one
+  request cutoff, with kind-specific reason and next-action vocabulary. List,
+  workspace, and Inbox regressions now exercise the same outcomes; 86 focused
+  coverage, Inbox, workspace, and reconciliation tests pass.

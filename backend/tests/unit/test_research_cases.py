@@ -1314,6 +1314,8 @@ def test_workspace_combines_user_owned_fundamentals_valuation_coverage_and_publi
     coverage.state = "ready"
     coverage.reason_code = None
     coverage.reason = "Current report exists."
+    coverage.source_type = "value_line"
+    coverage.source_ref_id = owner_doc.id
     coverage.evaluated_at = datetime(2026, 7, 20, tzinfo=timezone.utc)
     db_session.commit()
 

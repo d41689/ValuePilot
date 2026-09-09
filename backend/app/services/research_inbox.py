@@ -237,6 +237,7 @@ def _desired_actions(
                         "coverage_requirement_id": requirement["id"],
                         "kind": requirement["kind"],
                         "state": requirement["state"],
+                        "reason_code": requirement["reason_code"],
                         "reason": requirement["reason"],
                         "source_type": requirement["source_type"],
                         "source_ref_id": requirement["source_ref_id"],

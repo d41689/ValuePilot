@@ -722,6 +722,13 @@ def _projection_state(row: ResearchCoverageRequirement, blocker_reason: str | No
         return "missing"
     if blocker_reason == "value_line_report_missing":
         return "missing"
+    if blocker_reason == "value_line_report_older_than_policy":
+        return "stale"
+    if blocker_reason in {
+        "value_line_report_date_missing",
+        "value_line_report_date_in_future",
+    }:
+        return "failed"
     return "blocked"
 
 
@@ -739,6 +746,18 @@ def _projection_reason(blocker_reason: str) -> str:
         ),
         "value_line_report_missing": (
             "No current parsed Value Line report owned by this user covers the stock."
+        ),
+        "value_line_report_older_than_policy": (
+            "The latest Value Line report is older than the 120-day policy."
+        ),
+        "value_line_report_date_missing": (
+            "The parsed report has no source-backed report date."
+        ),
+        "value_line_report_date_in_future": (
+            "The report date is later than the coverage evaluation date."
+        ),
+        "source_unavailable": (
+            "The retained Value Line source is no longer readable."
         ),
     }.get(
         blocker_reason,
@@ -800,6 +819,16 @@ def _serialize_requirement(
         "next_action": (
             row.next_action
             if blocker_reason is None
+            else "upload_value_line_report"
+            if blocker_reason in {
+                "value_line_report_missing",
+                "value_line_report_older_than_policy",
+            }
+            else "review_document"
+            if blocker_reason in {
+                "value_line_report_date_missing",
+                "value_line_report_date_in_future",
+            }
             else "review_source_authorization"
             if projected_state == "inaccessible"
             else "refresh_eod_price"
@@ -845,6 +874,8 @@ def serialize_requirements(
         .all()
     }
 
+    projection_date = evaluation_business_date(projection_time)
+
     def value_line_blocker(row: ResearchCoverageRequirement) -> str | None:
         if row.kind != "value_line_current_report" or row.state != "ready":
             return None
@@ -863,6 +894,13 @@ def serialize_requirements(
             or document.source_unavailable_at is not None
         ):
             return "source_unavailable"
+        if document.report_date is None:
+            return "value_line_report_date_missing"
+        age_days = (projection_date - document.report_date).days
+        if age_days < 0:
+            return "value_line_report_date_in_future"
+        if age_days > VALUE_LINE_MAX_AGE_DAYS:
+            return "value_line_report_older_than_policy"
         return None
 
     return [
