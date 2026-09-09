@@ -2,7 +2,7 @@
 
 日期：2026-09-09
 
-状态：已批准的 negatedLabel 修复已实现，开发库已升级；完整回归验收中。
+状态：已批准的 negatedLabel 修复已通过完整代码验收，开发库已升级。
 尚未向开发库导入 AAPL 财务，未外部拉取；S1 尚未完成。
 
 ## Goal / Acceptance Criteria
@@ -100,6 +100,18 @@ PRD §H.3–H.7、§H.9–H.11；mapping spec；source policy；
   单独重现为 `ACCEPTANCE_PARSER_VERSION` 实际 v2.8、期望 v2.7 的失败；
   该常量原本就引用当前 parser，更新测试的明确版本锁定至本次已批准的 v2.8。
   不更改 mapping/method-policy/21-metric 分母，不改写任何旧 gold 运行或报告。
+- 第一轮 canonical 后端完整结果：2,756 passed / 1 failed，耗时 1,146.35 秒；
+  唯一失败即上述版本断言，单独修正复测 1 passed。补充提交 `d2957032` 已 push；
+  已重新开始完整 closing gate，不将第一轮结果称为通过。
+
+### 数据准备仍未执行的检查点
+
+- 开发库唯一 AAPL 记录为 stock 66，`exchange/market_country=US`、
+  `listing_exchange=NULL`、公司名 `APPLE INC`，尚无该 CIK 的 reviewed issuer identity。
+  数据准备时须将已批准的 AAPL / XNAS / CIK 0000320193 与该现有记录明确核对，
+  不能把 legacy `US` 标签声称为已经验证的 listing，也不能为绕过它换公司。
+- 新增 AAPL lineage、normalization、canonical publication、重复执行和页面可读性仍待验证。
+  此次 negatedLabel 修复通过不等于 S1 或完整 Beta 已完成。
 
 ## Test plan / sign-off
 
@@ -129,4 +141,28 @@ docker compose exec -T web npm run lint
 docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'
 ```
 
-另做 `git diff --check`、实际数据证据核对及用户浏览器验收。以上本轮均未声称完成。
+另做 `git diff --check`、实际数据证据核对及用户浏览器验收；代码修复的结果如下。
+浏览器流程和开发库真实财务发布仍未验收，不能据此宣布 S1 完成。
+
+## negatedLabel 修复 closing sign-off
+
+2026-09-09，应用代码/测试提交 `d2957032`（包含 `1e69c899`），使用上文离线运行期 override。
+第二轮按顺序原样执行 canonical commands：
+
+| 检查 | 结果 |
+| --- | --- |
+| `docker compose up -d --build` | PASS |
+| `docker compose exec -T api alembic upgrade head` | PASS；head `20260909140000` |
+| `docker compose exec -T api pytest -q` | **2,757 passed**，940.12 秒 |
+| `docker compose exec -T web sh -lc 'node --test lib/*.test.js'` | **233 passed** |
+| `docker compose exec -T web npm run lint` | PASS |
+| `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'` | PASS |
+| `git diff --check` | PASS |
+
+后端只有既有 Starlette/httpx 与 anyio deprecation warnings；本轮前端构建成功。
+自审检查了精确角色、反号/金额不匹配、旧版本行为、实际数据库拒绝、迁移可逆性及有历史时拒绝降级；
+版本断言修正后未发现其他本项范围内问题。这是本 agent 自审，不声称第三方已独立 review。
+
+最终只读确认：开发库 SEC parse runs=0、metric facts=0；运行模式为 replay，SEC/13F 调度和 worker 关闭。
+保留验收库/文件未修改、SEC 外部请求为零、生产未修改、未 merge。
+PR #147 保持 Draft：S1 数据回放、canonical publication 和用户可读性尚未完成。
