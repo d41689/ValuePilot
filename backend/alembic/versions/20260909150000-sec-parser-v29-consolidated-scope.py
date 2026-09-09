@@ -31,8 +31,10 @@ SCOPE_GUARD = r"""        IF NEW.locator_json ? 'candidate_scope' THEN
                OR (SELECT count(*) FROM regexp_matches(report_text,
                    '<table[^>]*[[:space:]]class=[''"]report[''"]','gi'))<>1)
           THEN RAISE EXCEPTION 'generated statement consolidated scope mismatch'; END IF;
-          report_text:=coalesce((regexp_match(report_text,
-              '(<table(?:[[:space:]][^>]*)?>.*?</table>)','is'))[1],'');
+          -- PostgreSQL POSIX greediness can span footer tables despite .*?.
+          -- Nested tables are excluded below; use the first exact close tag.
+          report_text:=substring(report_text from position('<table' in lower(report_text)));
+          report_text:=left(report_text,position('</table>' in lower(report_text))+7);
           IF run.parser_version<>'xbrl-lineage-v2.9'
              OR NEW.locator_json->>'candidate_scope' IS DISTINCT FROM 'consolidated_empty_dimensions_v1'
              OR fact.dimensions_structured_json IS DISTINCT FROM '[]'::jsonb

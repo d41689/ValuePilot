@@ -304,3 +304,8 @@ v2.9 checkpoint：12 个候选域场景、8 个 negatedLabel 场景及真实 DB 
 NetIncomeLoss occurrence：FY2025 112,010,000,000、FY2024 93,736,000,000、FY2023 96,995,000,000；
 R3 的产品/服务歧义和 R7 的分项拒绝保留，未写成 canonical 值。准备执行完整 gate，
 尚未声称新版 AAPL 全链路或 S1 通过。
+
+随后把真实 taxonomy 弹窗形状加入 DB 夹具，暴露 PostgreSQL POSIX 匹配跨越尾随表的差异：
+`.*?` 并未将 whole match 限在首个 `</table>`，两个新增 DB 场景失败。
+只读 SQL 独立复现选中了 3 个 table。尚未应用到共享库的 v2.9 新迁移改为首个明确结束标签，
+并继续拒绝主表嵌套；这不是放宽数值或来源约束。该 checkpoint 不代表 closing gate 通过。
