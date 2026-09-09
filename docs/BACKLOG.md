@@ -129,6 +129,14 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   `docs/architecture/coverage-source-policy.md`
 - **Issue:** —
 
+#### 2026-09-09 delivery scope decision
+
+Issue #137 now delivers only document/evidence archival and unavailable-source
+history behavior. For this personal application, the user explicitly deferred
+account deletion/erasure and the R26 remaining-writer inventory. Those future
+privacy obligations remain open; this delivery must not be cited as completing
+them. Existing account-erasure guards remain preserved.
+
 ### FT-03 — SEC issuer identity, authorized acquisition, raw lineage, and PIT replay
 - **Found:** 2026-08-27, PO real-data review; adversarial review VG-02/VG-06
 - **Severity:** high (without authorized, replayable primary filings later facts
