@@ -332,7 +332,7 @@ def _value_line_requirement(
             return {
                 "state": "missing",
                 "reason_code": "value_line_report_missing",
-                "reason": "No current parsed Value Line report owned by this user covers the stock.",
+                "reason": "No parsed Value Line report owned by this user covers the stock.",
                 "source_type": "value_line",
                 "source_ref_id": archived.id,
                 "evidence_json": {"max_age_days": VALUE_LINE_MAX_AGE_DAYS},
@@ -732,7 +732,13 @@ def _projection_state(row: ResearchCoverageRequirement, blocker_reason: str | No
     return "blocked"
 
 
-def _projection_reason(blocker_reason: str) -> str:
+def _projection_reason(blocker_reason: str, *, kind: str) -> str:
+    if blocker_reason == "source_unavailable":
+        return (
+            "The retained Value Line source is no longer readable."
+            if kind == "value_line_current_report"
+            else "The persisted price source is not currently authorized for display."
+        )
     return {
         "price_currency_unavailable": (
             "The persisted price currency is not a current monetary ISO 4217 code."
@@ -745,19 +751,16 @@ def _projection_reason(blocker_reason: str) -> str:
             "The persisted price reference no longer matches canonical price evidence."
         ),
         "value_line_report_missing": (
-            "No current parsed Value Line report owned by this user covers the stock."
+            "No parsed Value Line report owned by this user covers the stock."
         ),
         "value_line_report_older_than_policy": (
-            "The latest Value Line report is older than the 120-day policy."
+            "The latest user-owned Value Line report exceeds the 120-day policy."
         ),
         "value_line_report_date_missing": (
             "The parsed report has no source-backed report date."
         ),
         "value_line_report_date_in_future": (
             "The report date is later than the coverage evaluation date."
-        ),
-        "source_unavailable": (
-            "The retained Value Line source is no longer readable."
         ),
     }.get(
         blocker_reason,
@@ -803,7 +806,7 @@ def _serialize_requirement(
         "reason": (
             row.reason
             if blocker_reason is None
-            else _projection_reason(blocker_reason)
+            else _projection_reason(blocker_reason, kind=row.kind)
         ),
         "source_type": row.source_type,
         "source_ref_id": row.source_ref_id,
@@ -823,9 +826,6 @@ def _serialize_requirement(
             if blocker_reason in {
                 "value_line_report_missing",
                 "value_line_report_older_than_policy",
-            }
-            else "review_document"
-            if blocker_reason in {
                 "value_line_report_date_missing",
                 "value_line_report_date_in_future",
             }
@@ -887,13 +887,14 @@ def serialize_requirements(
             or document.archived_at is not None
         ):
             return "value_line_report_missing"
+        if document.source_unavailable_at is not None:
+            return "source_unavailable"
         if (
             not is_value_line_document_source(document.source)
             or document.parse_status not in {"parsing", "parsed", "parsed_partial"}
             or document.identity_needs_review
-            or document.source_unavailable_at is not None
         ):
-            return "source_unavailable"
+            return "value_line_report_missing"
         if document.report_date is None:
             return "value_line_report_date_missing"
         age_days = (projection_date - document.report_date).days

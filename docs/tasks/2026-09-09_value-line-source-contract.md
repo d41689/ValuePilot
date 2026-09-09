@@ -52,5 +52,5 @@ Tests first, in Docker:
 - 2026-09-09: read-only follow-up review required current Value Line coverage
   projection to revalidate lifecycle and the 120-day report boundary at one
   request cutoff, with kind-specific reason and next-action vocabulary. List,
-  workspace, and Inbox regressions now exercise the same outcomes; 86 focused
+  workspace, and Inbox regressions now exercise the same outcomes; 91 focused
   coverage, Inbox, workspace, and reconciliation tests pass.
