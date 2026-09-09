@@ -95,7 +95,8 @@ def _value_line_doc(db_session, user_id: int, stock: Stock, *, report_date: date
         user_id=user_id,
         stock_id=stock.id,
         file_name=f"{stock.ticker}.pdf",
-        source="Value Line",
+        # This is the persisted source used by the normal upload endpoint.
+        source="upload",
         file_storage_key=f"test/{user_id}/{stock.id}.pdf",
         parse_status="parsed",
         report_date=report_date,
@@ -193,9 +194,53 @@ def test_value_line_freshness_is_user_scoped_and_stale_is_not_ready(
     assert requirement.source_ref_id is not None
 
 
-@pytest.mark.parametrize("lifecycle_field", ["archived_at", "source_unavailable_at"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source", "unknown_provider"),
+        ("parse_status", "unsupported_template"),
+        ("identity_needs_review", True),
+    ],
+)
+def test_noncanonical_value_line_document_never_satisfies_coverage(
+    db_session, user_factory, field, value
+):
+    from app.services.research_coverage import evaluate_research_coverage
+
+    user = user_factory(email=f"coverage-noncanonical-{field}@example.com")
+    stock = _stock(db_session, f"NC{field[:4].upper()}")
+    _watchlist(db_session, user.id, stock)
+    document = _value_line_doc(
+        db_session, user.id, stock, report_date=date(2026, 7, 1)
+    )
+    setattr(document, field, value)
+    db_session.commit()
+
+    evaluate_research_coverage(
+        db_session, user_id=user.id, as_of=date(2026, 7, 20)
+    )
+    requirement = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="value_line_current_report",
+        )
+        .one()
+    )
+    assert requirement.state == "missing"
+    assert requirement.reason_code == "value_line_report_missing"
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_field", "expected_state", "expected_reason"),
+    [
+        ("archived_at", "missing", "value_line_report_missing"),
+        ("source_unavailable_at", "blocked", "source_unavailable"),
+    ],
+)
 def test_retired_value_line_document_does_not_satisfy_current_coverage(
-    db_session, user_factory, lifecycle_field
+    db_session, user_factory, lifecycle_field, expected_state, expected_reason
 ):
     from app.services.research_coverage import evaluate_research_coverage
 
@@ -221,9 +266,286 @@ def test_retired_value_line_document_does_not_satisfy_current_coverage(
         )
         .one()
     )
-    assert requirement.state == "missing"
-    assert requirement.reason_code == "value_line_report_missing"
-    assert requirement.source_ref_id is None
+    assert requirement.state == expected_state
+    assert requirement.reason_code == expected_reason
+    assert requirement.source_ref_id == document.id
+
+
+@pytest.mark.parametrize(
+    (
+        "lifecycle_field",
+        "expected_state",
+        "expected_reason",
+        "expected_text",
+        "expected_action",
+    ),
+    [
+        (
+            "archived_at",
+            "missing",
+            "value_line_report_missing",
+            "No parsed Value Line report owned by this user covers the stock.",
+            "upload_value_line_report",
+        ),
+        (
+            "source_unavailable_at",
+            "inaccessible",
+            "source_unavailable",
+            "The retained Value Line source is no longer readable.",
+            "review_source_authorization",
+        ),
+    ],
+)
+def test_retired_value_line_ready_projection_fails_closed_without_reevaluation(
+    client,
+    db_session,
+    user_factory,
+    auth_headers,
+    lifecycle_field,
+    expected_state,
+    expected_reason,
+    expected_text,
+    expected_action,
+):
+    from app.models.research import ResearchInboxAction
+    from app.services.research_coverage import evaluate_research_coverage
+
+    user = user_factory(email=f"coverage-projected-{lifecycle_field}@example.com")
+    stock = _stock(db_session, f"PRJ{lifecycle_field[0].upper()}")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    document = _value_line_doc(
+        db_session, user.id, stock, report_date=date.today()
+    )
+    db_session.flush()
+    evaluate_research_coverage(
+        db_session, user_id=user.id, as_of=date.today(), commit=False
+    )
+    requirement = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="value_line_current_report",
+        )
+        .one()
+    )
+    assert requirement.state == "ready"
+    setattr(document, lifecycle_field, datetime.now(timezone.utc))
+    db_session.commit()
+
+    listed = client.get(
+        "/api/v1/coverage/requirements", headers=auth_headers(user)
+    )
+    workspace = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace", headers=auth_headers(user)
+    )
+    assert listed.status_code == 200, listed.text
+    assert workspace.status_code == 200, workspace.text
+    listed_requirement = next(
+        item for item in listed.json()["items"] if item["id"] == requirement.id
+    )
+    workspace_requirement = next(
+        item
+        for item in workspace.json()["coverage"]
+        if item["kind"] == "value_line_current_report"
+    )
+    for projected in (listed_requirement, workspace_requirement):
+        assert projected["state"] == expected_state
+        assert projected["reason_code"] == expected_reason
+        assert projected["reason"] == expected_text
+        assert projected["next_action"] == expected_action
+        assert projected["source_ref_id"] == document.id
+
+    regenerated = client.post(
+        "/api/v1/research/inbox/regenerate", headers=auth_headers(user)
+    )
+    assert regenerated.status_code == 200, regenerated.text
+    action = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(
+            user_id=user.id,
+            logical_key=f"case-coverage:{case.id}:value_line_current_report",
+            state="open",
+        )
+        .one()
+    )
+    assert action.evidence_json["state"] == expected_state
+    assert action.evidence_json["reason_code"] == expected_reason
+    assert action.evidence_json["reason"] == expected_text
+    assert action.evidence_json["next_action"] == expected_action
+    assert action.evidence_json["source_ref_id"] == document.id
+
+
+def test_value_line_ready_projection_becomes_stale_at_day_121_everywhere(
+    client, db_session, user_factory, auth_headers
+):
+    from app.models.research import ResearchInboxAction
+    from app.services.research_coverage import evaluate_research_coverage
+
+    user = user_factory(email="coverage-value-line-rollover@example.com")
+    stock = _stock(db_session, "VLROLL")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    projection_day = date.today()
+    report_day = projection_day - timedelta(days=121)
+    document = _value_line_doc(db_session, user.id, stock, report_date=report_day)
+    db_session.flush()
+    evaluate_research_coverage(
+        db_session,
+        user_id=user.id,
+        as_of=report_day + timedelta(days=120),
+        commit=False,
+    )
+    requirement = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="value_line_current_report",
+        )
+        .one()
+    )
+    assert requirement.state == "ready"
+    db_session.commit()
+
+    listed = client.get(
+        "/api/v1/coverage/requirements", headers=auth_headers(user)
+    )
+    workspace = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace", headers=auth_headers(user)
+    )
+    regenerated = client.post(
+        "/api/v1/research/inbox/regenerate", headers=auth_headers(user)
+    )
+    assert listed.status_code == workspace.status_code == regenerated.status_code == 200
+    projected_rows = [
+        next(item for item in listed.json()["items"] if item["id"] == requirement.id),
+        next(
+            item
+            for item in workspace.json()["coverage"]
+            if item["kind"] == "value_line_current_report"
+        ),
+    ]
+    for projected in projected_rows:
+        assert projected["state"] == "stale"
+        assert projected["reason_code"] == "value_line_report_older_than_policy"
+        assert projected["reason"] == (
+            "The latest user-owned Value Line report exceeds the 120-day policy."
+        )
+        assert projected["next_action"] == "upload_value_line_report"
+        assert projected["source_ref_id"] == document.id
+
+    action = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(
+            user_id=user.id,
+            logical_key=f"case-coverage:{case.id}:value_line_current_report",
+            state="open",
+        )
+        .one()
+    )
+    assert action.evidence_json["state"] == "stale"
+    assert action.evidence_json["reason_code"] == "value_line_report_older_than_policy"
+    assert action.evidence_json["next_action"] == "upload_value_line_report"
+    assert action.evidence_json["source_ref_id"] == document.id
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason_code", "reason"),
+    [
+        (
+            "source",
+            "unknown_provider",
+            "value_line_report_missing",
+            "No parsed Value Line report owned by this user covers the stock.",
+        ),
+        (
+            "parse_status",
+            "unsupported_template",
+            "value_line_report_missing",
+            "No parsed Value Line report owned by this user covers the stock.",
+        ),
+        (
+            "identity_needs_review",
+            True,
+            "value_line_report_missing",
+            "No parsed Value Line report owned by this user covers the stock.",
+        ),
+        (
+            "report_date",
+            None,
+            "value_line_report_date_missing",
+            "The parsed report has no source-backed report date.",
+        ),
+        (
+            "report_date",
+            date.today() + timedelta(days=1),
+            "value_line_report_date_in_future",
+            "The report date is later than the coverage evaluation date.",
+        ),
+    ],
+)
+def test_value_line_projection_and_regeneration_share_failure_vocabulary(
+    client, db_session, user_factory, auth_headers, field, value, reason_code, reason
+):
+    from app.models.research import ResearchInboxAction
+    from app.services.research_coverage import evaluate_research_coverage
+
+    user = user_factory(email=f"coverage-vocabulary-{field}-{reason_code}@example.com")
+    stock = _stock(db_session, f"MX{reason_code[-4:].upper()}")
+    case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
+    db_session.add(case)
+    document = _value_line_doc(db_session, user.id, stock, report_date=date.today())
+    db_session.flush()
+    evaluate_research_coverage(
+        db_session, user_id=user.id, as_of=date.today(), commit=False
+    )
+    requirement = (
+        db_session.query(ResearchCoverageRequirement)
+        .filter_by(
+            user_id=user.id,
+            stock_id=stock.id,
+            kind="value_line_current_report",
+        )
+        .one()
+    )
+    assert requirement.state == "ready"
+    setattr(document, field, value)
+    db_session.commit()
+
+    listed = client.get("/api/v1/coverage/requirements", headers=auth_headers(user))
+    workspace = client.get(
+        f"/api/v1/research/cases/{case.id}/workspace", headers=auth_headers(user)
+    )
+    for projected in (
+        next(item for item in listed.json()["items"] if item["id"] == requirement.id),
+        next(
+            item
+            for item in workspace.json()["coverage"]
+            if item["kind"] == "value_line_current_report"
+        ),
+    ):
+        assert projected["reason_code"] == reason_code
+        assert projected["reason"] == reason
+        assert projected["next_action"] == "upload_value_line_report"
+
+    regenerated = client.post(
+        "/api/v1/research/inbox/regenerate", headers=auth_headers(user)
+    )
+    assert regenerated.status_code == 200, regenerated.text
+    action = (
+        db_session.query(ResearchInboxAction)
+        .filter_by(
+            user_id=user.id,
+            logical_key=f"case-coverage:{case.id}:value_line_current_report",
+            state="open",
+        )
+        .one()
+    )
+    assert action.evidence_json["reason_code"] == reason_code
+    assert action.evidence_json["reason"] == reason
+    assert action.evidence_json["next_action"] == "upload_value_line_report"
 
 
 def test_coverage_api_never_returns_another_users_projection(
@@ -383,6 +705,9 @@ def test_legacy_price_requirement_without_recorded_authorization_is_redacted_on_
     listed_price = listed.json()["items"][0]
     assert listed_price["state"] == "inaccessible"
     assert listed_price["reason_code"] == "source_unavailable"
+    assert listed_price["reason"] == (
+        "The persisted price source is not currently authorized for display."
+    )
     assert listed_price["evidence"]["close"] is None
     assert listed_price["evidence"]["source_authorization_state"] == "unavailable"
 
@@ -398,6 +723,9 @@ def test_legacy_price_requirement_without_recorded_authorization_is_redacted_on_
         item for item in workspace.json()["coverage"] if item["kind"] == "eod_price"
     )
     assert workspace_price["state"] == "inaccessible"
+    assert workspace_price["reason"] == (
+        "The persisted price source is not currently authorized for display."
+    )
     assert workspace_price["evidence"]["close"] is None
 
 

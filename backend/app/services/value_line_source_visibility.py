@@ -21,6 +21,12 @@ class ValueLineSourceUnavailableError(ValueError):
         super().__init__("Value Line source evidence is currently unavailable.")
 
 
+def is_value_line_document_source(source: str | None) -> bool:
+    """Apply the canonical persisted Value Line source-label vocabulary."""
+
+    return isinstance(source, str) and source.lower() in VALUE_LINE_CURRENT_SOURCES
+
+
 def current_value_line_source_unavailable_predicate():
     """Return the shared fail-closed current document visibility predicate."""
 

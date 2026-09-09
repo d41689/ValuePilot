@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.models.artifacts import PdfDocument
 from app.services.value_line_source_visibility import (
+    VALUE_LINE_CURRENT_SOURCES,
     current_value_line_document_predicate,
+    is_value_line_document_source,
 )
 from app.models.coverage import ResearchCoverageRequirement
 from app.models.oracles_lens import OraclesLensSignal
@@ -272,7 +274,6 @@ def _value_line_requirement(
             PdfDocument.user_id == user_id,
             PdfDocument.stock_id == stock.id,
             PdfDocument.parse_status == "parsed",
-            func.lower(PdfDocument.source).like("%value%line%"),
             current_value_line_document_predicate(),
         )
         .order_by(
@@ -283,6 +284,61 @@ def _value_line_requirement(
         .first()
     )
     if document is None:
+        withdrawn = (
+            session.query(PdfDocument)
+            .filter(
+                PdfDocument.user_id == user_id,
+                PdfDocument.stock_id == stock.id,
+                PdfDocument.parse_status == "parsed",
+                func.lower(PdfDocument.source).in_(VALUE_LINE_CURRENT_SOURCES),
+                PdfDocument.archived_at.is_(None),
+                PdfDocument.source_unavailable_at.is_not(None),
+            )
+            .order_by(
+                PdfDocument.report_date.desc().nullslast(),
+                PdfDocument.upload_time.desc(),
+                PdfDocument.id.desc(),
+            )
+            .first()
+        )
+        if withdrawn is not None:
+            return {
+                "state": "blocked",
+                "reason_code": "source_unavailable",
+                "reason": "The retained Value Line source is no longer readable.",
+                "source_type": "value_line",
+                "source_ref_id": withdrawn.id,
+                "evidence_json": {"max_age_days": VALUE_LINE_MAX_AGE_DAYS},
+                "observed_at": None,
+                "next_action": "review_source_authorization",
+            }
+        archived = (
+            session.query(PdfDocument)
+            .filter(
+                PdfDocument.user_id == user_id,
+                PdfDocument.stock_id == stock.id,
+                PdfDocument.parse_status == "parsed",
+                func.lower(PdfDocument.source).in_(VALUE_LINE_CURRENT_SOURCES),
+                PdfDocument.archived_at.is_not(None),
+            )
+            .order_by(
+                PdfDocument.report_date.desc().nullslast(),
+                PdfDocument.upload_time.desc(),
+                PdfDocument.id.desc(),
+            )
+            .first()
+        )
+        if archived is not None:
+            return {
+                "state": "missing",
+                "reason_code": "value_line_report_missing",
+                "reason": "No parsed Value Line report owned by this user covers the stock.",
+                "source_type": "value_line",
+                "source_ref_id": archived.id,
+                "evidence_json": {"max_age_days": VALUE_LINE_MAX_AGE_DAYS},
+                "observed_at": None,
+                "next_action": "upload_value_line_report",
+            }
         return {
             "state": "missing",
             "reason_code": "value_line_report_missing",
@@ -664,10 +720,25 @@ def _projection_state(row: ResearchCoverageRequirement, blocker_reason: str | No
         return "stale"
     if blocker_reason == "price_missing":
         return "missing"
+    if blocker_reason == "value_line_report_missing":
+        return "missing"
+    if blocker_reason == "value_line_report_older_than_policy":
+        return "stale"
+    if blocker_reason in {
+        "value_line_report_date_missing",
+        "value_line_report_date_in_future",
+    }:
+        return "failed"
     return "blocked"
 
 
-def _projection_reason(blocker_reason: str) -> str:
+def _projection_reason(blocker_reason: str, *, kind: str) -> str:
+    if blocker_reason == "source_unavailable":
+        return (
+            "The retained Value Line source is no longer readable."
+            if kind == "value_line_current_report"
+            else "The persisted price source is not currently authorized for display."
+        )
     return {
         "price_currency_unavailable": (
             "The persisted price currency is not a current monetary ISO 4217 code."
@@ -678,6 +749,18 @@ def _projection_reason(blocker_reason: str) -> str:
         "price_missing": "No canonical EOD observation is currently available.",
         "price_reference_mismatch": (
             "The persisted price reference no longer matches canonical price evidence."
+        ),
+        "value_line_report_missing": (
+            "No parsed Value Line report owned by this user covers the stock."
+        ),
+        "value_line_report_older_than_policy": (
+            "The latest user-owned Value Line report exceeds the 120-day policy."
+        ),
+        "value_line_report_date_missing": (
+            "The parsed report has no source-backed report date."
+        ),
+        "value_line_report_date_in_future": (
+            "The report date is later than the coverage evaluation date."
         ),
     }.get(
         blocker_reason,
@@ -691,6 +774,7 @@ def _serialize_requirement(
     *,
     canonical: CanonicalEodPrice | None = None,
     referenced: StoredPriceEvidence | None = None,
+    value_line_blocker: str | None = None,
 ) -> dict[str, Any]:
     evidence = dict(row.evidence_json or {})
     blocker_reason = None
@@ -700,6 +784,8 @@ def _serialize_requirement(
             canonical=canonical,
             referenced=referenced,
         )
+    elif row.kind == "value_line_current_report":
+        blocker_reason = value_line_blocker
     projected_state = _projection_state(row, blocker_reason)
     return {
         "id": row.id,
@@ -720,7 +806,7 @@ def _serialize_requirement(
         "reason": (
             row.reason
             if blocker_reason is None
-            else _projection_reason(blocker_reason)
+            else _projection_reason(blocker_reason, kind=row.kind)
         ),
         "source_type": row.source_type,
         "source_ref_id": row.source_ref_id,
@@ -736,6 +822,13 @@ def _serialize_requirement(
         "next_action": (
             row.next_action
             if blocker_reason is None
+            else "upload_value_line_report"
+            if blocker_reason in {
+                "value_line_report_missing",
+                "value_line_report_older_than_policy",
+                "value_line_report_date_missing",
+                "value_line_report_date_in_future",
+            }
             else "review_source_authorization"
             if projected_state == "inaccessible"
             else "refresh_eod_price"
@@ -769,6 +862,48 @@ def serialize_requirements(
             if row.source_ref_id is not None
         ],
     )
+    value_line_rows = [
+        row
+        for row, _ in rows
+        if row.kind == "value_line_current_report" and row.source_ref_id is not None
+    ]
+    value_line_documents = {
+        document.id: document
+        for document in session.query(PdfDocument)
+        .filter(PdfDocument.id.in_([int(row.source_ref_id) for row in value_line_rows]))
+        .all()
+    }
+
+    projection_date = evaluation_business_date(projection_time)
+
+    def value_line_blocker(row: ResearchCoverageRequirement) -> str | None:
+        if row.kind != "value_line_current_report" or row.state != "ready":
+            return None
+        document = value_line_documents.get(int(row.source_ref_id or 0))
+        if (
+            document is None
+            or document.user_id != row.user_id
+            or document.stock_id != row.stock_id
+            or document.archived_at is not None
+        ):
+            return "value_line_report_missing"
+        if document.source_unavailable_at is not None:
+            return "source_unavailable"
+        if (
+            not is_value_line_document_source(document.source)
+            or document.parse_status not in {"parsing", "parsed", "parsed_partial"}
+            or document.identity_needs_review
+        ):
+            return "value_line_report_missing"
+        if document.report_date is None:
+            return "value_line_report_date_missing"
+        age_days = (projection_date - document.report_date).days
+        if age_days < 0:
+            return "value_line_report_date_in_future"
+        if age_days > VALUE_LINE_MAX_AGE_DAYS:
+            return "value_line_report_older_than_policy"
+        return None
+
     return [
         _serialize_requirement(
             row,
@@ -779,6 +914,7 @@ def serialize_requirements(
                 if row.source_ref_id is not None
                 else None
             ),
+            value_line_blocker=value_line_blocker(row),
         )
         for row, stock in rows
     ]

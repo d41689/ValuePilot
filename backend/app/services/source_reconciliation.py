@@ -32,6 +32,7 @@ from app.services.mapping_spec import (
     MappingSpec,
     load_resolved_value_line_mapping_spec,
 )
+from app.services.value_line_source_visibility import is_value_line_document_source
 from app.services.canonical_financials import (
     CanonicalSourceConflictError,
     partition_sec_run_availability,
@@ -1199,7 +1200,7 @@ def materialize_reconciliation_candidates(
             authorized = fact.source_document_id is None or (
                 document is not None
                 and document.user_id == user_id
-                and document.source in {"upload", "value_line"}
+                and is_value_line_document_source(document.source)
                 # ``parsing`` is visible only to the owning ingestion
                 # transaction while deterministic calculated facts are built;
                 # ``parsed_partial`` still contains reviewed, usable company
