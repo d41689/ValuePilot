@@ -143,6 +143,7 @@ gate commands:
 - This delivery resolves the active document/evidence archival slice. Account
   erasure and the R26 remaining-writer inventory are explicitly deferred, and
   the locked 24-case/gold-set acceptance remains outstanding.
-- Final cross-delivery extraction audit, old-PR-128 deletion, and global Terra
-  review remain pending for the root release step after merge; they are not
-  claimed complete here.
+- Final cross-delivery extraction audit, deletion of the local/remote
+  `codex/financial-truth-minimal-loop` branch, and global Terra review remain
+  pending for the root release step after merge; closed PR #128 is permanently
+  retained. None of those release steps is claimed complete here.

@@ -232,9 +232,9 @@ deferral above.
   sets, compatible exact derived-quarter inputs, slot-level amendments, shared
   SEC ownership, exact NUMERIC publication, PIT, SEC-only per-period current
   slots, provenance and fail-closed consumer behavior before FT-06. PR #132 has
-  since merged the bounded publication migration, service, API, and production
-  activation. This item remains open until the locked 24-case acceptance and
-  gold-set evidence satisfy the criteria below.
+  since merged the bounded publication implementation (migration, service, and
+  API). This item remains open until the locked 24-case acceptance and gold-set
+  evidence satisfy the criteria below.
 - **Acceptance criteria:**
   - Metric keys, units, normalization, period semantics, source roles, and
     mapping rules are approved in `metric_facts_mapping_spec.yml`; schema, APIs,
