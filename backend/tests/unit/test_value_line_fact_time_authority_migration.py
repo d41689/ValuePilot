@@ -315,14 +315,12 @@ def test_owner_mismatch_backfill_is_typed_through_reparse_service(
             {"id": fact_id},
         ) is None
 
+    # The historical migration assertion above intentionally stops at revision
+    # 180. Exercise the current reparse service only after bringing its ORM
+    # schema dependencies forward to the real application head.
+    _alembic(url, "upgrade", "head")
     with Session(engine) as session:
         service = IngestionService(session)
-        # This regression deliberately holds the schema at revision 180;
-        # revision 340 owns the later application-level erasure first lock.
-        monkeypatch.setattr(
-            "app.services.ingestion_service.lock_user_privacy_write",
-            lambda *_args, **_kwargs: None,
-        )
 
         def reconcile_only(**_kwargs):
             service._reconcile_parsed_fact_current_slot(
