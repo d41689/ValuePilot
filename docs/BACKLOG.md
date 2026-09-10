@@ -9,6 +9,33 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### S1 — generated statement dimension ambiguity blocks annual net income
+- **Found:** 2026-09-09, PR #147 / actual AAPL offline replay.
+- **Severity:** medium; blocks S1 minimum three-year financial acceptance.
+- **Problem:** consolidated and retained-earnings-dimensional NetIncomeLoss have
+  equal amounts; the generated-cell matcher cannot prove which context the cell
+  presents. Concept-wide rejection leaves FY2016–2025 net income unpublished.
+- **Acceptance criteria:** review an explicit cell-dimension/independent-rejection
+  contract before changing parser or DB guards; prove consolidated identity without
+  globally discarding dimensional candidates; same-scope conflicts still reject;
+  preserve old parser history and add positive/negative real-report regressions.
+  Recover FY2023–2025 canonical net income without direct fact insertion.
+- **Context:** [S1 evidence and proposed boundary](tasks/2026-09-09_single-company-data-readiness.md).
+
+### S1/S2 — company-wide currentness bound rejects real ten-year history
+- **Found:** 2026-09-09, PR #147 / `read_stock_facts` over AAPL stock 66.
+- **Severity:** medium; blocks ordinary financial reading.
+- **Problem:** 1,126 historical facts (747 current) trigger the 1,000-candidate
+  currentness guard before reconciliation. Existing S2 only named workspace
+  250 / UI 60 limits; changing those alone will not restore product access.
+- **Acceptance criteria:** review and implement complete comparison-unit bounded
+  reading across currentness and reconciliation under one read boundary, with
+  >1,000 historical / >250 candidate / >60 displayed fixtures. All competing
+  versions, lineage, permissions and PIT must still be checked; no limit increase,
+  silent prefix, historical deletion or second fact truth.
+- **Context:** [S1 diagnostic and dependency correction](tasks/2026-09-09_single-company-data-readiness.md),
+  [minimal S2 plan](plans/single-company-research-minimal-plan.md).
+
 ### Exclude generated files from development Docker build contexts
 - **Found:** 2026-09-09, PR #147 / S1 closing gate
 - **Severity:** low (build time and local disk use)
