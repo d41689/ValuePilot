@@ -9,6 +9,21 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Test isolation — committed currentness fixtures clean up only on success
+- **Found:** 2026-09-09, PR #147 canonical gate during an observed clock rollback.
+- **Severity:** low; failure cascades inside the disposable pytest schema only.
+- **Problem:** `test_post_snapshot_facts_do_not_consume_candidate_scope_bound`
+  and `test_multi_stock_keyset_excludes_post_snapshot_backdated_facts` commit
+  independent transactions, then clean them up after assertions instead of in
+  finally. A PIT assertion failure left 1,002 stocks / 3,004 facts and caused
+  later unrelated empty-table assertions to fail. Session teardown still drops
+  the isolated schema; public development data was not involved.
+- **Acceptance criteria:** run exact-target fixture cleanup on assertion/error
+  paths without masking the original failure, and verify a forced failure does
+  not contaminate the next test. Do not weaken PIT or erase shared data.
+- **Context:** `backend/tests/unit/test_metric_fact_currentness.py`;
+  [gate evidence](tasks/2026-09-09_single-company-data-readiness.md).
+
 ### S2 — SEC evidence links bypass the authenticated API client
 - **Found:** 2026-09-09, PR #147 real AAPL case 1 browser/HTTP acceptance.
 - **Severity:** medium; blocks the ordinary user's evidence-reading workflow.

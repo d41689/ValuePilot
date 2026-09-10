@@ -437,3 +437,26 @@ apiClient 在原研究页展示证据（不得开放匿名访问或把 token 放
 `metric_fact_currentness_authority.authority_started_at` 是
 `2026-09-10T02:18:46.164647Z`；当前数据库查询却为 `01:51:30Z`，早于其起点。
 Docker top 同时确认 pytest 进程存活，没有因观察超时重启或并行重复启动全套。
+
+`2026-09-10T02:26:10.434531Z` 只读检查显示时钟已恢复到发布完成时间之后；未修改数据。
+再次正常登录的 HTTP workspace 为 200 / 2.34 秒 / 834 numeric。九类核心/补充指标的
+FY2023–2025 共 27 个 evidence 响应均 200，已逐项核对 fact ID/数值/期间/单位/币种、
+actual 及 primary_as_filed_actual 角色、非空 inputs/locator。净利润等八类 FY2016–2025
+10/10，现金 FY2019–2025 7/10；未将加权稀释股数混称期末股数或将长期债务组成当总债务。
+该探针只证明这次当前读取恢复，不抹去前述时钟异常，也不能替代仍在运行的完整 gate。
+
+本轮 gate 最终为 357 failed / 2,429 passed / 868.65 秒，已正常退出，前端步骤因
+`set -e` 未执行。失败详情显示首批 currentness 读取 cutoff 为 01:47，早于该测试库
+02:18 的 authority；另两项原有 R24 独立事务测试的清理不在 finally，失败后留在临时
+schema 的 1,002 stocks / 3,004 facts 导致后续 bootstrap/SEC 空表断言也失败。
+已将此测试隔离健壮性问题登记 BACKLOG；不改生产规则，也不把这些全部概括为代码正确。
+02:33 的时钟检查正常，旧进程已经结束，接下来按原样重跑所有 canonical 命令。
+
+第二轮重建后问题再次出现：先前 `02:33:25 UTC` 后，主机 `date -u`、容器 Python 和
+PostgreSQL 三者均变为 `01:32:13 UTC`。新 pytest 再次在同类 currentness 读取中失败，
+cutoff 为 `01:31:04 UTC`。检索测试代码未发现系统时间设置命令，但尚未确定外部根因。
+为了不反复消耗资源，核验 `/proc/16/cmdline` 确为本轮 `/usr/local/bin/pytest -q` 后，
+只向该测试进程发送 SIGINT；未停止 API、数据库或修改系统时间。进程已退出，结果为
+156 failed / 1,222 passed / KeyboardInterrupt / exit 2（127.57 秒），不是完整验收。
+后续前端步骤未执行。停止重复 closing gate，待运行环境时间稳定后再验收；不把故障
+期间的部分通过或 GitHub 另一运行结果包装为本地 PASS。S1/S2/S3 整体目标保持未完成。
