@@ -1660,9 +1660,29 @@ reviewed correction requires a separate explicit consumer policy.
 The research workspace emits numeric fundamentals and Piotroski history only
 from guard-returned eligible facts. A blocked slot is replaced by a typed
 `unavailable / unresolved_source_reconciliation` state without its numeric
-value; unaffected slots remain visible. If the global fact bound is exceeded,
-the workspace returns `partial / reconciliation_bound_exceeded` and no numeric
-prefix, because a truncated prefix cannot prove any omitted slot safe.
+value; unaffected slots remain visible.
+
+The stock-facts and research-workspace reads may partition a company into
+complete metric-history units. Discovery includes all tenant-visible metric
+keys at one database evaluation cutoff/transaction snapshot, without filtering
+source role, period, numeric availability, or currentness first. Discovery is
+bounded to 64 keys; overflow is a typed request failure, never a prefix.
+Each unit retains the existing 1,000 historical-candidate currentness bound
+and 250 current-candidate reconciliation bound. A unit exceeding either bound
+emits a metric-specific unavailable state and no numeric prefix; other complete
+units remain readable. All same-slot competitors and recursive input authority
+are still checked by the shared guard, including inputs outside that unit.
+Units do not select a preferred source or change any fact/current slot.
+
+One response materializes all units using the same evaluation snapshot; UI
+pagination traverses that response, not independent live queries. Refresh is a
+new read, not continuation of a historical snapshot. Workspace reconciliation
+keeps the existing report for a whole response within 250 facts. Larger reads
+expose explicitly partitioned per-metric reports at that same cutoff, rather
+than pretending one partial prefix has a complete-company report digest.
+Incomplete units remain visible in both fundamentals and reconciliation status.
+Other consumers and the standalone reconciliation endpoint retain their
+existing resource bounds and contracts.
 
 Market-price authority, user intrinsic-value publication, valuation methods,
 industry/economic applicability, new acquisition rights, and evidence

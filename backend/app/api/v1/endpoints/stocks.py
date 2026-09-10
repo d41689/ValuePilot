@@ -83,6 +83,7 @@ from app.services.source_reconciliation import (
     build_source_reconciliation_report,
     group_metric_facts_by_reconciliation_slot,
     guard_reconciled_source_selection,
+    read_bounded_company_facts,
 )
 
 router = APIRouter()
@@ -1681,31 +1682,20 @@ def read_stock_facts(
     if not stock:
         raise HTTPException(status_code=404, detail="Stock not found")
 
-    admin_user_ids: list[int] = []
-
     evaluation_snapshot = database_evaluation_snapshot(session)
     evaluation_cutoff = evaluation_snapshot.cutoff
-    # Get current facts
     try:
-        current_fact_ids = current_metric_fact_ids_at(
+        facts, unavailable_units = read_bounded_company_facts(
             session,
-            knowledge_cutoff=evaluation_cutoff,
-            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-            scope=CurrentnessScope.one_stock(
-                stock_id, user_ids=(current_user.id, None)
-            ),
+            stock_id=stock_id,
+            user_id=current_user.id,
+            evaluation_snapshot=evaluation_snapshot,
         )
     except (CurrentnessScopeError, HistoricalCurrentnessUnverifiableError) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": error.code, "message": str(error)},
         ) from error
-    stmt = select(MetricFact).where(
-        MetricFact.stock_id == stock_id,
-        MetricFact.id.in_(current_fact_ids),
-        _visible_fact_predicate(current_user.id, admin_user_ids),
-    )
-    facts = session.scalars(stmt).all()
     facts, unsupported, method_decisions = apply_reviewed_method_gates(
         session,
         stock_id=stock_id,
@@ -1719,7 +1709,10 @@ def read_stock_facts(
         facts_by_metric.setdefault(fact.metric_key, []).append(fact)
 
     reconciled_facts: list[MetricFact] = []
-    reconciliation_states: list[dict[str, Any]] = []
+    reconciliation_states: list[dict[str, Any]] = [
+        {**state, "period": None, "evidence_route": None}
+        for state in unavailable_units
+    ]
     slot_groups = [
         slot
         for metric_key in sorted(facts_by_metric)

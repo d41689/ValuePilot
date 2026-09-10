@@ -1370,12 +1370,12 @@ def test_workspace_reports_bounded_reconciliation_as_unavailable_instead_of_clea
             MetricFact(
                 user_id=user.id,
                 stock_id=stock.id,
-                metric_key=f"bounded.metric_{index:03d}",
+                metric_key="bounded.metric",
                 value_numeric=index,
                 value_json={"manual_role": "original_input"},
                 unit="ratio",
                 period_type="AS_OF",
-                period_end_date=date(2026, 9, 4),
+                period_end_date=date(2025, 1, 1) + timedelta(days=index),
                 source_type="manual",
                 is_current=True,
             )
@@ -1391,19 +1391,16 @@ def test_workspace_reports_bounded_reconciliation_as_unavailable_instead_of_clea
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["source_reconciliation"] == {
-        "status": "partial",
-        "reason_code": "reconciliation_bound_exceeded",
-        "consumer_gate_status": "blocked",
-        "limit": 250,
-    }
+    assert payload["source_reconciliation"]["status"] == "partial"
+    assert payload["source_reconciliation"]["partitioning"] == "complete_metric_history"
+    assert payload["source_reconciliation"]["unavailable_units"][0]["metric_key"] == "bounded.metric"
     assert payload["piotroski_f_score"] == []
     assert payload["fundamentals"] == [
         {
             "id": None,
             "status": "unavailable",
             "reason_code": "reconciliation_bound_exceeded",
-            "metric_key": None,
+            "metric_key": "bounded.metric",
             "value_numeric": None,
             "value_text": None,
             "unit": None,

@@ -309,3 +309,36 @@ R3 的产品/服务歧义和 R7 的分项拒绝保留，未写成 canonical 值�
 `.*?` 并未将 whole match 限在首个 `</table>`，两个新增 DB 场景失败。
 只读 SQL 独立复现选中了 3 个 table。尚未应用到共享库的 v2.9 新迁移改为首个明确结束标签，
 并继续拒绝主表嵌套；这不是放宽数值或来源约束。该 checkpoint 不代表 closing gate 通过。
+
+### 必要查询修复：实现前契约自审
+
+真实 AAPL 的 1,126 条历史事实使产品接口 409，不修无法满足 S1 的“当前应用可读”。
+按用户的必要性授权推进 PRD §H.10 窄修改：一个指标的完整历史为资源单元，最多 64 个
+可见指标；每单元沿用 1,000 历史候选 / 250 current 候选上限。跨单元复用一个现有
+EvaluationSnapshot，返回完整物化响应；前端只对这份响应翻页，不引入游标签名/存储。
+
+自审：不能按年份、来源或当前行前缀切分，否则可能遗漏同槽位竞争；按完整指标切分不会
+产生这个缺口。共享 reconciliation 仍展开全部递归输入及输入槽位竞争，因此不同指标的
+派生依赖不能绕过冲突。一个指标超限必须整单元 unavailable；指标发现本身超限整请求
+typed failure；不隐藏超限、不提高常量。只改变 stock facts / workspace，其他消费者不改。
+workspace 总量超过 250 时显示同一 snapshot 的分指标报告，而非伪造全局 report digest。
+不新增表/enum/事实、不过滤掉失败的 SEC 发布状态，也不动账户、报价或生产。
+
+测试先行：公司总历史 >1,000 / current >250 的安全分指标读取；单指标两个上限；
+指标发现上限；同槽位冲突与递归依赖；跨用户和 snapshot 后插入排除；保留历史不可验证错误。
+本节是契约自审与执行依据，不是第三方独立 review 或验收通过记录。
+
+查询 checkpoint：先复现两个产品接口的公司级 409，再接入共享完整指标读取。
+11 项新增/调整的边界及产品回归通过（194.57 秒），包含 1,080 条历史候选、330 条
+current 事实的 stock facts 和 workspace 完整返回、单指标两级超限、指标发现超限、
+其他用户和 cutoff 后回填 created_at 的数据排除、历史 authority 错误保持 typed 409。
+原有 source reconciliation 的同槽位与递归检查未修改；扩大回归仍在运行。
+
+自审假设“无 owner 非 SEC 行可挤占限额”被现有 `ck_metric_facts_source_owner` 数据库
+约束直接否定；没有为不可能的行增加实现。测试错误尝试 UPDATE manual created_at 也被
+既有不可变约束拒绝，负例改为在 INSERT 时提供旧时间，未放宽约束。
+
+SEC 五文件聚焦回归最终为 458 passed / 364.64 秒（包括 lineage、migration、publication、
+gold acceptance）；尚非完整 closing gate。内部浏览器仍停在登录页，已非阻塞请求用户登录。
+较大响应测试耗时明显；单独只读测量 10 次 mapping identity 重载耗时 0.545 秒。
+先记录真实页面影响，再判断是否为交付阻塞，不先增加缓存或扩大性能重构范围。

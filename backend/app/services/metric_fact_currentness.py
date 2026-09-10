@@ -199,7 +199,7 @@ def _candidate_order_columns(scope: CurrentnessScope):
     return (MetricFact.id,) if anchor.key == "id" else (anchor, MetricFact.id)
 
 
-def _fact_creation_visible_predicate(
+def fact_creation_visible_predicate(
     *, evaluation_snapshot: EvaluationSnapshot, bind_name: str
 ):
     """Prove that a fact itself existed in the caller's exact DB snapshot.
@@ -250,7 +250,7 @@ def bounded_currentness_candidate_scope(
             select(MetricFact.id)
             .where(
                 *_fact_scope_predicates(validated),
-                _fact_creation_visible_predicate(
+                fact_creation_visible_predicate(
                     evaluation_snapshot=evaluation_snapshot,
                     bind_name="bounded_fact_creation_visibility_snapshot",
                 ),
@@ -557,7 +557,7 @@ def iter_current_metric_fact_id_chunks_at(
                     .where(
                         *cursor_predicate,
                         *_fact_scope_predicates(segment),
-                        _fact_creation_visible_predicate(
+                        fact_creation_visible_predicate(
                             evaluation_snapshot=evaluation_snapshot,
                             bind_name="keyset_fact_creation_visibility_snapshot",
                         ),
