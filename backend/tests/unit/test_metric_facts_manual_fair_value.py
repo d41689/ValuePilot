@@ -1,6 +1,6 @@
 import copy
 from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -710,9 +710,16 @@ def test_put_dcf_rejects_manifest_across_new_york_calendar_day(
     user = _make_user(db_session, "dcf-et-rollover@example.com")
     stock = _make_stock(db_session, "DCFET")
     _add_dcf_inputs(db_session, user=user, stock=stock)
+    # Keep both reads after database-owned fixture knowledge times. The UTC
+    # calendar day stays unchanged while New York crosses midnight.
+    now = db_session.execute(text("SELECT clock_timestamp()")).scalar_one()
+    first_day = now.astimezone(ET).date() + timedelta(days=1)
+    first_read = datetime.combine(first_day, time(21, 30), tzinfo=ET)
+    second_read = datetime.combine(first_day + timedelta(days=1), time(1), tzinfo=ET)
+    assert first_read.astimezone(timezone.utc).date() == second_read.astimezone(timezone.utc).date()
     clock = DcfEvaluationClock(
-        datetime(2026, 9, 10, 1, 30, tzinfo=timezone.utc),
-        date(2026, 9, 9),
+        first_read.astimezone(timezone.utc),
+        first_day,
     )
     monkeypatch.setattr(
         stocks_endpoint,
@@ -730,8 +737,8 @@ def test_put_dcf_rejects_manifest_across_new_york_calendar_day(
         client, user=user, stock=stock, auth_headers=auth_headers
     )
     clock = DcfEvaluationClock(
-        datetime(2026, 9, 10, 5, 0, tzinfo=timezone.utc),
-        date(2026, 9, 10),
+        second_read.astimezone(timezone.utc),
+        first_day + timedelta(days=1),
     )
 
     response = client.put(
