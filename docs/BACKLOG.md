@@ -9,6 +9,20 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### S2 — SEC evidence links bypass the authenticated API client
+- **Found:** 2026-09-09, PR #147 real AAPL case 1 browser/HTTP acceptance.
+- **Severity:** medium; blocks the ordinary user's evidence-reading workflow.
+- **Problem:** the research page uses Next Link for an authenticated SEC JSON
+  evidence route. Navigation does not attach the apiClient Bearer header;
+  ordinary GET returns 401, while the same authorized API request returns 200.
+- **Acceptance criteria:** display SEC evidence inside the existing research
+  page through the existing authenticated client, with typed loading/error and
+  identity/period/source details; preserve document-review links and source
+  authorization. No anonymous evidence access, URL token, or external SEC fetch.
+  Verify a real AAPL cash-flow/debt evidence click, not only a source-scanner test.
+- **Context:** [S1 runtime evidence](tasks/2026-09-09_single-company-data-readiness.md),
+  [S2 scope](plans/single-company-research-minimal-plan.md).
+
 ### S1 — generated statement dimension ambiguity blocks annual net income
 - **Found:** 2026-09-09, PR #147 / actual AAPL offline replay.
 - **Severity:** medium; blocks S1 minimum three-year financial acceptance.

@@ -411,3 +411,29 @@ cutoff，正确被 PIT 排除；Value Line 第 121 天测试用容器 date.today
 修正后的两个完整测试文件共 75 passed / 47.88 秒，覆盖 UTC 01:30 与 16:30 的纽约日
 差异，以及 DCF 同 UTC 日跨纽约日拒绝；测试未修改产品实现。下一轮按最终代码重跑
 全部 canonical 命令，之前的 2,780 passed 不能作为最终 gate。
+
+### 真实 HTTP 复验与环境时间回退（尚未关闭）
+
+在 f1791828 重建后，通过用户授权账号正常 login，使用服务签发的 session 做本地 HTTP
+只读复验，完成后 logout 撤销该临时会话；未从浏览器提取 token、未伪造凭证。
+workspace 返回 200 / 0.85 秒，但仅 747 条 numeric，年度净利润再次不可见。
+独立只读数据库检查确认 public 仍有 2,390 facts / 834 current，v2.9 publication/facts
+均在，没有丢失；Python 与 PostgreSQL 当前时间却都为 `2026-09-10T01:49:00Z`，
+早于本任务已记录的 v2.9 finalized `02:01:47.116147Z`。因此当前 PIT 正确只选旧版本。
+这是运行环境时钟回退的实证；不能以改时钟、时间回填、强制读取未来事实或重新导入解决。
+本轮完整 pytest 已出现大量失败，仍等待完整失败输出，不提前认定全是同一原因。
+
+本次 HTTP 可见的 FY2023–2025 收入、CFO、capex、现金、长期债务流动/非流动部分、
+SBC、稀释加权股数的证据接口均返回 200，fact ID/数值/期间/locator 与响应一致。
+它们是 actual / primary_as_filed_actual，金额 USD，股数单位 shares 无币种；不混成总债务
+或期末股数。现金 FY2016–2018 缺口仍在。此结果不能证明当前净利润最低基础已经满足。
+
+另外，现有研究页的 SEC `Review original evidence` 使用 Next Link 直接指向受保护 JSON
+接口，绕过 apiClient 的 Bearer 注入；普通 GET 实测 401。S2 必须复用 authenticated
+apiClient 在原研究页展示证据（不得开放匿名访问或把 token 放到 URL），而不是仅补年度表。
+点击当前链接没有打开证据内容，不能把“有链接”记作浏览器证据验收通过。
+
+后续只读检查：本轮仍在运行的测试 schema `valuepilot_pytest_82ef5a245086` 的
+`metric_fact_currentness_authority.authority_started_at` 是
+`2026-09-10T02:18:46.164647Z`；当前数据库查询却为 `01:51:30Z`，早于其起点。
+Docker top 同时确认 pytest 进程存活，没有因观察超时重启或并行重复启动全套。
