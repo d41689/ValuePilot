@@ -280,6 +280,67 @@ def test_parser_v27_guard_migration_preserves_v26_and_is_reversible() -> None:
         drop_test_schema(_BASE_DATABASE_URL, schema_name)
 
 
+def test_parser_v28_guard_migration_preserves_old_versions_and_round_trips() -> None:
+    backend_dir = Path(__file__).resolve().parents[2]
+    schema = new_test_schema_name()
+    url = build_isolated_database_url(_BASE_DATABASE_URL, schema)
+    create_test_schema(_BASE_DATABASE_URL, schema)
+    engine = create_engine(url)
+    names = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions():
+        with engine.connect() as connection:
+            return {name: connection.execute(text(
+                "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE n.nspname=current_schema() AND p.proname=:name"
+            ), {"name": name}).scalar_one() for name in names}
+
+    try:
+        _alembic(backend_dir, url, "upgrade", "20260909120000")
+        before = definitions()
+        _alembic(backend_dir, url, "upgrade", "20260909140000")
+        after = definitions()
+        assert all("xbrl-lineage-v2.8" in source for source in after.values())
+        assert all("xbrl-lineage-v2.7" in source for source in after.values())
+        assert "negatedLabel" in after["guard_sec_statement_occurrence_insert"]
+        _alembic(backend_dir, url, "downgrade", "20260909120000")
+        assert definitions() == before
+        _alembic(backend_dir, url, "upgrade", "20260909140000")
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema)
+
+
+def test_parser_v29_guard_round_trip_and_dimension_scope_contract() -> None:
+    backend = Path(__file__).resolve().parents[2]
+    schema = new_test_schema_name()
+    url = build_isolated_database_url(_BASE_DATABASE_URL, schema)
+    create_test_schema(_BASE_DATABASE_URL, schema)
+    engine = create_engine(url)
+    def definition():
+        with engine.connect() as connection:
+            return connection.execute(text("SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname='guard_sec_statement_occurrence_insert'")).scalar_one()
+    try:
+        _alembic(backend, url, "upgrade", "20260909140000")
+        before = definition()
+        _alembic(backend, url, "upgrade", "20260909150000")
+        after = definition()
+        assert "consolidated_empty_dimensions_v1" in after
+        assert "xbrl-lineage-v2.9" in after and "xbrl-lineage-v2.8" in after
+        assert "generated statement consolidated scope mismatch" in after
+        _alembic(backend, url, "downgrade", "20260909140000")
+        assert definition() == before
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema)
+
+
 def test_statement_report_xml_helper_matches_ascii_whitespace_sgml_boundary() -> None:
     backend_dir = Path(__file__).resolve().parents[2]
     schema_name = new_test_schema_name()

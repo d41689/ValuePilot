@@ -377,17 +377,35 @@ def test_retired_value_line_ready_projection_fails_closed_without_reevaluation(
     assert action.evidence_json["source_ref_id"] == document.id
 
 
+@pytest.mark.parametrize("utc_hour", [1, 16])
 def test_value_line_ready_projection_becomes_stale_at_day_121_everywhere(
-    client, db_session, user_factory, auth_headers
+    client, db_session, user_factory, auth_headers, monkeypatch, utc_hour
 ):
+    from app.api.v1.endpoints import coverage as coverage_endpoint
+    from app.api.v1.endpoints import research as research_endpoint
     from app.models.research import ResearchInboxAction
+    from app.services.canonical_financials import (
+        database_evaluation_cutoff,
+        evaluation_business_date,
+    )
     from app.services.research_coverage import evaluate_research_coverage
 
     user = user_factory(email="coverage-value-line-rollover@example.com")
     stock = _stock(db_session, "VLROLL")
     case = ResearchCase(user_id=user.id, stock_id=stock.id, state="queued")
     db_session.add(case)
-    projection_day = date.today()
+    # Fix the observation boundary after fixture creation without assuming the
+    # container's date equals the product's New York business date.
+    now = database_evaluation_cutoff(db_session)
+    evaluated_at = (now + timedelta(days=1)).replace(
+        hour=utc_hour, minute=30, second=0, microsecond=0
+    )
+    projection_day = evaluation_business_date(evaluated_at)
+    assert (evaluated_at.date() != projection_day) == (utc_hour == 1)
+    for endpoint in (coverage_endpoint, research_endpoint):
+        monkeypatch.setattr(
+            endpoint, "database_evaluation_cutoff", lambda _session: evaluated_at
+        )
     report_day = projection_day - timedelta(days=121)
     document = _value_line_doc(db_session, user.id, stock, report_date=report_day)
     db_session.flush()

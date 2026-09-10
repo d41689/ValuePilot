@@ -1110,6 +1110,46 @@ authority URI is exactly `http://www.xbrl.org/2003/instance`. Compound units
 retain ordered numerator and denominator QName lists; a prefix is never
 authority.
 
+Parser `xbrl-lineage-v2.8` additionally supports the exact preferred-label URI
+`http://www.xbrl.org/2009/role/negatedLabel` on a verified generated-statement
+presentation arc and its matching label. This role reverses the **display**
+sign only: the negated display value times the positive declared scale must
+equal the normalized raw fact exactly. The retained raw sign/value and
+canonical metric semantics do not change. No absolute-value comparison,
+rounding, suffix/name heuristic, or alternate-sign fallback is permitted.
+Other label roles retain the existing comparison, and earlier parser versions
+retain their original semantics. PostgreSQL checks the same version-specific
+numeric identity against the retained occurrence/linkbase lineage. Supporting
+additional negated-label roles requires a separately reviewed extension.
+
+Parser `xbrl-lineage-v2.9` inherits v2.8 and adds the bounded
+`consolidated_empty_dimensions_v1` generated-statement candidate scope. It is
+eligible only for an explicitly consolidated, recognized income, comprehensive
+income, balance-sheet or cash-flow report, whose first table has no nested table
+and whose first heading matches the retained report name. If the document has
+additional tables, the first must be the unique table with exact `class="report"`;
+only that main table supplies scoped occurrences, not taxonomy-reference popups.
+Neither that table's concept/member
+targets nor the selected presentation role's locators may contain dimensional
+Axis/Member/Domain markers, or any axis/member local name actually present in
+the retained structured contexts (including custom names and prefix aliases).
+Equity reports and reports with unproven or mixed
+dimensional scope keep the earlier all-context candidate rule. In the proven
+scope, only empty-dimension raw candidates participate; multiple contexts/units
+or any other unresolved identity within that scope still fail closed. No raw
+fact is removed or changed and no dimensional canonical publication is added.
+
+Concept-wide rejection remains conservative within each of these two candidate
+scopes, across reports: a rejected unproven/dimensional report does not revoke
+an independently proven consolidated occurrence. This is scope separation, not
+source priority or a permission to prefer one conflicting value. Every new
+occurrence identifies the new scope in its existing locator. PostgreSQL rejects
+that marker on earlier parsers, nonempty raw dimensions, unsupported report
+types, mismatched retained names/headings or dimensional HTML. The trusted
+parser additionally checks the verified retained presentation linkbase; the
+database does not claim to read that file. All prior exact display, numeric,
+label and lineage guards continue to apply. Older parser behavior is unchanged.
+
 ### H.6 Point-in-time and supersession
 
 For cutoff `T`, a replay may use only:
@@ -1620,9 +1660,36 @@ reviewed correction requires a separate explicit consumer policy.
 The research workspace emits numeric fundamentals and Piotroski history only
 from guard-returned eligible facts. A blocked slot is replaced by a typed
 `unavailable / unresolved_source_reconciliation` state without its numeric
-value; unaffected slots remain visible. If the global fact bound is exceeded,
-the workspace returns `partial / reconciliation_bound_exceeded` and no numeric
-prefix, because a truncated prefix cannot prove any omitted slot safe.
+value; unaffected slots remain visible.
+
+The stock-facts and research-workspace reads may partition a company into
+complete metric-history units. Discovery includes all tenant-visible metric
+keys at one database evaluation cutoff/transaction snapshot, without filtering
+source role, period, numeric availability, or currentness first. The original
+complete-company path within 1,000 historical candidates remains supported,
+including companies with more than 64 sparse metric keys. Only when that path
+overflows does large-history partition discovery apply its 64-key bound;
+discovery overflow is a typed request failure, never a prefix.
+Each unit retains the existing 1,000 historical-candidate currentness bound
+and 250 current-candidate reconciliation bound. A unit exceeding either bound
+emits a metric-specific unavailable state and no numeric prefix; other complete
+units remain readable. All same-slot competitors and recursive input authority
+are still checked by the shared guard, including inputs outside that unit.
+Units do not select a preferred source or change any fact/current slot.
+
+One response materializes all units using the same evaluation snapshot; UI
+pagination traverses that response, not independent live queries. Refresh is a
+new read, not continuation of a historical snapshot. These product reads may
+parse their deployed mapping/taxonomy configuration once within that read;
+each subsequent request reloads it. This is not a process-lifetime policy cache
+and does not cache registry approval, permissions, facts, or currentness.
+Workspace reconciliation keeps the existing report for a whole response within
+250 facts. Larger reads
+expose explicitly partitioned per-metric reports at that same cutoff, rather
+than pretending one partial prefix has a complete-company report digest.
+Incomplete units remain visible in both fundamentals and reconciliation status.
+Other consumers and the standalone reconciliation endpoint retain their
+existing resource bounds and contracts.
 
 Market-price authority, user intrinsic-value publication, valuation methods,
 industry/economic applicability, new acquisition rights, and evidence

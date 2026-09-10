@@ -9,10 +9,12 @@ to replay.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
 from itertools import combinations
+from functools import wraps
 import json
 import re
 from typing import Any, Iterable, Sequence
@@ -23,9 +25,13 @@ from app.models.artifacts import PdfDocument, ValueLineMappingPolicy
 from app.models.facts import MetricFact
 from app.services.evaluation_snapshot import EvaluationSnapshot
 from app.services.metric_fact_currentness import (
+    CURRENTNESS_SCOPE_BOUND_EXCEEDED,
+    MAX_CURRENTNESS_METRIC_KEYS,
     CurrentnessScope,
+    CurrentnessScopeError,
     current_metric_fact_ids_at,
     currentness_state_subquery,
+    fact_creation_visible_predicate,
     require_currentness_authority,
 )
 from app.services.mapping_spec import (
@@ -61,6 +67,127 @@ BLOCKING_EXCLUSION_REASONS = frozenset(
 PASSTHROUGH_EXCLUSION_REASONS = frozenset(
     {"user_authored_valuation_out_of_scope", "user_manual_input_out_of_scope"}
 )
+
+_policy_read_scope: ContextVar[list[MappingSpec] | None] = ContextVar(
+    "reconciliation_policy_read_scope", default=None
+)
+
+
+def with_reconciliation_policy_snapshot(read):
+    """Load config once per synchronous product read, never across requests.
+
+    Only file parsing is shared. Every registry, fact, source-permission and
+    timeline check remains in its original database-aware path.
+    """
+    @wraps(read)
+    def scoped(*args, **kwargs):
+        if _policy_read_scope.get() is not None:
+            return read(*args, **kwargs)
+        token = _policy_read_scope.set([])
+        try:
+            return read(*args, **kwargs)
+        finally:
+            _policy_read_scope.reset(token)
+    return scoped
+
+
+def read_bounded_company_facts(
+    session: Session,
+    *,
+    stock_id: int,
+    user_id: int,
+    evaluation_snapshot: EvaluationSnapshot,
+) -> tuple[list[MetricFact], list[dict[str, Any]]]:
+    """Materialize complete metric units; callers must still apply the guard.
+
+    No source/period/current-value filter can shrink comparison candidates.
+    Resource failure redacts the entire metric, not an arbitrary row prefix.
+    """
+    require_currentness_authority(
+        session, knowledge_cutoff=evaluation_snapshot.cutoff
+    )
+    visible = visible_metric_fact_predicate(MetricFact, user_id=user_id)
+    complete: dict[str, list[MetricFact]] | None = None
+    try:
+        current_ids = current_metric_fact_ids_at(
+            session,
+            knowledge_cutoff=evaluation_snapshot.cutoff,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope.one_stock(stock_id, user_ids=(user_id, None)),
+        )
+        complete = {}
+        for fact in session.scalars(select(MetricFact).where(
+            MetricFact.id.in_(current_ids), visible,
+        ).order_by(MetricFact.metric_key, MetricFact.id)):
+            complete.setdefault(fact.metric_key, []).append(fact)
+    except CurrentnessScopeError as error:
+        if error.code != CURRENTNESS_SCOPE_BOUND_EXCEEDED:
+            raise
+    # Preserve every company the original <=1,000-history path could read,
+    # including companies with many sparsely populated metric keys.
+    if complete is not None:
+        keys = sorted(complete)
+    else:
+        keys = list(session.scalars(
+            select(MetricFact.metric_key).where(
+                MetricFact.stock_id == stock_id,
+                visible,
+                fact_creation_visible_predicate(
+                    evaluation_snapshot=evaluation_snapshot,
+                    bind_name="company_metric_discovery_snapshot",
+                ),
+            ).distinct().order_by(MetricFact.metric_key)
+            .limit(MAX_CURRENTNESS_METRIC_KEYS + 1)
+            .execution_options(autoflush=False)
+        ))
+        if len(keys) > MAX_CURRENTNESS_METRIC_KEYS:
+            raise CurrentnessScopeError(
+                CURRENTNESS_SCOPE_BOUND_EXCEEDED,
+                "Large company metric discovery exceeds 64 keys; no prefix is available.",
+            )
+    facts: list[MetricFact] = []
+    unavailable: list[dict[str, Any]] = []
+    for key in keys:
+        reason = None
+        try:
+            if complete is not None:
+                unit = complete[key]
+            else:
+                current_ids = current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=evaluation_snapshot.cutoff,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id, metric_keys=(key,), user_ids=(user_id, None),
+                    ),
+                )
+                unit = list(session.scalars(
+                    select(MetricFact).where(
+                        MetricFact.id.in_(current_ids),
+                        MetricFact.stock_id == stock_id,
+                        visible,
+                    ).order_by(
+                        MetricFact.period_end_date.desc().nullslast(),
+                        MetricFact.created_at.desc(), MetricFact.id.desc(),
+                    ).limit(MAX_RECONCILIATION_FACTS + 1)
+                    .execution_options(autoflush=False)
+                ))
+            if len(unit) > MAX_RECONCILIATION_FACTS:
+                reason = "reconciliation_bound_exceeded"
+            else:
+                facts.extend(unit)
+        except CurrentnessScopeError as error:
+            reason = error.code
+        if reason is not None:
+            unavailable.append({
+                "id": None, "status": "unavailable", "reason_code": reason,
+                "metric_key": key, "value_numeric": None, "value_text": None,
+                "unit": None, "currency": None, "period_type": None,
+                "period_end_date": None, "source_type": None,
+                "source_document_id": None, "source_ref_id": None,
+                "original_evidence_route": None,
+            })
+    return facts, unavailable
 
 
 @dataclass(frozen=True)
@@ -724,7 +851,12 @@ def _policy_datetime(value: Any, *, field: str) -> datetime:
 
 
 def _resolved_mapping_spec() -> MappingSpec:
-    return load_resolved_value_line_mapping_spec()
+    scope = _policy_read_scope.get()
+    if scope is None:
+        return load_resolved_value_line_mapping_spec()
+    if not scope:
+        scope.append(load_resolved_value_line_mapping_spec())
+    return scope[0]
 
 
 def _mapping_spec_identity(

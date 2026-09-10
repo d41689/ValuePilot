@@ -129,6 +129,7 @@ def _request(
     client=None,
     concept_like="%RevenueFromContract%",
     rule_id="sec.revenue",
+    parser_version=None,
 ):
     known=datetime(2026,8,27,12,tzinfo=timezone.utc)
     acceptance_attempt = None
@@ -174,7 +175,7 @@ def _request(
     stock=Stock(ticker=ticker,exchange="US",company_name="Apple Inc."); db.add(stock); db.flush()
     identity=register_reviewed_sec_identity(db,stock_id=stock.id,cik=CIK,effective_from=date(1980,12,12),known_at=known,review_reason="publication fixture reviewed identity")
     db.commit()
-    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=client or StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version=financial_ingestion.PARSER_V2)
+    report=ingest_latest_financial_filings(db,stock_id=stock.id,client=client or StatementAuthorityClient(),storage_root=tmp_path,max_filings=1,now=known+timedelta(minutes=5),parser_version=parser_version or financial_ingestion.PARSER_V2)
     if acceptance_attempt is not None:
         link_acceptance_operation(
             db,
@@ -208,6 +209,170 @@ def _request(
     db.commit()
     source=VerifiedPublicationSource(parse.id,parse.filing_id,parse.accession_no,parse.parser_version,parse.input_manifest_hash,parse.available_at)
     return PublicationRequest(stock.id,identity.id,"sec-us-gaap-v1",parse.available_at+timedelta(seconds=1),"latest-known-v1",(source,))
+
+
+def _consolidated_generated_client(second_scope=None):
+    client = GeneratedMixedConceptAuthorityClient()
+    for url, content in list(client.responses.items()):
+        if url.endswith('FilingSummary.xml'):
+            client.responses[url] = content.replace(b' (Unaudited)', b'')
+        elif url.endswith('aapl-20260627.htm'):
+            client.responses[url] = content.replace(
+                b'<xbrli:segment><xbrldi:explicitMember dimension="us-gaap:StatementBusinessSegmentsAxis">aapl:ProductsMember</xbrldi:explicitMember></xbrli:segment>', b'', 1)
+        elif url.endswith('R2.htm'):
+            client.responses[url] = content.replace(b'<table>',b'<table class="report">',1).replace(
+                b'</body>',b'<table class="authRefData"><tr><td><table><tr><td>Taxonomy documentation</td></tr></table></td></tr></table></body>')
+    index_url = next(u for u in client.responses if u.endswith('/index.json'))
+    index = json.loads(client.responses[index_url])
+    if second_scope:
+        summary_url = next(u for u in client.responses if u.endswith('FilingSummary.xml'))
+        report_url = next(u for u in client.responses if u.endswith('R2.htm'))
+        pre_url = next(u for u in client.responses if u.endswith('_pre.xml'))
+        name = 'CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS'
+        role = 'http://www.apple.com/role/Operations'
+        if second_scope == 'unproven':
+            name, role = 'STATEMENTS OF STOCKHOLDERS EQUITY', 'role/Equity'
+        client.responses[summary_url] = client.responses[summary_url].replace(b'</MyReports>',
+            f'<Report><Position>3</Position><ShortName>{name}</ShortName><Role>{role}</Role><HtmlFileName>R7.htm</HtmlFileName></Report></MyReports>'.encode())
+        report = client.responses[report_url].replace(b'R2.htm',b'R7.htm').replace(b'$ 94,000',b'$ 94,001')
+        report = report.replace(b'CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS',name.encode())
+        client.responses[index_url.removesuffix('index.json')+'R7.htm'] = report
+        index['directory']['item'].append({'name':'R7.htm','type':'XML','size':len(report),'description':'Statement'})
+        if second_scope == 'unproven':
+            pre = client.responses[pre_url]
+            fragment = pre[pre.index(b'<link:presentationLink '):pre.index(b'</link:presentationLink>')+len(b'</link:presentationLink>')]
+            fragment = fragment.replace(b'http://www.apple.com/role/Operations',role.encode())
+            client.responses[pre_url] = pre.replace(b'</link:linkbase>',fragment+b'</link:linkbase>')
+    for item in index['directory']['item']:
+        url = index_url.removesuffix('index.json') + item['name']
+        if url in client.responses:
+            item['size'] = len(client.responses[url])
+    client.responses[index_url] = json.dumps(index).encode()
+    return client
+
+
+def test_consolidated_scope_database_publishes_despite_dimensional_collision(db, tmp_path, isolated_engine):
+    request = _request(db, tmp_path, client=_consolidated_generated_client())
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+    assert db.execute(text("SELECT count(*) FROM metric_facts WHERE metric_key='is.revenue'")).scalar_one() > 0
+    assert db.execute(text("SELECT count(*) FROM sec_statement_occurrence_evidence WHERE locator_json->>'candidate_scope'='consolidated_empty_dimensions_v1'")).scalar_one() > 0
+    assert db.execute(text("SELECT count(*) FROM sec_statement_occurrence_evidence e JOIN sec_raw_xbrl_facts r ON r.id=e.raw_fact_id WHERE e.locator_json->>'candidate_scope'='consolidated_empty_dimensions_v1' AND r.dimensions_structured_json<>'[]'::jsonb")).scalar_one() == 0
+    db.commit()
+    result = subprocess.run(['alembic','downgrade','20260909140000'],cwd=BACKEND,
+        env={**os.environ,'DATABASE_URL':isolated_engine.url.render_as_string(hide_password=False)},capture_output=True,text=True)
+    assert result.returncode != 0 and 'retained parser-v2.9 lineage exists' in result.stderr
+
+
+def test_database_rejects_unproven_consolidated_scope_marker(db, tmp_path, monkeypatch):
+    from dataclasses import replace
+    resolver = financial_ingestion.parse_generated_statement_occurrences
+    def invalid_scope(*args, **kwargs):
+        result = resolver(*args, **kwargs)
+        # The fixture title does not match its full retained name (Unaudited).
+        assert result.candidate_scope == 'all_contexts_v1'
+        return replace(result, occurrences=tuple(replace(o,locator={**o.locator,'candidate_scope':'consolidated_empty_dimensions_v1'}) for o in result.occurrences))
+    monkeypatch.setattr(financial_ingestion,'parse_generated_statement_occurrences',invalid_scope)
+    with pytest.raises(AssertionError):
+        _request(db,tmp_path,client=GeneratedStatementAuthorityClient())
+    run = db.execute(text('SELECT status,error_detail FROM sec_financial_parse_runs')).mappings().one()
+    assert run.status == 'failed' and 'consolidated scope mismatch' in run.error_detail
+
+
+@pytest.mark.parametrize('scope', ['unproven','consolidated'])
+def test_concept_rejection_isolated_only_between_proven_candidate_scopes(db, tmp_path, scope):
+    if scope == 'consolidated':
+        with pytest.raises(AssertionError):
+            _request(db,tmp_path,client=_consolidated_generated_client(scope))
+        assert db.execute(text("SELECT count(*) FROM sec_statement_occurrence_evidence WHERE concept LIKE '%Revenue%'")).scalar_one() == 0
+    else:
+        request = _request(db,tmp_path,client=_consolidated_generated_client(scope))
+        receipt = publish_sec_mapping_result(db,request)
+        db.commit()
+        assert receipt.fact_ids
+
+
+def _negated_generated_client():
+    client = GeneratedStatementAuthorityClient()
+    for url, content in list(client.responses.items()):
+        if url.endswith(("_pre.xml", "_lab.xml")):
+            client.responses[url] = content.replace(
+                b"http://www.xbrl.org/2003/role/terseLabel",
+                b"http://www.xbrl.org/2009/role/negatedLabel",
+            )
+        elif url.endswith("R2.htm"):
+            for amount in (b"94,000", b"90,000", b"250,000", b"240,000"):
+                content = content.replace(b"$ " + amount, b"($ " + amount + b")")
+            client.responses[url] = content
+    index_url = next(url for url in client.responses if url.endswith("/index.json"))
+    index = json.loads(client.responses[index_url])
+    for item in index["directory"]["item"]:
+        url = index_url.removesuffix("index.json") + item["name"]
+        if url in client.responses:
+            item["size"] = len(client.responses[url])
+    client.responses[index_url] = json.dumps(index).encode()
+    return client
+
+
+def test_negated_label_database_publication_preserves_raw_value_and_blocks_downgrade(
+    db, tmp_path, isolated_engine
+):
+    request = _request(db, tmp_path, client=_negated_generated_client())
+    receipt = publish_sec_mapping_result(db, request)
+    db.commit()
+    finalize_sec_publication(db, receipt.run_id)
+    db.commit()
+    facts = db.execute(text(
+        "SELECT value_numeric FROM metric_facts WHERE source_type='sec'"
+    )).scalars().all()
+    assert facts and all(value > 0 for value in facts)
+    assert db.execute(text(
+        "SELECT count(*) FROM sec_statement_occurrence_evidence "
+        "WHERE locator_json->>'preferred_label_role'="
+        "'http://www.xbrl.org/2009/role/negatedLabel'"
+    )).scalar_one() > 0
+    db.commit()
+    result = subprocess.run(
+        ["alembic", "downgrade", "20260909120000"], cwd=BACKEND,
+        env={**os.environ, "DATABASE_URL": isolated_engine.url.render_as_string(hide_password=False)},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert "retained parser-v2.9 lineage exists" in result.stderr
+    assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260909150000"
+
+
+@pytest.mark.parametrize("mutation", ["wrong_role", "wrong_amount"])
+def test_negated_label_database_rejects_incorrect_occurrence_identity(
+    db, tmp_path, monkeypatch, mutation
+):
+    from dataclasses import replace
+    resolver = financial_ingestion.parse_generated_statement_occurrences
+
+    def malformed_result(*args, **kwargs):
+        result = resolver(*args, **kwargs)
+        occurrences = []
+        for occurrence in result.occurrences:
+            locator = dict(occurrence.locator)
+            if mutation == "wrong_role":
+                locator["preferred_label_role"] = "http://www.xbrl.org/2003/role/terseLabel"
+            else:
+                # A different retained cell is not this raw fact's display value.
+                locator["display_value"] = "($ 90,000)"
+            occurrences.append(replace(occurrence, locator=locator))
+        return replace(result, occurrences=tuple(occurrences))
+
+    monkeypatch.setattr(financial_ingestion, "parse_generated_statement_occurrences", malformed_result)
+    with pytest.raises(AssertionError):
+        _request(db, tmp_path, client=_negated_generated_client())
+    failures = db.execute(text(
+        "SELECT status,error_detail FROM sec_financial_parse_runs"
+    )).all()
+    assert failures and all(status == "failed" for status, _ in failures)
+    assert any("generated statement exact numeric identity mismatch" in (detail or "") for _, detail in failures)
+    assert db.execute(text("SELECT count(*) FROM metric_facts")).scalar_one() == 0
 
 
 class _AnnualGeneratedStatementClient(GeneratedStatementAuthorityClient):

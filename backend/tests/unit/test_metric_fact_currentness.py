@@ -577,8 +577,11 @@ def test_stock_facts_api_returns_typed_currentness_overflow(
         headers=auth_headers(user),
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == (
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == 1
+    assert response.json()[0]["metric_key"] == "r23.api.bound"
+    assert response.json()[0]["value_numeric"] is None
+    assert response.json()[0]["reason_code"] == (
         "metric_fact_currentness_scope_bound_exceeded"
     )
 
@@ -594,7 +597,7 @@ def test_stock_facts_api_returns_typed_historical_currentness_failure(
     def unavailable(*_args, **_kwargs):
         raise HistoricalCurrentnessUnverifiableError()
 
-    monkeypatch.setattr(stocks_endpoint, "current_metric_fact_ids_at", unavailable)
+    monkeypatch.setattr(stocks_endpoint, "read_bounded_company_facts", unavailable)
     response = client.get(
         f"/api/v1/stocks/{stock.id}/facts",
         headers=auth_headers(user),

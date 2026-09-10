@@ -112,9 +112,15 @@ def test_compact_statement_retention_has_new_parser_scoped_policy_identity() -> 
     )
 
 
-def test_parser_v27_explicitly_inherits_v24_v25_and_v26_semantics() -> None:
+def test_parser_v29_preserves_v28_and_inherits_prior_semantics() -> None:
     assert PARSER_V2_6 == "xbrl-lineage-v2.6"
-    assert PARSER_V2 == "xbrl-lineage-v2.7"
+    assert PARSER_V2 == "xbrl-lineage-v2.9"
+    assert _is_parser_v24("xbrl-lineage-v2.8")
+    assert _is_parser_v25("xbrl-lineage-v2.8")
+    assert _is_parser_v26("xbrl-lineage-v2.8")
+    assert _is_parser_v24("xbrl-lineage-v2.7")
+    assert _is_parser_v25("xbrl-lineage-v2.7")
+    assert _is_parser_v26("xbrl-lineage-v2.7")
     assert _is_parser_v24(PARSER_V2_6)
     assert _is_parser_v24(PARSER_V2)
     assert _is_parser_v25(PARSER_V2_6)

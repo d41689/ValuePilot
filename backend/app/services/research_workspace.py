@@ -44,10 +44,8 @@ from app.services.value_line_report_identity import (
     resolve_fact_report_identities,
 )
 from app.services.metric_fact_currentness import (
-    CurrentnessScope,
     CurrentnessScopeError,
     HistoricalCurrentnessUnverifiableError,
-    current_metric_fact_ids_at,
 )
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.canonical_financials import (
@@ -56,7 +54,6 @@ from app.services.canonical_financials import (
     evaluation_business_date,
     reviewed_method_gate,
     system_method_for_fact,
-    visible_metric_fact_predicate,
 )
 from app.services.source_reconciliation import (
     CanonicalReconciliationError,
@@ -64,6 +61,8 @@ from app.services.source_reconciliation import (
     build_source_reconciliation_report_from_facts,
     group_metric_facts_by_reconciliation_slot,
     guard_reconciled_source_selection,
+    read_bounded_company_facts,
+    with_reconciliation_policy_snapshot,
 )
 
 
@@ -119,6 +118,23 @@ def _reconciled_workspace_facts(
         by_metric.setdefault(fact.metric_key, []).append(fact)
 
     for metric_key, metric_facts in sorted(by_metric.items()):
+        try:
+            complete_unit: dict[int, MetricFact] = {}
+            for source_type in sorted({fact.source_type for fact in metric_facts}):
+                for fact in guard_reconciled_source_selection(
+                    metric_facts, consumer="research_workspace",
+                    selected_source_type=source_type,
+                    evaluation_snapshot=evaluation_snapshot,
+                    session=session, user_id=user_id,
+                ):
+                    complete_unit[fact.id] = fact
+        except CanonicalReconciliationError:
+            # A blocked complete metric is not a reason to hide safe slots.
+            # Reuse the original slot-level checks below; never use a prefix.
+            pass
+        else:
+            safe_by_id.update(complete_unit)
+            continue
         for slot in group_metric_facts_by_reconciliation_slot(
             session,
             facts=metric_facts,
@@ -163,6 +179,7 @@ def _reconciled_workspace_facts(
     return [safe_by_id[fact_id] for fact_id in sorted(safe_by_id)], blocked
 
 
+@with_reconciliation_policy_snapshot
 def build_research_workspace(
     session: Session,
     *,
@@ -205,34 +222,14 @@ def build_research_workspace(
         .all()
     )
     try:
-        current_fact_ids = current_metric_fact_ids_at(
+        facts, unavailable_units = read_bounded_company_facts(
             session,
-            knowledge_cutoff=evaluated_at,
-            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-            scope=CurrentnessScope.one_stock(
-                stock.id, user_ids=(user_id, None)
-            ),
+            stock_id=stock.id,
+            user_id=user_id,
+            evaluation_snapshot=evaluation_snapshot,
         )
     except (HistoricalCurrentnessUnverifiableError, CurrentnessScopeError) as error:
         raise ResearchCaseError(error.code, str(error), status_code=409) from error
-    facts = session.scalars(
-        select(MetricFact)
-        .where(
-            MetricFact.stock_id == stock.id,
-            MetricFact.id.in_(current_fact_ids),
-            visible_metric_fact_predicate(MetricFact, user_id=user_id),
-        )
-        .order_by(
-            MetricFact.metric_key,
-            MetricFact.period_end_date.desc().nullslast(),
-            MetricFact.created_at.desc(),
-            MetricFact.id.desc(),
-        )
-        .limit(MAX_RECONCILIATION_FACTS + 1)
-    ).all()
-    reconciliation_bound_exceeded = len(facts) > MAX_RECONCILIATION_FACTS
-    facts = facts[:MAX_RECONCILIATION_FACTS]
-    reconciliation_blocked_states: list[dict[str, Any]] = []
     method_gate_decisions = {
         method_key: reviewed_method_gate(
             session,
@@ -248,38 +245,15 @@ def build_research_workspace(
             "system_valuation",
         )
     }
-    if reconciliation_bound_exceeded:
-        # A truncated prefix cannot support any trustworthy slot conclusion.
-        facts = []
-        unsupported_method_states: list[dict[str, Any]] = []
-        reconciliation_blocked_states.append(
-            {
-                "id": None,
-                "status": "unavailable",
-                "reason_code": "reconciliation_bound_exceeded",
-                "metric_key": None,
-                "value_numeric": None,
-                "value_text": None,
-                "unit": None,
-                "currency": None,
-                "period_type": None,
-                "period_end_date": None,
-                "source_type": None,
-                "source_document_id": None,
-                "source_ref_id": None,
-                "original_evidence_route": None,
-            }
-        )
-    else:
-        facts, unsupported_method_states, _ = apply_reviewed_method_gates(
-            session,
-            stock_id=stock.id,
-            facts=facts,
-            effective_as_of=as_of,
-            knowledge_at=evaluated_at,
-            evaluation_snapshot=evaluation_snapshot,
-            precomputed_decisions=method_gate_decisions,
-        )
+    facts, unsupported_method_states, _ = apply_reviewed_method_gates(
+        session,
+        stock_id=stock.id,
+        facts=facts,
+        effective_as_of=as_of,
+        knowledge_at=evaluated_at,
+        evaluation_snapshot=evaluation_snapshot,
+        precomputed_decisions=method_gate_decisions,
+    )
     coverage_rows = (
         session.query(ResearchCoverageRequirement)
         .filter(
@@ -335,12 +309,23 @@ def build_research_workspace(
             status_code=409,
         ) from error
     try:
-        if reconciliation_bound_exceeded:
+        if len(facts) > MAX_RECONCILIATION_FACTS or unavailable_units:
+            by_metric: dict[str, list[MetricFact]] = {}
+            for fact in facts:
+                by_metric.setdefault(fact.metric_key, []).append(fact)
             source_reconciliation = {
-                "status": "partial",
-                "reason_code": "reconciliation_bound_exceeded",
-                "consumer_gate_status": "blocked",
-                "limit": MAX_RECONCILIATION_FACTS,
+                "status": "partial" if unavailable_units else "partitioned",
+                "partitioning": "complete_metric_history",
+                "knowledge_cutoff": evaluated_at.isoformat(),
+                "unavailable_units": unavailable_units,
+                "by_metric": [
+                    {"metric_key": key,
+                     "report": build_source_reconciliation_report_from_facts(
+                         session, facts=unit, user_id=user_id, stock_id=stock.id,
+                         evaluation_snapshot=evaluation_snapshot,
+                     )}
+                    for key, unit in sorted(by_metric.items())
+                ],
             }
         else:
             source_reconciliation = build_source_reconciliation_report_from_facts(
@@ -356,13 +341,13 @@ def build_research_workspace(
             "reason_code": "reconciliation_bound_exceeded",
             "message": str(error),
         }
-    if not reconciliation_bound_exceeded:
-        facts, reconciliation_blocked_states = _reconciled_workspace_facts(
-            session,
-            facts=facts,
-            user_id=user_id,
-            evaluation_snapshot=evaluation_snapshot,
-        )
+    facts, reconciliation_blocked_states = _reconciled_workspace_facts(
+        session,
+        facts=facts,
+        user_id=user_id,
+        evaluation_snapshot=evaluation_snapshot,
+    )
+    reconciliation_blocked_states.extend(unavailable_units)
     try:
         report_identities_by_fact = resolve_fact_report_identities(
             session,

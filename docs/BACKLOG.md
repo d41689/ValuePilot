@@ -9,6 +9,64 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Test isolation — committed currentness fixtures clean up only on success
+- **Found:** 2026-09-09, PR #147 canonical gate during an observed clock rollback.
+- **Severity:** low; failure cascades inside the disposable pytest schema only.
+- **Problem:** `test_post_snapshot_facts_do_not_consume_candidate_scope_bound`
+  and `test_multi_stock_keyset_excludes_post_snapshot_backdated_facts` commit
+  independent transactions, then clean them up after assertions instead of in
+  finally. A PIT assertion failure left 1,002 stocks / 3,004 facts and caused
+  later unrelated empty-table assertions to fail. Session teardown still drops
+  the isolated schema; public development data was not involved.
+- **Acceptance criteria:** run exact-target fixture cleanup on assertion/error
+  paths without masking the original failure, and verify a forced failure does
+  not contaminate the next test. Do not weaken PIT or erase shared data.
+- **Context:** `backend/tests/unit/test_metric_fact_currentness.py`;
+  [gate evidence](tasks/2026-09-09_single-company-data-readiness.md).
+
+### S2 — SEC evidence links bypass the authenticated API client
+- **Found:** 2026-09-09, PR #147 real AAPL case 1 browser/HTTP acceptance.
+- **Severity:** medium; blocks the ordinary user's evidence-reading workflow.
+- **Problem:** the research page uses Next Link for an authenticated SEC JSON
+  evidence route. Navigation does not attach the apiClient Bearer header;
+  ordinary GET returns 401, while the same authorized API request returns 200.
+- **Acceptance criteria:** display SEC evidence inside the existing research
+  page through the existing authenticated client, with typed loading/error and
+  identity/period/source details; preserve document-review links and source
+  authorization. No anonymous evidence access, URL token, or external SEC fetch.
+  Verify a real AAPL cash-flow/debt evidence click, not only a source-scanner test.
+- **Context:** [S1 runtime evidence](tasks/2026-09-09_single-company-data-readiness.md),
+  [S2 scope](plans/single-company-research-minimal-plan.md).
+
+### S2 — research UI still truncates otherwise-readable financial history
+- **Found:** 2026-09-09, PR #147 / `read_stock_facts` over AAPL stock 66.
+- **Severity:** medium; blocks ordinary financial reading.
+- **Problem:** PR #147 resolves the backend global-history/currentness bound
+  through complete metric units; actual AAPL workspace now returns 834 numeric
+  facts. The original research page still takes only the first 60 fundamentals,
+  hiding most metrics and providing no readable ten-year annual table.
+- **Acceptance criteria:** traverse the complete materialized response under
+  its existing evaluation boundary, with >60 displayed / >250 candidate /
+  >1,000-history fixtures; show annual human-readable labels, units, source roles
+  and explicit gaps. Keep all competing versions, recursive lineage, permissions
+  and PIT checks; no limit increase, silent prefix, historical deletion or second
+  fact truth. Verify actual AAPL browsing and preserve the backend regressions.
+- **Context:** [S1 diagnostic and dependency correction](tasks/2026-09-09_single-company-data-readiness.md),
+  [minimal S2 plan](plans/single-company-research-minimal-plan.md).
+
+### Exclude generated files from development Docker build contexts
+- **Found:** 2026-09-09, PR #147 / S1 closing gate
+- **Severity:** low (build time and local disk use)
+- **Problem:** the api and web build contexts transferred approximately 622 MB
+  and 647 MB respectively; local generated artifacts enter the image build.
+  This is separate from the authorized AAPL persistent-data budget.
+- **Acceptance criteria:** add narrowly scoped Docker exclusions for generated
+  files after checking runtime and fixture requirements; all canonical gates
+  still pass and clean-build context sizes are recorded before/after.
+- **Context:** `backend/Dockerfile`, `frontend/Dockerfile`;
+  [S1 task](tasks/2026-09-09_single-company-data-readiness.md).
+- **Issue:** —
+
 ### FT-07 — operator-triggered Piotroski authority recomputation
 - **Found:** 2026-09-04, PR #143 Terra R6 review
 - **Severity:** medium (all legacy scores without the strict versioned input
@@ -316,6 +374,18 @@ deferral above.
 - **Problem:** the workspace is organized around fields and metric keys rather
   than the questions required before allocating capital.
 - **Outcome:** guide evidence-based judgment without authoring the decision.
+- **Audit supplement (2026-09-09; main `18c7f15e`; severity: medium):**
+  `research_workspace.py` clears numeric fundamentals when the complete-company
+  candidate count exceeds 250; the case page also silently displays only the
+  first 60 fundamentals. This prevents ordinary ten-year/multi-source research
+  from scaling. The global fail-closed behavior is explicitly required by PRD
+  §H.10, so repair requires a reviewed, narrowly scoped query-contract change,
+  not just a raised limit or truncated comparison. Preserve complete slot and
+  dependency reconciliation before display pagination. Method-review and source
+  conflict APIs also lack a complete researcher-facing resolution workflow;
+  do not claim backend availability is usable product completion. See
+  [audit A01–A06](tasks/2026-09-09_investor-value-code-audit.md) and the proposed
+  [single-company slice](plans/single-company-research-minimal-plan.md).
 - **Acceptance criteria:**
   - The workspace covers circle of competence; business model/value drivers;
     moat; management integrity and capital allocation; balance-sheet/refinancing
