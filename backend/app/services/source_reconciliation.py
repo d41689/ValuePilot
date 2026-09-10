@@ -83,47 +83,71 @@ def read_bounded_company_facts(
         session, knowledge_cutoff=evaluation_snapshot.cutoff
     )
     visible = visible_metric_fact_predicate(MetricFact, user_id=user_id)
-    keys = list(session.scalars(
-        select(MetricFact.metric_key).where(
-            MetricFact.stock_id == stock_id,
-            visible,
-            fact_creation_visible_predicate(
-                evaluation_snapshot=evaluation_snapshot,
-                bind_name="company_metric_discovery_snapshot",
-            ),
-        ).distinct().order_by(MetricFact.metric_key)
-        .limit(MAX_CURRENTNESS_METRIC_KEYS + 1)
-        .execution_options(autoflush=False)
-    ))
-    if len(keys) > MAX_CURRENTNESS_METRIC_KEYS:
-        raise CurrentnessScopeError(
-            CURRENTNESS_SCOPE_BOUND_EXCEEDED,
-            "Company metric discovery exceeds 64 keys; no prefix is available.",
+    complete: dict[str, list[MetricFact]] | None = None
+    try:
+        current_ids = current_metric_fact_ids_at(
+            session,
+            knowledge_cutoff=evaluation_snapshot.cutoff,
+            knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+            scope=CurrentnessScope.one_stock(stock_id, user_ids=(user_id, None)),
         )
+        complete = {}
+        for fact in session.scalars(select(MetricFact).where(
+            MetricFact.id.in_(current_ids), visible,
+        ).order_by(MetricFact.metric_key, MetricFact.id)):
+            complete.setdefault(fact.metric_key, []).append(fact)
+    except CurrentnessScopeError as error:
+        if error.code != CURRENTNESS_SCOPE_BOUND_EXCEEDED:
+            raise
+    # Preserve every company the original <=1,000-history path could read,
+    # including companies with many sparsely populated metric keys.
+    if complete is not None:
+        keys = sorted(complete)
+    else:
+        keys = list(session.scalars(
+            select(MetricFact.metric_key).where(
+                MetricFact.stock_id == stock_id,
+                visible,
+                fact_creation_visible_predicate(
+                    evaluation_snapshot=evaluation_snapshot,
+                    bind_name="company_metric_discovery_snapshot",
+                ),
+            ).distinct().order_by(MetricFact.metric_key)
+            .limit(MAX_CURRENTNESS_METRIC_KEYS + 1)
+            .execution_options(autoflush=False)
+        ))
+        if len(keys) > MAX_CURRENTNESS_METRIC_KEYS:
+            raise CurrentnessScopeError(
+                CURRENTNESS_SCOPE_BOUND_EXCEEDED,
+                "Large company metric discovery exceeds 64 keys; no prefix is available.",
+            )
     facts: list[MetricFact] = []
     unavailable: list[dict[str, Any]] = []
     for key in keys:
         reason = None
         try:
-            current_ids = current_metric_fact_ids_at(
-                session,
-                knowledge_cutoff=evaluation_snapshot.cutoff,
-                knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
-                scope=CurrentnessScope.one_stock(
-                    stock_id, metric_keys=(key,), user_ids=(user_id, None),
-                ),
-            )
-            unit = list(session.scalars(
-                select(MetricFact).where(
-                    MetricFact.id.in_(current_ids),
-                    MetricFact.stock_id == stock_id,
-                    visible,
-                ).order_by(
-                    MetricFact.period_end_date.desc().nullslast(),
-                    MetricFact.created_at.desc(), MetricFact.id.desc(),
-                ).limit(MAX_RECONCILIATION_FACTS + 1)
-                .execution_options(autoflush=False)
-            ))
+            if complete is not None:
+                unit = complete[key]
+            else:
+                current_ids = current_metric_fact_ids_at(
+                    session,
+                    knowledge_cutoff=evaluation_snapshot.cutoff,
+                    knowledge_txid_snapshot=evaluation_snapshot.visibility_snapshot,
+                    scope=CurrentnessScope.one_stock(
+                        stock_id, metric_keys=(key,), user_ids=(user_id, None),
+                    ),
+                )
+                unit = list(session.scalars(
+                    select(MetricFact).where(
+                        MetricFact.id.in_(current_ids),
+                        MetricFact.stock_id == stock_id,
+                        visible,
+                    ).order_by(
+                        MetricFact.period_end_date.desc().nullslast(),
+                        MetricFact.created_at.desc(), MetricFact.id.desc(),
+                    ).limit(MAX_RECONCILIATION_FACTS + 1)
+                    .execution_options(autoflush=False)
+                ))
             if len(unit) > MAX_RECONCILIATION_FACTS:
                 reason = "reconciliation_bound_exceeded"
             else:

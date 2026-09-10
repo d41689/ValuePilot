@@ -1665,8 +1665,11 @@ value; unaffected slots remain visible.
 The stock-facts and research-workspace reads may partition a company into
 complete metric-history units. Discovery includes all tenant-visible metric
 keys at one database evaluation cutoff/transaction snapshot, without filtering
-source role, period, numeric availability, or currentness first. Discovery is
-bounded to 64 keys; overflow is a typed request failure, never a prefix.
+source role, period, numeric availability, or currentness first. The original
+complete-company path within 1,000 historical candidates remains supported,
+including companies with more than 64 sparse metric keys. Only when that path
+overflows does large-history partition discovery apply its 64-key bound;
+discovery overflow is a typed request failure, never a prefix.
 Each unit retains the existing 1,000 historical-candidate currentness bound
 and 250 current-candidate reconciliation bound. A unit exceeding either bound
 emits a metric-specific unavailable state and no numeric prefix; other complete

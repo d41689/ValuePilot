@@ -77,11 +77,23 @@ def test_company_metric_discovery_never_returns_a_prefix(
 ):
     user, stock = _fixture(db_session, user_factory)
     for index in range(65):
-        _insert(db_session, user, stock, key=f"unit.key_{index}", count=1)
+        _insert(db_session, user, stock, key=f"unit.key_{index}", count=16)
     db_session.commit()
     with pytest.raises(CurrentnessScopeError) as captured:
         _read(db_session, user, stock)
     assert captured.value.code == "metric_fact_currentness_scope_bound_exceeded"
+
+
+def test_existing_small_company_with_more_than_64_keys_remains_readable(
+    db_session, user_factory,
+):
+    user, stock = _fixture(db_session, user_factory)
+    for index in range(65):
+        _insert(db_session, user, stock, key=f"unit.key_{index}", count=1)
+    db_session.commit()
+    facts, unavailable = _read(db_session, user, stock)
+    assert len(facts) == 65
+    assert unavailable == []
 
 
 def test_company_units_exclude_other_owner_and_post_snapshot_rows(
