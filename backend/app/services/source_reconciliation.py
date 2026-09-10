@@ -9,10 +9,12 @@ to replay.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
 from itertools import combinations
+from functools import wraps
 import json
 import re
 from typing import Any, Iterable, Sequence
@@ -65,6 +67,28 @@ BLOCKING_EXCLUSION_REASONS = frozenset(
 PASSTHROUGH_EXCLUSION_REASONS = frozenset(
     {"user_authored_valuation_out_of_scope", "user_manual_input_out_of_scope"}
 )
+
+_policy_read_scope: ContextVar[list[MappingSpec] | None] = ContextVar(
+    "reconciliation_policy_read_scope", default=None
+)
+
+
+def with_reconciliation_policy_snapshot(read):
+    """Load config once per synchronous product read, never across requests.
+
+    Only file parsing is shared. Every registry, fact, source-permission and
+    timeline check remains in its original database-aware path.
+    """
+    @wraps(read)
+    def scoped(*args, **kwargs):
+        if _policy_read_scope.get() is not None:
+            return read(*args, **kwargs)
+        token = _policy_read_scope.set([])
+        try:
+            return read(*args, **kwargs)
+        finally:
+            _policy_read_scope.reset(token)
+    return scoped
 
 
 def read_bounded_company_facts(
@@ -827,7 +851,12 @@ def _policy_datetime(value: Any, *, field: str) -> datetime:
 
 
 def _resolved_mapping_spec() -> MappingSpec:
-    return load_resolved_value_line_mapping_spec()
+    scope = _policy_read_scope.get()
+    if scope is None:
+        return load_resolved_value_line_mapping_spec()
+    if not scope:
+        scope.append(load_resolved_value_line_mapping_spec())
+    return scope[0]
 
 
 def _mapping_spec_identity(

@@ -62,6 +62,7 @@ from app.services.source_reconciliation import (
     group_metric_facts_by_reconciliation_slot,
     guard_reconciled_source_selection,
     read_bounded_company_facts,
+    with_reconciliation_policy_snapshot,
 )
 
 
@@ -117,6 +118,23 @@ def _reconciled_workspace_facts(
         by_metric.setdefault(fact.metric_key, []).append(fact)
 
     for metric_key, metric_facts in sorted(by_metric.items()):
+        try:
+            complete_unit: dict[int, MetricFact] = {}
+            for source_type in sorted({fact.source_type for fact in metric_facts}):
+                for fact in guard_reconciled_source_selection(
+                    metric_facts, consumer="research_workspace",
+                    selected_source_type=source_type,
+                    evaluation_snapshot=evaluation_snapshot,
+                    session=session, user_id=user_id,
+                ):
+                    complete_unit[fact.id] = fact
+        except CanonicalReconciliationError:
+            # A blocked complete metric is not a reason to hide safe slots.
+            # Reuse the original slot-level checks below; never use a prefix.
+            pass
+        else:
+            safe_by_id.update(complete_unit)
+            continue
         for slot in group_metric_facts_by_reconciliation_slot(
             session,
             facts=metric_facts,
@@ -161,6 +179,7 @@ def _reconciled_workspace_facts(
     return [safe_by_id[fact_id] for fact_id in sorted(safe_by_id)], blocked
 
 
+@with_reconciliation_policy_snapshot
 def build_research_workspace(
     session: Session,
     *,

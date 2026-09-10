@@ -1679,8 +1679,12 @@ Units do not select a preferred source or change any fact/current slot.
 
 One response materializes all units using the same evaluation snapshot; UI
 pagination traverses that response, not independent live queries. Refresh is a
-new read, not continuation of a historical snapshot. Workspace reconciliation
-keeps the existing report for a whole response within 250 facts. Larger reads
+new read, not continuation of a historical snapshot. These product reads may
+parse their deployed mapping/taxonomy configuration once within that read;
+each subsequent request reloads it. This is not a process-lifetime policy cache
+and does not cache registry approval, permissions, facts, or currentness.
+Workspace reconciliation keeps the existing report for a whole response within
+250 facts. Larger reads
 expose explicitly partitioned per-metric reports at that same cutoff, rather
 than pretending one partial prefix has a complete-company report digest.
 Incomplete units remain visible in both fundamentals and reconciliation status.

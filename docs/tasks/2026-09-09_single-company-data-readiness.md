@@ -349,3 +349,49 @@ gold acceptance）；尚非完整 closing gate。内部浏览器仍停在登录�
 回归为 74 passed / 222.02 秒。完整 gate 将覆盖最终兼容性修正，不能用之前结果代替。
 本次续跑前一目标回合属于有效等待：通过活跃测试 session 取回进度；本回合已实际修改、
 测试并提交必要查询修复，而非只重复状态。
+
+真实 UI 补充：用户另行授权创建本地测试管理员，使用用户指定密码完成登录；只记录账号
+`admin@valuepilot.local` / user 1，不记录密码、hash 或 token。在现有 Inbox 的 AAPL 入口
+创建 case 1，未代填投资判断。workspace 长时间 loading，web 代理实际报
+`Failed to proxy .../research/cases/1/workspace` / `ECONNRESET`。
+因此读取耗时已成为验收阻塞，不只是可选优化。必要最小修复候选：同一同步产品读取中
+共享一份 resolved mapping 配置，下一次请求重新加载；不缓存 facts、权限、DB registry
+或 currentness，不提高 timeout 或删掉冲突检查。先测请求间重载、异常清理和并发隔离。
+完整 gate 在 f6cf44e0 的后端运行阶段出现失败，待其完整详情；不可据聚焦测试宣称通过。
+
+请求内配置复用的 11 项回归通过 / 7.08 秒，另 47 项研究/来源 API 回归通过 / 20.12 秒。
+真实 SEC workspace 仍于 02:05:53 / 02:06:27 UTC 发生代理 ECONNRESET，故继续最小定位。
+只读 profile：三次同一 SEC 槽位 guard 共 0.403 秒，其中 34 次 SQL 执行；全页面仍逐条调用。
+必要下一步是先对完整指标调用原共享 guard，成功即使用其返回值；失败才退回原逐槽位
+隔离处理，不能把失败的指标整个误标 clear。测试先证明当前 330 次调用，再验证三个完整
+指标仅需三次 guard，以及已有同槽位、派生/权限失败继续阻止相关数值。没有移除任何 guard。
+
+上述批量完整指标路径与逐槽位失败回退：57 项公司/研究/来源 API/真实 SEC 来源回归通过，
+耗时 31.22 秒。真实开发库只读 `build_research_workspace(user_id=1,case_id=1)` 用时 2.44 秒，
+返回 1,056 条 fundamentals（834 条 numeric，其余 typed 状态保留），不是完整浏览器验收的替代。
+
+### v2.9 AAPL 持久数据结果（实际开发库）
+
+- 新 ingestion `9723eb6e-5ed8-40f2-89db-dc3cf27249b5` 已 finalized，available_at
+  `2026-09-10T01:59:01.176830Z`。42 个选定 filing，零新 filing/artifact，追加 42 个
+  v2.9 parse（43–84）及 41,374 raw facts，failures=[]，external_requests=[]。
+- 新 publication `c45e851c-23aa-5acd-b52e-d5795b2e5285` 为 succeeded 且 finalized，
+  available_at `2026-09-10T02:01:47.116147Z`。1,264 published / 284 unresolved /
+  4,702 rejected audit dispositions；精确同请求 replay 返回同一 run，没有新事实。
+  初始 receipt.available=false 是 finalize 前返回值；以上完成状态由数据库独立确认。
+- 全部 AAPL facts 2,390 / current 834 / 18 个 metric keys；其他股票 facts=0；
+  current 同槽位重复=0；publication↔fact 身份/值绑定不一致=0。
+- 年度净利润 FY2016–2025 恢复 10/10；FY2023 / 2024 / 2025 为
+  USD 96,995,000,000 / 93,736,000,000 / 112,010,000,000，current fact IDs
+  1911 / 1921 / 1930，SEC publication/evidence IDs 2169 / 2179 / 2188。
+  选定 filing 也保留 FY2015 比较数据，不将其计入十年窗口分母。
+- 第二次 ingestion `b98e1cfc-444b-416a-9cc6-d979e0c94277` 完成；42 份均复用，
+  filing/artifact/parse/raw 新增全为 0，failures=[]，external_requests=[]。
+- 累计新增持久数据 531,286,481 bytes（约 507 MiB），仍使用原始基线
+  (267,796,480 public relation bytes, 1,323,339,985 target file bytes)，没有重置预算。
+  源目录只读；新 parser 复用同一批内容文件，没有重新下载。
+- 数据写入前 DB 时钟已越过先前 knowledge/finalize 时间，操作员脚本增加 fail-before-write
+  时间/预算检查；未改时钟、回填既有记录或改写保留证据。
+
+当前代码仍需新的完整 closing gate 覆盖请求内配置/批量 guard；正在运行的上一轮 gate 已有
+失败，不能把这些聚焦通过记录冒充整体验收。S2 的 60 行展示截断及 S3 引导仍未实现。

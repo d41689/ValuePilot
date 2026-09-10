@@ -119,8 +119,20 @@ def test_company_units_exclude_other_owner_and_post_snapshot_rows(
 
 @pytest.mark.parametrize("surface", ["facts", "workspace"])
 def test_product_company_read_has_no_global_prefix(
-    client, db_session, user_factory, auth_headers, surface,
+    client, db_session, user_factory, auth_headers, surface, monkeypatch,
 ):
+    from app.api.v1.endpoints import stocks as stock_endpoint
+    from app.services import research_workspace
+
+    target = research_workspace if surface == "workspace" else stock_endpoint
+    original_guard = target.guard_reconciled_source_selection
+    guard_calls = []
+
+    def counted_guard(facts, **kwargs):
+        guard_calls.append(len(facts))
+        return original_guard(facts, **kwargs)
+
+    monkeypatch.setattr(target, "guard_reconciled_source_selection", counted_guard)
     user, stock = _fixture(db_session, user_factory)
     for key in ("is.revenue", "is.net_income", "is.operating_cash_flow"):
         _insert(db_session, user, stock, key=key, count=110)
@@ -146,6 +158,7 @@ def test_product_company_read_has_no_global_prefix(
     assert len(facts) == 330
     assert len({fact["id"] for fact in facts}) == 330
     assert all(fact["value_numeric"] is not None for fact in facts)
+    assert guard_calls == [110, 110, 110]
     if surface == "workspace":
         reports = payload["source_reconciliation"]
         assert reports["partitioning"] == "complete_metric_history"

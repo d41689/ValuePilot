@@ -84,6 +84,7 @@ from app.services.source_reconciliation import (
     group_metric_facts_by_reconciliation_slot,
     guard_reconciled_source_selection,
     read_bounded_company_facts,
+    with_reconciliation_policy_snapshot,
 )
 
 router = APIRouter()
@@ -1669,6 +1670,7 @@ def read_source_reconciliation(
         ) from error
 
 @router.get("/{stock_id}/facts", response_model=list[dict])
+@with_reconciliation_policy_snapshot
 def read_stock_facts(
     stock_id: int,
     session: SessionDep,
@@ -1713,16 +1715,20 @@ def read_stock_facts(
         {**state, "period": None, "evidence_route": None}
         for state in unavailable_units
     ]
-    slot_groups = [
-        slot
-        for metric_key in sorted(facts_by_metric)
-        for slot in group_metric_facts_by_reconciliation_slot(
-            session,
-            facts=facts_by_metric[metric_key],
-            user_id=current_user.id,
-            evaluation_snapshot=evaluation_snapshot,
-        )
-    ]
+    slot_groups = []
+    for metric_key in sorted(facts_by_metric):
+        metric_facts = facts_by_metric[metric_key]
+        try:
+            reconciled_facts.extend(guard_reconciled_source_selection(
+                metric_facts, consumer="stock_facts",
+                evaluation_snapshot=evaluation_snapshot,
+                session=session, user_id=current_user.id,
+            ))
+        except (CanonicalReconciliationError, CanonicalSourceConflictError):
+            slot_groups.extend(group_metric_facts_by_reconciliation_slot(
+                session, facts=metric_facts, user_id=current_user.id,
+                evaluation_snapshot=evaluation_snapshot,
+            ))
     for slot_facts in slot_groups:
         try:
             reconciled_facts.extend(
