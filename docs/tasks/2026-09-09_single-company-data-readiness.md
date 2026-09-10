@@ -2,9 +2,11 @@
 
 日期：2026-09-09
 
-状态：已批准的 negatedLabel 修复已通过完整代码验收，开发库已升级。
-AAPL 离线导入及 canonical publication 已实际执行并验证重复运行；零外部拉取。
-S1 未通过：年度净利润的维度歧义、currentness 全公司 1,000 条上限阻塞最低验收；见末尾实测与待审方案。
+状态（2026-09-10 续跑）：年度净利润及公司读取上限阻塞已修复，开发库已升级。
+AAPL 离线导入、canonical publication 与重复运行已验证；零外部拉取。
+当前认证接口返回 834 条数值事实，最近三年 27 处证据核对通过；GitHub CI 已通过。
+本地完整 closing gate 已通过，S1 数据与实现验收通过，等待合并确认；此前时钟回退记录保留于末尾。
+S2 页面展示/证据入口、S3 判断引导和用户最终走查仍未完成；没有合并或部署。
 
 ## Goal / Acceptance Criteria
 
@@ -460,3 +462,51 @@ cutoff 为 `01:31:04 UTC`。检索测试代码未发现系统时间设置命令�
 156 failed / 1,222 passed / KeyboardInterrupt / exit 2（127.57 秒），不是完整验收。
 后续前端步骤未执行。停止重复 closing gate，待运行环境时间稳定后再验收；不把故障
 期间的部分通过或 GitHub 另一运行结果包装为本地 PASS。S1/S2/S3 整体目标保持未完成。
+
+### 2026-09-10 续跑：当前读取及独立 CI 复核
+
+用户要求继续后，12:17 UTC 主机/数据库时间均已晚于 v2.9 publication；随后容器和数据库
+时钟正常向前推进。本次没有调整系统时间、重放导入、重新发布或新增外部 SEC 请求。
+public 仍为 2,390 facts / 834 current，原持久数据预算基线保持不变。
+
+通过正常认证会话实际请求 case 1 workspace：HTTP 200 / 2.03 秒 / 834 numeric，
+as_of=2026-09-10。FY2023–2025 九类核心/SBC 指标共 27 个 evidence GET 全部通过
+身份、数值、期间、币种/股数单位、actual/source role、非空 inputs/locator 校验。
+八类 FY2016–2025 为 10/10；现金仍仅 FY2019–2025，FY2016–2018 不补零。
+探针结束撤销临时会话；未保存用户投资判断。
+
+独立读取 GitHub run [34430212954](https://github.com/d41689/ValuePilot/actions/runs/34430212954/job/102724049156)
+的实际日志，验证其 HEAD 为 `7477668a0a009bbb51560652eaee23d67d432025`：
+完整后端 2,786 passed（1,190.88 秒），前端 233 passed，migration/lint/production build
+成功，另有 Rate Guard 42 passed。该结果不是本地时钟根因已修复的证明，也不是 S2/S3 验收。
+本地已在同一 HEAD 按原样启动六条 canonical 命令，使用既有离线 override；结果待下节。
+
+### 本轮 closing sign-off
+
+代码/测试基线：`7477668a`，后续仅更新本记录、计划进度和 BACKLOG，不改产品代码。
+本地依次执行原样 canonical 命令，完整进程 exit 0：
+
+| Gate | 实际结果 |
+| --- | --- |
+| `docker compose up -d --build` | PASS；保留离线 override |
+| `docker compose exec -T api alembic upgrade head` | PASS；开发库 head `20260909150000` |
+| `docker compose exec -T api pytest -q` | 2,786 passed，2 个既有依赖弃用警告，993.30 秒 |
+| `docker compose exec -T web sh -lc 'node --test lib/*.test.js'` | 233 passed，0 failed |
+| `docker compose exec -T web npm run lint` | PASS |
+| `docker compose exec -T web sh -lc 'NODE_ENV=production npm run build'` | PASS；27/27 static pages |
+| `git diff --check` | PASS |
+
+12:25 UTC 只读复核：public relations 495,001,600 bytes，目标文件 1,627,454,114 bytes；
+相对原始基线累计 531,319,249 bytes（约 507 MiB），未超 2 GiB。facts 仍为
+2,390 / current 834 / other-stock 0。EDGAR 为 replay，scheduler 与 13F worker 为 false。
+本轮没有重新导入、发布、请求 SEC、改写保留证据或触碰生产。
+
+必要修改自审未发现新的阻塞项：旧 parser 语义保留；完整指标单元及失败后的原槽位检查
+均使用共享 guard；配置仅请求内复用；没有删历史、提高资源常量或放宽 PIT。
+这属于实现方自审，不伪称第三方独立 review，也不保证不存在未知缺陷。
+
+结论：S1 数据及实现验收通过，PR #147 仍 Draft，合并/部署须另行确认。
+S2 仍须完成年度表、60 行截断移除和认证证据展示，S3 及用户本人最终走查尚未完成。
+现金 FY2016–2018 缺口继续显式保留；原有测试失败清理及 build context 问题留在 BACKLOG。
+本次时钟未再复现回退，不代表已确定或修复外部时钟根因。保留用户原有 frontend 配置改动，
+不将 Next 自动生成的额外改写或 storage 纳入提交。
