@@ -1136,6 +1136,27 @@ corrected median is plausible. Parser/fingerprint v2 makes ordinary quarterly
 re-runs converge existing rows. A live empty-DB 2026-Q1 replay corrected 167
 current holdings across the five currently non-compliant filers; the lowest
 remaining common-stock median is $1.00 and compliant filings were unchanged.
+### MCO: comparative debt authority and unresolved source differences
+
+- **Found:** 2026-09-12, MCO Plan A continuation.
+- **Severity:** medium; explicit data/research gaps, not permission to fabricate values.
+- **Where:** generated prior-FY balance-sheet publication exclusion in `sec_financial_ingestion.py`; retained SEC / Value Line comparison.
+- **Problem:** FY2022 current long-term debt lacks the approved directly disclosed concept. FY2023 has a retained FY2024 comparative zero but no canonical publication authority under the current contract. User accepted both as visible nonnumeric gaps in the27-position core denominator. Comparative balance-sheet publication requires a separately reviewed contract, not a direct raw-fact promotion.
+- **Unresolved research:** FY2022 reported SEC EPS7.44 plus the retained Value Line footnote's1.86 gives9.30, not displayed8.57 (residual0.73). This is not proof either source is wrong. Do not invent an adjustment or overwrite a source.
+- **Other retained limits:** FY2018 remains `invalid_label_arc`; no all-history success claim. Value Line2010–2015 per-share extraction and original2029–2031 forecast-range representation remain outside this slice; do not relabel forecasts as actuals.
+- **Next step:** obtain authorized adjustment detail and separately define comparative/forecast authority. No new network acquisition or publication is authorized by this entry.
+- **Context:** [approved contract and retained evidence](tasks/2026-09-12_mco-plan-a.md).
+
+### MCO mixed-source EPS remains unavailable under incomplete quarterly identity
+
+- **Found:** 2026-09-12, stable-clock Plan A acceptance.
+- **Where:** `source_reconciliation.py` metric-wide period-identity guard; `research_workspace.py` blocked-state projection; financial details pagination.
+- **Problem:** After legitimate Value Line ingestion,20 quarterly EPS observations have no proven fiscal-year/quarter identity. The existing guard blocks the entire45-candidate EPS comparison unit, including FY2022–2024, while its canonical SEC facts and authorized original evidence remain intact. The UI shows typed `unavailable: unresolved_source_reconciliation`; its aggregate row displays the first candidate's2015-12-31 date with “fiscal year unproven”. That date must not be interpreted as limiting the blockage to2015.
+- **Severity:** medium — research usability and incomplete fiscal identity, contained by numeric redaction. No guard weakening or invented calendar is authorized.
+- **Scope decision:** Plan A AC1 verifies six additional published SEC positions/evidence; AC7 requires the nine-core-metric browser surface. Mixed-source EPS availability and clearer metric-wide labeling are follow-up work, not a claim of this delivery.
+- **Next:** establish reviewed quarterly identity from actual retained evidence and improve the scope label without narrowing conflict checks by guesswork.
+- **Context:** [stable-clock acceptance](reports/2026-09-12_mco-plan-a-stable-acceptance.md).
+
 ### Quant H3 historical filing/amendment PIT selector
 
 - **Found:** 2026-07-21, `T-2026-07-21-quant-trading-1-r0a`

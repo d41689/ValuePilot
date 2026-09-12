@@ -60,6 +60,7 @@ from app.main import app
 from app.models.extractions import MetricExtraction
 from app.models.facts import MetricFact
 from app.models.users import User
+from app.services.mapping_spec import load_resolved_value_line_mapping_spec
 
 from app.core.config import settings
 
@@ -117,8 +118,9 @@ def _fixture_value_line_run(connection, target) -> int:
     mapping_id = connection.execute(
         text(
             "SELECT id FROM value_line_mapping_policies "
-            "WHERE status='approved'"
-        )
+            "WHERE id=:mapping_id AND status='approved'"
+        ),
+        {"mapping_id": load_resolved_value_line_mapping_spec().source_mapping_version},
     ).scalar_one()
     run_id = connection.execute(
         text(

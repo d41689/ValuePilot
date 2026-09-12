@@ -53,6 +53,9 @@ from app.services.sec_financial_ingestion import (
     MAX_ARTIFACT_BYTES,
     PARSER_V2,
     PARSER_V2_6,
+    PARSER_V2_9,
+    PARSER_V2_10,
+    PARSER_V2_11,
     RetainedFinancialReplayClient,
     SecFinancialFetchError,
     SecFinancialIntegrityError,
@@ -112,9 +115,19 @@ def test_compact_statement_retention_has_new_parser_scoped_policy_identity() -> 
     )
 
 
-def test_parser_v29_preserves_v28_and_inherits_prior_semantics() -> None:
+def test_parser_v212_preserves_v211_and_inherits_prior_semantics() -> None:
     assert PARSER_V2_6 == "xbrl-lineage-v2.6"
-    assert PARSER_V2 == "xbrl-lineage-v2.9"
+    assert PARSER_V2_9 == "xbrl-lineage-v2.9"
+    assert PARSER_V2_10 == "xbrl-lineage-v2.10"
+    assert PARSER_V2_11 == "xbrl-lineage-v2.11"
+    assert PARSER_V2 == "xbrl-lineage-v2.12"
+    assert _is_parser_v26(PARSER_V2_11)
+    assert _is_parser_v24(PARSER_V2_10)
+    assert _is_parser_v25(PARSER_V2_10)
+    assert _is_parser_v26(PARSER_V2_10)
+    assert _is_parser_v24(PARSER_V2_9)
+    assert _is_parser_v25(PARSER_V2_9)
+    assert _is_parser_v26(PARSER_V2_9)
     assert _is_parser_v24("xbrl-lineage-v2.8")
     assert _is_parser_v25("xbrl-lineage-v2.8")
     assert _is_parser_v26("xbrl-lineage-v2.8")
@@ -4823,6 +4836,366 @@ def test_parser_v25_persists_balance_date_only_and_compact_cash_flow_authority(
             "current_period",
         ),
     ]
+
+
+def test_parser_v210_appends_empty_documentation_run_and_reuses_exact_replay(
+    committed_db_session, tmp_path: Path
+) -> None:
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    import runpy
+
+    db_session = committed_db_session
+    stock = Stock(ticker="A210", exchange="US", company_name="Apple v2.10")
+    db_session.add(stock)
+    db_session.flush()
+    register_reviewed_sec_identity(
+        db_session, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12),
+        known_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        review_reason="unused empty documentation version boundary fixture",
+    )
+    db_session.commit()
+    client = GeneratedBalanceAndCashFlowAuthorityClient()
+    label_url = next(url for url in client.responses if url.endswith("_lab.xml"))
+    presentation_url = next(url for url in client.responses if url.endswith("_pre.xml"))
+    summary_url = next(url for url in client.responses if url.endswith("FilingSummary.xml"))
+    cash_url = next(url for url in client.responses if url.endswith("R7.htm"))
+    negated_role = b"http://www.xbrl.org/2009/role/negatedLabel"
+    # Exercise inherited v2.8 display identity and v2.9 candidate scope in SQL,
+    # alongside the new compatibility rule, using the same retained inputs.
+    client.responses[summary_url] = client.responses[summary_url].replace(b" (Unaudited)", b"")
+    client.responses[cash_url] = client.responses[cash_url].replace(b"<td>300</td>", b"<td>(300)</td>")
+    client.responses[presentation_url] = client.responses[presentation_url].replace(
+        b'xlink:to="cfo" order="1"',
+        b'xlink:to="cfo" order="1" preferredLabel="' + negated_role + b'"',
+    )
+    labels = client.responses[label_url].replace(
+        b"Revenue recognized from customer contracts.", b""
+    ).replace(
+        b'xlink:label="cfo-label" xml:lang=',
+        b'xlink:label="cfo-label" xlink:role="' + negated_role + b'" xml:lang=',
+    )
+    client.responses[label_url] = labels
+    index = json.loads(client.responses[INDEX_URL])
+    for item in index["directory"]["item"]:
+        url = _canonical_artifact_url(CIK, ACCESSION, item["name"])
+        if url in client.responses:
+            item["size"] = len(client.responses[url])
+    client.responses[INDEX_URL] = json.dumps(index).encode()
+
+    for version in ("xbrl-lineage-v2.8", PARSER_V2_9, PARSER_V2_10):
+        report = ingest_latest_financial_filings(
+            db_session, stock_id=stock.id, client=client, storage_root=tmp_path,
+            max_filings=1, now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+            parser_version=version,
+        )
+        run = db_session.scalar(select(SecFinancialParseRun).where(
+            SecFinancialParseRun.parser_version == version
+        ))
+        if version != PARSER_V2_10:
+            assert run.status == "failed"
+            assert "invalid_label_arc" in run.error_detail
+            assert run.fact_count == 0
+        else:
+            assert report.failures == (), run.error_detail
+            assert run.status == "succeeded"
+            assert run.fact_count > 0
+        _commit_and_finalize(db_session, report)
+    original_runs = [(run.id, run.parser_version, run.input_manifest_hash, run.status)
+                     for run in db_session.scalars(select(SecFinancialParseRun).order_by(
+                         SecFinancialParseRun.id))]
+    original_fact_ids = list(db_session.scalars(select(SecRawXbrlFact.id).order_by(
+        SecRawXbrlFact.id)))
+    original_authority_ids = list(db_session.scalars(select(SecStatementFactAuthority.id)
+                                                    .order_by(SecStatementFactAuthority.id)))
+    assert len(original_runs) == 3
+    assert original_authority_ids
+    cash_occurrence = db_session.scalar(select(SecStatementOccurrenceEvidence).where(
+        SecStatementOccurrenceEvidence.concept == "us-gaap:NetCashProvidedByUsedInOperatingActivities"
+    ))
+    assert cash_occurrence.locator_json["preferred_label_role"] == negated_role.decode()
+    assert cash_occurrence.locator_json["display_value"] == "(300)"
+    assert cash_occurrence.raw_value == "300"
+    assert cash_occurrence.locator_json["candidate_scope"] == "consolidated_empty_dimensions_v1"
+    ingest_latest_financial_filings(
+        db_session, stock_id=stock.id, client=client, storage_root=tmp_path,
+        max_filings=1, now=datetime(2026, 8, 27, 12, 6, tzinfo=timezone.utc),
+        parser_version=PARSER_V2_10,
+    )
+    assert [(run.id, run.parser_version, run.input_manifest_hash, run.status)
+            for run in db_session.scalars(select(SecFinancialParseRun).order_by(
+                SecFinancialParseRun.id))] == original_runs
+    assert list(db_session.scalars(select(SecRawXbrlFact.id).order_by(
+        SecRawXbrlFact.id))) == original_fact_ids
+    assert list(db_session.scalars(select(SecStatementFactAuthority.id).order_by(
+        SecStatementFactAuthority.id))) == original_authority_ids
+
+    # Exercise the actual downgrade preflight against retained v2.10 lineage.
+    migration = runpy.run_path(str(Path(__file__).resolve().parents[2] /
+        "alembic/versions/20260912100000-sec-parser-v210-documentation.py"))
+    with Operations.context(MigrationContext.configure(db_session.connection())):
+        with pytest.raises(RuntimeError, match="retained parser-v2.10 lineage exists"):
+            migration["downgrade"]()
+    assert list(db_session.scalars(select(SecRawXbrlFact.id).order_by(
+        SecRawXbrlFact.id))) == original_fact_ids
+
+
+def _v211_numeric_display_client(*, cash_display="$ (300)", cash_raw="-300"):
+    client = GeneratedBalanceAndCashFlowAuthorityClient()
+    summary_url = next(url for url in client.responses if url.endswith("FilingSummary.xml"))
+    pre_url = next(url for url in client.responses if url.endswith("_pre.xml"))
+    lab_url = next(url for url in client.responses if url.endswith("_lab.xml"))
+    report_url = next(url for url in client.responses if url.endswith("R2.htm"))
+    cash_url = next(url for url in client.responses if url.endswith("R7.htm"))
+    fragment = "us-gaap_WeightedAverageNumberOfDilutedSharesOutstanding"
+    for url in (summary_url, pre_url):
+        client.responses[url] = client.responses[url].replace(
+            b"http://www.apple.com/role/Operations",
+            b"http://www.apple.com/role/CONSOLIDATEDSTATEMENTSOFOPERATIONS",
+        )
+    client.responses[summary_url] = client.responses[summary_url].replace(b" (Unaudited)", b"")
+    client.responses[cash_url] = client.responses[cash_url].replace(b"<td>300</td>", f"<td>{cash_display}</td>".encode())
+    client.responses[report_url] = client.responses[report_url].replace(b"shares in Thousands", b"shares in Millions").replace(
+        b"</table>", f'''<tr><td><a onclick="Show.showAR(this, 'defref_{fragment}', window)">Diluted (in shares)</a></td><td>184.7</td><td>184.0</td><td>184.6</td><td>185.0</td></tr></table>'''.encode())
+    client.responses[pre_url] = client.responses[pre_url].replace(b"</link:presentationLink>",
+        f'''<link:loc xlink:label="shares" xlink:href="aapl.xsd#{fragment}"/><link:presentationArc xlink:from="parent" xlink:to="shares" order="2" preferredLabel="http://www.xbrl.org/2003/role/terseLabel"/></link:presentationLink>'''.encode(), 1)
+    client.responses[lab_url] = client.responses[lab_url].replace(b"</link:labelLink>",
+        f'''<link:loc xlink:label="shares" xlink:href="aapl.xsd#{fragment}"/><link:label xlink:label="shares-label" xml:lang="en-US" xlink:role="http://www.xbrl.org/2003/role/terseLabel">Diluted (in shares)</link:label><link:labelArc xlink:from="shares" xlink:to="shares-label"/></link:labelLink>'''.encode())
+    share_facts = ''.join(f'''<ix:nonFraction id="shares-{index}" name="{fragment.replace('_', ':', 1)}" contextRef="{context}" unitRef="shares">{value}</ix:nonFraction>'''
+        for index, (context,value) in enumerate((("D2026Q3SHARES","184700000"),("D2025Q3","184000000"),("FY2026YTD","184600000"),("FY2025YTD","185000000"))))
+    client.responses[PRIMARY_URL] = client.responses[PRIMARY_URL].replace(
+        b'contextRef="FY2026YTD" unitRef="USD">300', f'contextRef="FY2026YTD" unitRef="USD">{cash_raw}'.encode()).replace(
+        b"</body>", ('''<xbrli:context id="D2026Q3SHARES"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000320193</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-03-29</xbrli:startDate><xbrli:endDate>2026-06-27</xbrli:endDate></xbrli:period></xbrli:context><xbrli:unit id="shares"><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unit>''' + share_facts + "</body>").encode())
+    index = json.loads(client.responses[INDEX_URL])
+    for item in index["directory"]["item"]:
+        url = _canonical_artifact_url(CIK, ACCESSION, item["name"])
+        if url in client.responses: item["size"] = len(client.responses[url])
+    client.responses[INDEX_URL] = json.dumps(index).encode()
+    return client
+
+
+def test_parser_v211_persists_numeric_display_without_rewriting_v210(committed_db_session, tmp_path):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    import runpy
+    db = committed_db_session
+    stock = Stock(ticker="A211", exchange="US", company_name="v2.11 fixture")
+    db.add(stock); db.flush()
+    register_reviewed_sec_identity(db, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980,12,12), known_at=datetime(2026,8,27,tzinfo=timezone.utc),
+        review_reason="v2.11 numeric display fixture")
+    db.commit()
+    client = _v211_numeric_display_client()
+    for version in (PARSER_V2_10, PARSER_V2_11):
+        report = ingest_latest_financial_filings(db, stock_id=stock.id, client=client,
+            storage_root=tmp_path, max_filings=1, parser_version=version,
+            now=datetime(2026,8,27,12,5,tzinfo=timezone.utc))
+        _commit_and_finalize(db, report)
+        run = db.scalar(select(SecFinancialParseRun).where(SecFinancialParseRun.parser_version == version))
+        selected = list(db.scalars(select(SecStatementOccurrenceEvidence).where(
+            SecStatementOccurrenceEvidence.parse_run_id == run.id,
+            SecStatementOccurrenceEvidence.concept.in_(("us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding", "us-gaap:NetCashProvidedByUsedInOperatingActivities")))))
+        if version == PARSER_V2_10:
+            # The old parser cannot read this fixture's only accepted YTD
+            # amount anchor. Its failed run is retained, not reinterpreted.
+            assert run.status == "failed"
+            assert "missing_unproven_current_fiscal_year_start" in run.error_detail
+            assert selected == []
+        else:
+            assert run.status == "succeeded", run.error_detail
+            assert len(selected) == 5
+            assert all(row.locator_json["scale_multiplier"] == "1000000" for row in selected)
+            assert all(row.locator_json["candidate_scope"] == "consolidated_empty_dimensions_v1" for row in selected)
+            cash = next(row for row in selected if "NetCash" in row.concept)
+            assert (cash.raw_value, cash.locator_json["display_value"]) == ("-300", "$ (300)")
+            assert {row.raw_value for row in selected if "DilutedShares" in row.concept} == {"184700000","184000000","184600000","185000000"}
+    before = list(db.execute(select(SecFinancialParseRun.id, SecFinancialParseRun.parser_version, SecFinancialParseRun.fact_count).order_by(SecFinancialParseRun.id)))
+    assert len(before) == 2
+    for version in (PARSER_V2_10, PARSER_V2_11):
+        report = ingest_latest_financial_filings(db, stock_id=stock.id, client=client,
+            storage_root=tmp_path, max_filings=1, parser_version=version,
+            now=datetime(2026,8,27,12,6,tzinfo=timezone.utc))
+        _commit_and_finalize(db, report)
+    assert list(db.execute(select(SecFinancialParseRun.id, SecFinancialParseRun.parser_version, SecFinancialParseRun.fact_count).order_by(SecFinancialParseRun.id))) == before
+    migration = runpy.run_path(str(Path(__file__).resolve().parents[2] / "alembic/versions/20260912120000-sec-parser-v211-numeric-display.py"))
+    with Operations.context(MigrationContext.configure(db.connection())):
+        with pytest.raises(RuntimeError, match="retained parser-v2.11 lineage exists"):
+            migration["downgrade"]()
+
+
+@pytest.mark.parametrize("display,raw", [("$ (300)", "300"), ("$ (-300)", "-300")])
+def test_parser_v211_sql_rejects_forged_dollar_sign_or_grammar(committed_db_session, tmp_path, monkeypatch, display, raw):
+    from app.services import sec_statement_authority as authority
+    db = committed_db_session
+    stock = Stock(ticker="V211BAD", exchange="US", company_name="v2.11 invalid display")
+    db.add(stock); db.flush()
+    register_reviewed_sec_identity(db, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980,12,12), known_at=datetime(2026,8,27,tzinfo=timezone.utc),
+        review_reason="independent SQL dollar display check")
+    db.commit()
+    original = authority._display_decimal
+    def forged(value, **kwargs):
+        return Decimal(raw) if value == display else original(value, **kwargs)
+    from decimal import Decimal
+    monkeypatch.setattr(authority, "_display_decimal", forged)
+    report = ingest_latest_financial_filings(db, stock_id=stock.id,
+        client=_v211_numeric_display_client(cash_display=display, cash_raw=raw),
+        storage_root=tmp_path, max_filings=1, parser_version=PARSER_V2,
+        now=datetime(2026,8,27,12,5,tzinfo=timezone.utc))
+    run = db.scalar(select(SecFinancialParseRun))
+    assert run.status == "failed"
+    expected = "exact numeric identity mismatch" if display == "$ (300)" else "numeric identity malformed"
+    assert expected in run.error_detail
+    assert report.raw_facts_created == 0
+    assert db.scalar(select(func.count()).select_from(SecRawXbrlFact)) == 0
+    assert db.scalar(select(func.count()).select_from(SecStatementOccurrenceEvidence)) == 0
+
+
+def _v212_blank_annual_client(*, raw_prior_exists=False):
+    client = GeneratedStatementAuthorityClient()
+    revenue = "us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax"
+    gap = "us-gaap_OtherComprehensiveIncomeLossCashFlowHedgeGainLossAfterReclassificationTax"
+    gap_label = "Net unrealized and unrealized gain on cash flow hedges, tax"
+    periods = (("current", "2025-06-29", "2026-06-27", "100000000"),
+               ("prior", "2024-06-30", "2025-06-28", "90000000"),
+               ("older", "2023-07-01", "2024-06-29", "80000000"))
+    body = '<xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>'
+    for context, start, end, value in periods:
+        body += f'''<xbrli:context id="{context}"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">{CIK}</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>{start}</xbrli:startDate><xbrli:endDate>{end}</xbrli:endDate></xbrli:period></xbrli:context>
+          <ix:nonFraction id="revenue-{context}" name="{revenue.replace('_', ':', 1)}" contextRef="{context}" unitRef="USD">{value}</ix:nonFraction>'''
+    for context, value in (("current", "-16000000"), ("older", "-1000000")) + ((("prior", "0"),) if raw_prior_exists else ()):
+        body += f'<ix:nonFraction id="gap-{context}" name="{gap.replace("_", ":", 1)}" contextRef="{context}" unitRef="USD">{value}</ix:nonFraction>'
+    body += '<ix:nonNumeric name="dei:DocumentFiscalYearFocus" contextRef="current">2026</ix:nonNumeric><ix:nonNumeric name="dei:DocumentFiscalPeriodFocus" contextRef="current">FY</ix:nonNumeric>'
+    client.responses[PRIMARY_URL] = INLINE_XBRL.split(b"<body>")[0] + b"<body>" + body.encode() + b"</body></html>"
+    submissions = json.loads(client.responses[SUBMISSIONS_URL])
+    submissions["filings"]["recent"]["form"][0] = "10-K"
+    client.responses[SUBMISSIONS_URL] = json.dumps(submissions).encode()
+    report_url = next(url for url in client.responses if url.endswith("R2.htm"))
+    client.responses[report_url] = f'''<table><tr><th rowspan="2">CONSOLIDATED STATEMENTS OF OPERATIONS, $ in Millions</th><th colspan="3">12 Months Ended</th></tr>
+      <tr><th>Jun. 27, 2026</th><th>Jun. 28, 2025</th><th>Jun. 29, 2024</th></tr>
+      <tr><td><a onclick="Show.showAR(this, 'defref_{revenue}', window)">Net sales</a></td><td>100</td><td>90</td><td>80</td></tr>
+      <tr><td><a onclick="Show.showAR(this, 'defref_{gap}', window)">{gap_label}</a></td><td>$ (16)</td><td class="text">\u00a0<span></span></td><td>$ (1)</td></tr></table>'''.encode()
+    pre_url = next(url for url in client.responses if url.endswith("_pre.xml"))
+    lab_url = next(url for url in client.responses if url.endswith("_lab.xml"))
+    client.responses[pre_url] = client.responses[pre_url].replace(b"</link:presentationLink>",
+        f'<link:loc xlink:label="gap" xlink:href="aapl.xsd#{gap}"/><link:presentationArc xlink:from="parent" xlink:to="gap" order="2" preferredLabel="http://www.xbrl.org/2003/role/terseLabel"/></link:presentationLink>'.encode())
+    client.responses[lab_url] = client.responses[lab_url].replace(b"</link:labelLink>",
+        f'<link:loc xlink:label="gap" xlink:href="aapl.xsd#{gap}"/><link:label xlink:label="gap-label" xml:lang="en-US" xlink:role="http://www.xbrl.org/2003/role/terseLabel">{gap_label}</link:label><link:labelArc xlink:from="gap" xlink:to="gap-label"/></link:labelLink>'.encode())
+    index = json.loads(client.responses[INDEX_URL])
+    for item in index["directory"]["item"]:
+        url = _canonical_artifact_url(CIK, ACCESSION, item["name"])
+        if url in client.responses:
+            item["size"] = len(client.responses[url])
+    client.responses[INDEX_URL] = json.dumps(index).encode()
+    return client
+
+
+def _v212_stock(db):
+    stock = Stock(ticker="B212", exchange="US", company_name="v2.12 blank fixture")
+    db.add(stock)
+    db.flush()
+    register_reviewed_sec_identity(db, stock_id=stock.id, cik=CIK,
+        effective_from=date(1980, 12, 12), known_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        review_reason="v2.12 explicit blank annual evidence")
+    db.commit()
+    return stock
+
+
+def test_parser_v212_retains_true_occurrences_and_v211_failed_history(committed_db_session, tmp_path):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    import runpy
+    db = committed_db_session
+    stock = _v212_stock(db)
+    client = _v212_blank_annual_client()
+    for version in (PARSER_V2_11, PARSER_V2):
+        report = ingest_latest_financial_filings(db, stock_id=stock.id, client=client,
+            storage_root=tmp_path, max_filings=1, parser_version=version,
+            now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc))
+        _commit_and_finalize(db, report)
+        run = db.scalar(select(SecFinancialParseRun).where(SecFinancialParseRun.parser_version == version))
+        if version == PARSER_V2_11:
+            assert run.status == "failed" and "unproven_prior_fiscal_cycle_anchor" in run.error_detail
+        else:
+            assert run.status == "succeeded", run.error_detail
+            occurrences = list(db.scalars(select(SecStatementOccurrenceEvidence).where(
+                SecStatementOccurrenceEvidence.parse_run_id == run.id)))
+            assert len(occurrences) == 5
+            gap = [o for o in occurrences if "CashFlowHedge" in o.concept]
+            assert {o.raw_value for o in gap} == {"-16000000", "-1000000"}
+            marked = [o for o in gap if "explicit_blank_prior_annual_column" in o.locator_json]
+            assert len(marked) == 1
+            marker = marked[0].locator_json["explicit_blank_prior_annual_column"]
+            assert (marker["row"], marker["column"], marker["report_sha256"]) == (4, 3, marked[0].report_sha256)
+            assert marker["period_end"] == "2025-06-28"
+    before = list(db.execute(select(SecFinancialParseRun.id, SecFinancialParseRun.parser_version,
+        SecFinancialParseRun.status, SecFinancialParseRun.fact_count).order_by(SecFinancialParseRun.id)))
+    raw_ids = list(db.scalars(select(SecRawXbrlFact.id).order_by(SecRawXbrlFact.id)))
+    for version in (PARSER_V2_11, PARSER_V2):
+        report = ingest_latest_financial_filings(db, stock_id=stock.id, client=client,
+            storage_root=tmp_path, max_filings=1, parser_version=version,
+            now=datetime(2026, 8, 27, 12, 6, tzinfo=timezone.utc))
+        _commit_and_finalize(db, report)
+    assert list(db.execute(select(SecFinancialParseRun.id, SecFinancialParseRun.parser_version,
+        SecFinancialParseRun.status, SecFinancialParseRun.fact_count).order_by(SecFinancialParseRun.id))) == before
+    assert list(db.scalars(select(SecRawXbrlFact.id).order_by(SecRawXbrlFact.id))) == raw_ids
+    migration = runpy.run_path(str(Path(__file__).resolve().parents[2] / "alembic/versions/20260912130000-sec-parser-v212-blank-annual-column.py"))
+    with Operations.context(MigrationContext.configure(db.connection())):
+        with pytest.raises(RuntimeError, match="retained parser-v2.12 lineage exists"):
+            migration["downgrade"]()
+
+
+@pytest.mark.parametrize("tamper", ["report_hash", "report_filename", "row", "column", "year_gap", "header_date", "html_hash", "hidden_text", "raw_prior_exists", "old_version"])
+def test_parser_v212_sql_rejects_unbound_blank_evidence(committed_db_session, tmp_path, monkeypatch, tamper):
+    from dataclasses import replace
+    from app.services import sec_financial_ingestion as ingestion
+    from app.services.sec_statement_authority import ExplicitFiscalFocus
+    db = committed_db_session
+    stock = _v212_stock(db)
+    original = ingestion.parse_generated_statement_occurrences
+    def forged(*args, **kwargs):
+        kwargs["allow_explicit_blank_prior_annual_column"] = True
+        result = original(*args, **kwargs)
+        occurrences = []
+        for o in result.occurrences:
+            if "CashFlowHedge" in o.concept and o.locator["column"] == 2:
+                blank = dict(o.locator.get("explicit_blank_prior_annual_column") or {
+                    "report_filename": kwargs["filename"], "report_sha256": kwargs["report_sha256"],
+                    "row": o.locator["row"], "column": 3, "period_end": "2025-06-28",
+                    "column_header": "12 Months Ended Jun. 28, 2025", "cell_inner_html": "",
+                    "cell_inner_html_sha256": hashlib.sha256(b"").hexdigest()})
+                if tamper == "report_hash": blank["report_sha256"] = "0" * 64
+                if tamper == "report_filename": blank["report_filename"] = "R99.htm"
+                if tamper == "row": blank["row"] = 5
+                if tamper == "column": blank["column"] = 4
+                if tamper == "header_date": blank["column_header"] = "12 Months Ended Jun. 29, 2024"
+                if tamper == "year_gap":
+                    blank["period_end"] = "2024-06-29"
+                    blank["column_header"] = "12 Months Ended Jun. 29, 2024"
+                if tamper == "html_hash": blank["cell_inner_html_sha256"] = "0" * 64
+                if tamper == "hidden_text":
+                    blank["cell_inner_html"] = '<span style="display:none">0</span>'
+                    blank["cell_inner_html_sha256"] = hashlib.sha256(blank["cell_inner_html"].encode()).hexdigest()
+                o = replace(o, locator={**o.locator, "explicit_blank_prior_annual_column": blank})
+            occurrences.append(o)
+        return replace(result, occurrences=tuple(occurrences))
+    monkeypatch.setattr(ingestion, "parse_generated_statement_occurrences", forged)
+    # Bypass Python's fiscal gate only in this adversarial test: SQL must refuse
+    # the forged marker independently, before any occurrence/authority persists.
+    monkeypatch.setattr(ingestion, "build_explicit_fiscal_focus", lambda **kw:
+        ExplicitFiscalFocus(date(2026, 6, 27), 2026, None, date(2025, 6, 29), date(2024, 6, 30)))
+    report = ingest_latest_financial_filings(db, stock_id=stock.id,
+        client=_v212_blank_annual_client(raw_prior_exists=tamper == "raw_prior_exists"),
+        storage_root=tmp_path, max_filings=1,
+        parser_version=PARSER_V2_11 if tamper == "old_version" else PARSER_V2,
+        now=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc))
+    run = db.scalar(select(SecFinancialParseRun))
+    assert run.status == "failed"
+    assert "generated statement blank annual column mismatch" in run.error_detail
+    assert report.raw_facts_created == 0
+    assert db.scalar(select(func.count()).select_from(SecRawXbrlFact)) == 0
+    assert db.scalar(select(func.count()).select_from(SecStatementOccurrenceEvidence)) == 0
 
 
 def test_parser_v26_persists_exact_raw_anchor_fragment_and_role_authority(

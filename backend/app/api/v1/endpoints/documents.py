@@ -55,7 +55,7 @@ from app.services.evaluation_snapshot import database_evaluation_snapshot
 from app.services.value_line_report_identity import ReportIdentityUnverifiableError
 from app.services.value_line_source_visibility import ValueLineSourceUnavailableError
 from app.services.document_dedupe_service import DocumentDedupeService
-from app.services.ingestion_service import IngestionService
+from app.services.ingestion_service import IngestionService, document_calculation_outcomes
 from app.services.document_cursor import (
     DocumentCursor,
     DocumentsCursorExpiredError,
@@ -552,6 +552,8 @@ def list_documents(
                 "source": doc.source,
                 "template_label": template_label,
                 "parse_status": doc.parse_status,
+                **({"calculation_outcomes": document_calculation_outcomes(doc.notes)}
+                   if not cursor_mode else {}),
                 "upload_time": (
                     snapshot_upload_times.get(doc.id, doc.upload_time).isoformat()
                     if snapshot_upload_times.get(doc.id, doc.upload_time)
@@ -680,7 +682,8 @@ def reparse_document(
     service = IngestionService(session)
     try:
         doc = service.reparse_existing_document(user_id=user_id, document_id=document_id, reextract_pdf=reextract_pdf)
-        return {"id": doc.id, "status": doc.parse_status}
+        return {"id": doc.id, "status": doc.parse_status,
+                "calculation_outcomes": document_calculation_outcomes(doc.notes)}
     except (
         ReportIdentityUnverifiableError,
         HistoricalCurrentnessUnverifiableError,

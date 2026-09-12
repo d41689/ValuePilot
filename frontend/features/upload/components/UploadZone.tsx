@@ -1,11 +1,12 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Upload, File, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Upload, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import apiClient from '@/lib/api/client';
 import { useMutation } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { getDocumentProcessingResult } from '@/lib/documentProcessing';
 
 export default function UploadZone() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -34,6 +35,8 @@ export default function UploadZone() {
       uploadMutation.mutate(selectedFile);
     }
   };
+
+  const processing = getDocumentProcessingResult(uploadMutation.data);
 
   return (
     <div className="max-w-xl mx-auto mt-10 p-6 bg-white rounded-lg shadow-sm border border-gray-200">
@@ -72,9 +75,16 @@ export default function UploadZone() {
       )}
 
       {uploadMutation.isSuccess && (
-        <div className="mt-4 p-3 bg-green-50 text-green-700 rounded-md flex items-center gap-2 text-sm">
-          <CheckCircle className="h-4 w-4" />
-          <span>Upload successful! Document ID: {uploadMutation.data.id}</span>
+        <div role="status" className={`mt-4 rounded-md p-3 text-sm ${
+          processing.tone === 'success' ? 'bg-green-50 text-green-800' :
+          processing.tone === 'danger' ? 'bg-red-50 text-red-800' : 'bg-amber-50 text-amber-900'
+        }`}>
+          <div className="flex items-center gap-2 font-medium">
+            {processing.tone === 'success' ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+            <span>{processing.title} · Document ID: {uploadMutation.data.document_id}</span>
+          </div>
+          <p className="mt-1">{processing.description}</p>
+          {processing.warnings.map(warning => <p key={warning} className="mt-2">{warning}</p>)}
         </div>
       )}
 
