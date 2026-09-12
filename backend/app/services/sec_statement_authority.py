@@ -49,6 +49,7 @@ _RAW_ONCLICK_ATTRIBUTE = re.compile(
 )
 _XLINK = "{http://www.w3.org/1999/xlink}"
 _STANDARD_LABEL_ROLE = "http://www.xbrl.org/2003/role/label"
+_DOCUMENTATION_LABEL_ROLE = "http://www.xbrl.org/2003/role/documentation"
 _STATEMENT_REPORT_FIELDS = frozenset({
     "position", "role", "xmlfilename", "htmlfilename", "shortname",
     "longname", "menucategory",
@@ -72,7 +73,7 @@ class _RawAnchorAuthority:
 class _RawAnchorParser(HTMLParser):
     """Keep duplicate anchor attributes before an HTML tree can collapse them."""
 
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, *, capture_cells: bool = False) -> None:
         super().__init__(convert_charrefs=True)
         self._source = source
         self._line_offsets = [0]
@@ -80,6 +81,8 @@ class _RawAnchorParser(HTMLParser):
             self._line_offsets.append(match.end())
         self._open_anchors: list[tuple[int, int, int]] = []
         self.anchors: list[_RawAnchorAuthority] = []
+        self._capture_cells = capture_cells
+        self.cells: dict[tuple[int, int], tuple[str, tuple[tuple[str, str | None], ...]]] = {}
 
     def _offset(self) -> int:
         line, column = self.getpos()
@@ -88,6 +91,8 @@ class _RawAnchorParser(HTMLParser):
         return self._line_offsets[line - 1] + column
 
     def handle_starttag(self, tag: str, attrs) -> None:
+        if self._capture_cells and tag.lower() == "td":
+            self.cells[self.getpos()] = (self.get_starttag_text(), tuple(attrs))
         if tag.lower() != "a":
             return
         start = self._offset()
@@ -155,6 +160,7 @@ class DeiFocusEvidence:
 class PresentedPeriodEvidence:
     column_header: str; period_start: date | None; period_end: date
     reference_key: str = ""; row_ordinal: int = 0; concept: str = ""; column_ordinal: int = 0
+    explicit_blank_prior_annual_column: dict[str, object] | None = None
 
 @dataclass(frozen=True)
 class RawOccurrenceIdentity:
@@ -474,7 +480,11 @@ def _presentation_arcs(content: bytes, statement_role: str) -> tuple[dict[str, t
     return result, rejected
 
 
-def _label_authorities(content: bytes) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
+def _label_authorities(
+    content: bytes, *,
+    allow_unused_empty_documentation: bool = False,
+    selected_labels: frozenset[tuple[str, str]] = frozenset(),
+) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     if len(content) > MAX_STATEMENT_REPORT_BYTES:
         raise StatementAuthorityParseError("label_linkbase_exceeds_byte_limit")
     _reject_declarations(content)
@@ -507,7 +517,7 @@ def _label_authorities(content: bytes) -> tuple[dict[tuple[str, str], str], dict
             locators[label] = _concept_from_fragment(
                 node.get(f"{_XLINK}href") or ""
             )
-        resources: dict[str, list[tuple[str | None, str, str]]] = {}
+        resources: dict[str, list[tuple[str | None, str, str, bool]]] = {}
         resource_identities: set[tuple[str, str | None, str]] = set()
         for node in link:
             if _local(node.tag) != "label":
@@ -520,7 +530,8 @@ def _label_authorities(content: bytes) -> tuple[dict[tuple[str, str], str], dict
                 raise StatementAuthorityParseError("ambiguous_label_resource")
             resource_identities.add(identity)
             resources.setdefault(resource_label, []).append(
-                (language, role, " ".join(node.itertext()).strip())
+                (language, role, " ".join(node.itertext()).strip(),
+                 node.get(f"{_XLINK}role") == _DOCUMENTATION_LABEL_ROLE)
             )
         arc_identities: set[tuple[str, str]] = set()
         for arc in (node for node in link if _local(node.tag) == "labelarc"):
@@ -536,10 +547,15 @@ def _label_authorities(content: bytes) -> tuple[dict[tuple[str, str], str], dict
             ):
                 raise StatementAuthorityParseError("invalid_label_arc")
             arc_identities.add(identity)
-            for language, role, label_text in resources[target]:
+            for language, role, label_text, exact_documentation in resources[target]:
                 if language not in {"en", "en-us"}:
                     continue
                 if not label_text:
+                    # An unused documentation resource supplies no display
+                    # authority. Validate its graph/identity before ignoring it.
+                    if (allow_unused_empty_documentation and exact_documentation
+                        and (locators[source], role) not in selected_labels):
+                        continue
                     raise StatementAuthorityParseError("invalid_label_arc")
                 values.setdefault((locators[source], role), []).append(label_text)
     result = {}
@@ -590,10 +606,16 @@ def _html_grid(table: Tag) -> list[list[tuple[Tag, str] | None]]:
     return rows
 
 
-def _display_decimal(value: str) -> Decimal | None:
+def _display_decimal(
+    value: str, *, allow_dollar_prefixed_negative: bool = False,
+) -> Decimal | None:
     lexical = " ".join(value.split()).strip()
     if not lexical or lexical in {"-", "--", "—"}:
         return None
+    if allow_dollar_prefixed_negative and re.fullmatch(
+        r"\$\s*\(\s*(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:[.][0-9]+)?\s*\)", lexical,
+    ):
+        lexical = lexical[1:].strip()
     negative = lexical.startswith("(") and lexical.endswith(")")
     if negative: lexical = lexical[1:-1]
     lexical = lexical.replace("$", "").replace(",", "").strip()
@@ -618,7 +640,10 @@ def _unit_local(value: object) -> str:
     return ""
 
 
-def _declared_multiplier(table_title: str, candidate: RawOccurrenceIdentity) -> Decimal:
+def _declared_multiplier(
+    table_title: str, candidate: RawOccurrenceIdentity, *,
+    allow_shares_in_millions: bool = False,
+) -> Decimal:
     numerator = tuple(_unit_local(item) for item in candidate.unit_numerator)
     denominator = tuple(_unit_local(item) for item in candidate.unit_denominator)
     title = " ".join(table_title.lower().split())
@@ -627,6 +652,12 @@ def _declared_multiplier(table_title: str, candidate: RawOccurrenceIdentity) -> 
     if len(numerator) != 1:
         return Decimal(1)
     unit = numerator[0]
+    if allow_shares_in_millions and unit in {"shares", "share"}:
+        share_scales = set(re.findall(r"\bshares\s+in\s+(thousands|millions)\b", title))
+        if len(share_scales) > 1:
+            raise StatementAuthorityParseError("ambiguous_statement_share_scale")
+        if share_scales == {"millions"}:
+            return Decimal(1_000_000)
     if unit in {"shares", "share"} and re.search(r"\bshares\s+in\s+thousands\b", title):
         return Decimal(1000)
     if unit in {"usd", "eur", "gbp", "jpy", "cad", "aud", "chf"}:
@@ -735,6 +766,65 @@ def _consolidated_empty_dimensions_report(
     )
 
 
+def _annual_column_end(header: str) -> date | None:
+    prefix = re.match(r"(?:12 months ended|twelve months ended|year ended)\s+", header, re.I)
+    if prefix is None or _DATE.fullmatch(header[prefix.end():]) is None:
+        return None
+    return parse_statement_header_date(header)
+
+
+def _explicit_blank_prior_annual_column(
+    grid, row_index: int, column_index: int, candidate: RawOccurrenceIdentity,
+    candidates: Sequence[RawOccurrenceIdentity], *, filename: str, report_sha256: str,
+    raw_cells: dict[tuple[int, int], tuple[str, tuple[tuple[str, str | None], ...]]],
+) -> dict[str, object] | None:
+    """Prove an actual empty adjacent annual cell, never infer it from a gap."""
+    row = grid[row_index - 1]
+    if (candidate.period_start is None or candidate.period_end is None
+        or not 300 <= (candidate.period_end - candidate.period_start).days + 1 <= 380
+        or column_index >= len(row) or row[column_index] is None
+        or re.fullmatch(r"[0-9a-f]{64}", report_sha256) is None):
+        return None
+    cell = row[column_index][0]
+    current_cell = row[column_index - 1][0]
+    if (cell.name != "td" or cell.parent is not current_cell.parent
+        or any(str(tag.get(attr, "1")) != "1" for tag in (cell, current_cell)
+               for attr in ("colspan", "rowspan"))):
+        return None
+    for tag in (cell, current_cell):
+        raw = raw_cells.get((tag.sourceline, tag.sourcepos))
+        if raw is None:
+            return None
+        names = [name.lower() for name, _ in raw[1]]
+        if len(names) != len(set(names)):
+            return None
+        attrs = dict(raw[1])
+        if any(attrs.get(name, "1") != "1" for name in ("colspan", "rowspan")):
+            return None
+    inner = cell.decode_contents()
+    # No image, hidden text, nested table, dash, nil token or malformed cell.
+    if re.fullmatch(r"(?:\s|<span></span>)*", inner) is None:
+        return None
+    parts = []
+    for header_row in grid[:row_index - 1]:
+        if column_index < len(header_row) and header_row[column_index] is not None:
+            token = header_row[column_index][1]
+            if _DATE.search(token) is not None or re.search(r"\b(?:twelve|12)\s+months?\s+ended\b|\byear ended\b", token, re.I):
+                if token not in parts:
+                    parts.append(token)
+    header = " ".join(parts)
+    end = _annual_column_end(header)
+    if end is None or not 350 <= (candidate.period_end - end).days <= 380:
+        return None
+    # Include every raw dimension/context, even those outside consolidated scope.
+    if any(item.concept == candidate.concept and item.period_end == end for item in candidates):
+        return None
+    return {"report_filename": filename, "report_sha256": report_sha256,
+            "row": row_index, "column": column_index + 1, "column_header": header,
+            "period_end": end.isoformat(), "cell_inner_html": inner,
+            "cell_inner_html_sha256": hashlib.sha256(inner.encode()).hexdigest()}
+
+
 def parse_generated_statement_occurrences(
     content: bytes,
     *,
@@ -755,6 +845,11 @@ def parse_generated_statement_occurrences(
     allow_negated_label: bool = False,
     report_name: str = "",
     allow_consolidated_candidate_scope: bool = False,
+    allow_unused_empty_documentation: bool = False,
+    allow_dollar_prefixed_negative: bool = False,
+    allow_shares_in_millions: bool = False,
+    allow_explicit_blank_prior_annual_column: bool = False,
+    report_sha256: str = "",
 ) -> GeneratedStatementResolution:
     """Resolve SEC generated statement cells to one exact retained instance fact.
 
@@ -770,7 +865,9 @@ def parse_generated_statement_occurrences(
         raise StatementAuthorityParseError("statement_report_exceeds_byte_limit")
     try:
         report_text = content.decode("utf-8")
-        raw_anchor_parser = _RawAnchorParser(report_text)
+        raw_anchor_parser = _RawAnchorParser(
+            report_text, capture_cells=allow_explicit_blank_prior_annual_column,
+        )
         raw_anchor_parser.feed(report_text)
         raw_anchor_parser.close()
         soup = BeautifulSoup(report_text, "html.parser")
@@ -792,7 +889,16 @@ def parse_generated_statement_occurrences(
         if item.source_html is not None
     )
     arcs, arc_rejections = _presentation_arcs(presentation_linkbase, statement_role)
-    labels, label_rejections = _label_authorities(label_linkbase)
+    # An ambiguous presentation cannot prove its documentation role unused.
+    selected_labels = frozenset(
+        (concept, preferred) for concept, (_, preferred) in arcs.items()
+    ) | frozenset((concept, _DOCUMENTATION_LABEL_ROLE) for concept in arc_rejections)
+    labels, label_rejections = _label_authorities(
+        label_linkbase,
+        allow_unused_empty_documentation=allow_unused_empty_documentation,
+        selected_labels=selected_labels,
+    )
+    all_candidates = candidates
     candidate_scope = "all_contexts_v1"
     if allow_consolidated_candidate_scope and _consolidated_empty_dimensions_report(
         soup, report_name, statement_type, presentation_linkbase, statement_role, candidates,
@@ -908,7 +1014,9 @@ def parse_generated_statement_occurrences(
             numeric_cells = [
                 (column_index, cell)
                 for column_index, cell in enumerate(row[1:], start=2)
-                if cell is not None and _display_decimal(cell[1]) is not None
+                if cell is not None and _display_decimal(
+                    cell[1], allow_dollar_prefixed_negative=allow_dollar_prefixed_negative,
+                ) is not None
             ]
             if arc is None or labels.get((concept, arc[1])) != row_label:
                 for column_index, _ in numeric_cells:
@@ -922,7 +1030,9 @@ def parse_generated_statement_occurrences(
             for column_index, cell in enumerate(row[1:], start=2):
                 if cell is None: continue
                 display_raw = cell[1]
-                display = _display_decimal(display_raw)
+                display = _display_decimal(
+                    display_raw, allow_dollar_prefixed_negative=allow_dollar_prefixed_negative,
+                )
                 if display is None: continue
                 header_parts = []
                 for header_row in grid[:row_index - 1]:
@@ -943,7 +1053,9 @@ def parse_generated_statement_occurrences(
                     ):
                         continue
                     numeric = _candidate_numeric(candidate)
-                    multiplier = _declared_multiplier(table_title, candidate)
+                    multiplier = _declared_multiplier(
+                        table_title, candidate, allow_shares_in_millions=allow_shares_in_millions,
+                    )
                     comparison_display = (
                         -display
                         if allow_negated_label
@@ -1021,6 +1133,14 @@ def parse_generated_statement_occurrences(
                         anchor_start_tag.encode()
                     ).hexdigest(),
                 }
+                if allow_explicit_blank_prior_annual_column and _annual_column_end(header) == candidate.period_end:
+                    blank = _explicit_blank_prior_annual_column(
+                        grid, row_index, column_index, candidate, all_candidates,
+                        filename=filename, report_sha256=report_sha256,
+                        raw_cells=raw_anchor_parser.cells,
+                    )
+                    if blank is not None:
+                        locator["explicit_blank_prior_annual_column"] = blank
                 if allow_dimension_member_anchors:
                     locator["anchor_start_tag_occurrence_count"] = (
                         anchor_start_tag_counts[anchor_start_tag]
@@ -1133,7 +1253,8 @@ def match_statement_occurrence(occurrence: StatementOccurrence, candidates: Sequ
 def build_explicit_fiscal_focus(*, dei_facts: Sequence[DeiFocusEvidence],
                                 presented_periods: Sequence[PresentedPeriodEvidence],
                                 form: str, statement_period_end: date,
-                                approved_dei_namespaces: Sequence[str]) -> ExplicitFiscalFocus:
+                                approved_dei_namespaces: Sequence[str],
+                                allow_explicit_blank_prior_annual_column: bool = False) -> ExplicitFiscalFocus:
     approved = set(approved_dei_namespaces)
     def exact(local_name: str) -> str:
         values = [row.raw_value.strip() for row in dei_facts if row.namespace_uri in approved
@@ -1168,6 +1289,7 @@ def build_explicit_fiscal_focus(*, dei_facts: Sequence[DeiFocusEvidence],
         "missing_unproven_current_fiscal_year_start" if not starts else "conflicting_explicit_fiscal_cycle_start")
     current_start = next(iter(starts))
     prior_matches = []
+    skipped_explicit_blank = False
     for current_row in current_rows:
         same_identity = [row for row in presented_periods
             if eligible(row, current=False) and row.reference_key == current_row.reference_key
@@ -1176,6 +1298,17 @@ def build_explicit_fiscal_focus(*, dei_facts: Sequence[DeiFocusEvidence],
                            key=lambda row: row.column_ordinal)
         if same_identity and not following:
             raise StatementAuthorityParseError("unproven_prior_fiscal_cycle_anchor")
+        blank = current_row.explicit_blank_prior_annual_column
+        if allow_explicit_blank_prior_annual_column and annual and blank is not None:
+            blank_end = _annual_column_end(str(blank.get("column_header", "")))
+            if (blank_end is not None and blank.get("period_end") == blank_end.isoformat()
+                and blank.get("row") == current_row.row_ordinal
+                and blank.get("column") == current_row.column_ordinal + 1
+                and (not following or (following[0].column_ordinal > blank["column"]
+                     and following[0].period_end < blank_end))
+                and 350 <= (current_row.period_end - blank_end).days <= 380):
+                skipped_explicit_blank = True
+                continue
         if following:
             prior = following[0]
             end_gap = (current_row.period_end - prior.period_end).days
@@ -1185,6 +1318,8 @@ def build_explicit_fiscal_focus(*, dei_facts: Sequence[DeiFocusEvidence],
                 raise StatementAuthorityParseError("unproven_prior_fiscal_cycle_anchor")
             prior_matches.append(prior)
     prior_starts = {row.period_start for row in prior_matches}
+    if skipped_explicit_blank and not prior_starts:
+        raise StatementAuthorityParseError("unproven_prior_fiscal_cycle_anchor")
     if len(prior_starts) > 1: raise StatementAuthorityParseError("conflicting_explicit_prior_fiscal_cycle_start")
     prior_start = next(iter(prior_starts)) if prior_starts else None
     return ExplicitFiscalFocus(statement_period_end, fiscal_year, quarter, current_start, prior_start)

@@ -160,7 +160,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
           <div className="rounded-xl border border-dashed border-border/70 bg-background/60 p-3 text-xs text-muted-foreground">
             <div className="font-semibold text-foreground">Tip</div>
-            <p className="mt-1">Parsed reports feed the screener instantly. Reparse after fixes.</p>
+            <p className="mt-1">Parsed reports retain source facts. Availability depends on evidence and source checks.</p>
           </div>
           <Button type="button" variant="outline" size="sm" onClick={handleSignOut}>
             <LogOut className="h-4 w-4" />

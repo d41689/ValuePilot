@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, DecimalException, localcontext
 from calendar import monthrange
 import hashlib
 import json
@@ -13,6 +14,7 @@ from typing import Any, Iterable, Optional
 import yaml
 
 from app.core.currencies import normalize_iso4217_currency
+from app.services.numeric_persistence import persist_numeric_38_12
 
 
 LOGGER = logging.getLogger(__name__)
@@ -116,8 +118,47 @@ class MappingSpec:
                         ),
                     }
                 )
+        facts = self._resolve_semantic_aliases(facts)
         unmapped = _unmapped_paths(page_json, used_paths)
         return facts, used_paths, unmapped
+
+    def _resolve_semantic_aliases(self, facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        aliases = {
+            mapping["id"]: mapping["semantic_alias_of"]
+            for mapping in self.mappings
+            if mapping.get("semantic_alias_of")
+        }
+        originals = set(aliases.values())
+        selected: dict[tuple, dict[str, Any]] = {}
+        result: list[dict[str, Any]] = []
+        for fact in facts:
+            mapping_id = fact["value_json"]["mapping_id"]
+            if mapping_id not in aliases and mapping_id not in originals:
+                result.append(fact)
+                continue
+            original = aliases.get(mapping_id, mapping_id)
+            slot = (original, fact["metric_key"], fact["period_type"], fact["period_end_date"])
+            previous = selected.get(slot)
+            if previous is not None:
+                # Mapping identity differs by source label; all other normalized
+                # values and semantics must agree before one candidate is kept.
+                def semantic_value(candidate: dict[str, Any]) -> dict[str, Any]:
+                    return {
+                        **candidate,
+                        "value_json": {
+                            key: value for key, value in candidate["value_json"].items()
+                            if key != "mapping_id"
+                        },
+                    }
+
+                if semantic_value(previous) != semantic_value(fact):
+                    raise ValueError(
+                        f"Conflicting Value Line semantic aliases for {slot}"
+                    )
+                if mapping_id != original:
+                    continue
+            selected[slot] = fact
+        return result + list(selected.values())
 
 
 def load_resolved_value_line_mapping_spec() -> MappingSpec:
@@ -249,7 +290,7 @@ def _extract_value(
     mapping: dict[str, Any],
     match: MappingMatch,
     root: dict[str, Any],
-) -> tuple[Optional[float], Optional[str], Optional[dict[str, Any]], Optional[str], set[str]]:
+) -> tuple[Optional[float | Decimal], Optional[str], Optional[dict[str, Any]], Optional[str], set[str]]:
     value_spec = mapping.get("value", {})
     value_numeric = None
     value_text = None
@@ -267,7 +308,10 @@ def _extract_value(
             if isinstance(method, str):
                 value_json = {"method": method}
         if numeric is not None:
-            value_numeric, unit = _normalize_numeric(numeric, unit)
+            if mapping.get("numeric_arithmetic") == "decimal":
+                value_numeric, unit, value_json = _normalize_decimal_currency(numeric, unit)
+            else:
+                value_numeric, unit = _normalize_numeric(numeric, unit)
     if "text_from" in value_spec:
         text_val, path = _resolve_value_path(match, root, value_spec.get("text_from"))
         if path:
@@ -385,6 +429,32 @@ def _resolve_path(node: Any, path: str) -> Any:
         else:
             return None
     return current
+
+
+def _normalize_decimal_currency(
+    value: Any, unit: Optional[str],
+) -> tuple[Optional[Decimal], str, Optional[dict[str, Any]]]:
+    if unit not in {"USD_millions", "USD_per_share"}:
+        raise ValueError(f"Unsupported decimal monetary mapping unit: {unit}")
+    error = None
+    try:
+        numeric = Decimal(str(value))
+    except (DecimalException, TypeError, ValueError):
+        error = "invalid_numeric"
+    else:
+        if not numeric.is_finite():
+            error = "nonfinite_numeric"
+        else:
+            try:
+                with localcontext() as context:
+                    context.prec = 80
+                    scaled = numeric * (1_000_000 if unit == "USD_millions" else 1)
+                    return persist_numeric_38_12(scaled), "USD", None
+            except (DecimalException, ValueError):
+                error = "numeric_out_of_range"
+    # The raw token and typed error stay attached to extraction-backed evidence;
+    # no invalid number is promoted into the queryable numeric column.
+    return None, "USD", {"raw_value": str(value), "normalization_error": error}
 
 
 def _normalize_numeric(value: Any, unit: Optional[str]) -> tuple[Optional[float], Optional[str]]:

@@ -118,6 +118,7 @@ def _resolve_latest_known_v1_authority(
     stock_id: int,
     issuer_identity_id: int,
     requested_cutoff: datetime,
+    parser_version: str | None = None,
 ) -> _ResolvedLatestKnownV1Authority:
     """Resolve the complete V1 parse authority from durable filing lineage."""
 
@@ -166,7 +167,7 @@ def _resolve_latest_known_v1_authority(
             "issuer": issuer_identity_id,
             "stock": stock_id,
             "cutoff": requested_cutoff,
-            "parser": SEC_PUBLICATION_V1_PARSER_VERSION,
+            "parser": parser_version or SEC_PUBLICATION_V1_PARSER_VERSION,
         },
     ).mappings().all()
 
@@ -350,7 +351,51 @@ def _identity(request: PublicationRequest) -> tuple[str, str]:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, replay)), source_digest
 
 
-def _rebuild_mapping_result(db: Session, request: PublicationRequest) -> MappingResult:
+def _historical_replay_authority(
+    db: Session, request: PublicationRequest,
+) -> tuple[str, str] | None:
+    """Authorize an older parser only from an exact immutable published request.
+
+    The digest narrows the lookup; every durable source field and its ordering
+    must also match. This is not a caller-selectable publication policy.
+    """
+    if all(source.parser_version == SEC_PUBLICATION_V1_PARSER_VERSION for source in request.sources):
+        return None
+    _, source_digest = _identity(request)
+    runs = db.execute(text(
+        "SELECT id FROM sec_metric_publication_runs "
+        "WHERE stock_id=:stock AND issuer_identity_id=:issuer "
+        "AND mapping_version_id=:mapping AND requested_cutoff=:cutoff "
+        "AND amendment_policy=:policy AND source_set_sha256=:digest "
+        "AND status='succeeded' ORDER BY id LIMIT 2"
+    ), {
+        "stock": request.stock_id, "issuer": request.issuer_identity_id,
+        "mapping": request.mapping_version_id, "cutoff": request.requested_cutoff,
+        "policy": request.amendment_policy, "digest": source_digest,
+    }).scalars().all()
+    if len(runs) != 1:
+        raise SecPublicationError("historical parser requires finalized exact publication replay")
+    rows = db.execute(text(
+        "SELECT source_ordinal,parse_run_id,filing_id,accession_no,parser_version,"
+        "input_manifest_hash,source_available_at FROM sec_metric_publication_run_sources "
+        "WHERE publication_run_id=:run ORDER BY source_ordinal"
+    ), {"run": runs[0]}).mappings().all()
+    stored_sources = tuple(VerifiedPublicationSource(
+        row.parse_run_id, row.filing_id, row.accession_no, row.parser_version,
+        row.input_manifest_hash, row.source_available_at,
+    ) for row in rows)
+    parsers = {source.parser_version for source in stored_sources}
+    if (
+        stored_sources != request.sources or len(parsers) != 1
+        or [row.source_ordinal for row in rows] != list(range(1, len(rows) + 1))
+    ):
+        raise SecPublicationError("historical parser requires finalized exact homogeneous sources")
+    return str(runs[0]), next(iter(parsers))
+
+
+def _rebuild_mapping_result(
+    db: Session, request: PublicationRequest, *, parser_version: str | None = None,
+) -> MappingResult:
     _validate_publication_request_bounds(request)
     mapping = _load_mapping_snapshot(db, request.mapping_version_id)
     if mapping.known_at > request.requested_cutoff or mapping.effective_at > request.requested_cutoff:
@@ -362,6 +407,7 @@ def _rebuild_mapping_result(db: Session, request: PublicationRequest) -> Mapping
         stock_id=request.stock_id,
         issuer_identity_id=request.issuer_identity_id,
         requested_cutoff=request.requested_cutoff,
+        parser_version=parser_version,
     )
     if request.sources != resolved.sources:
         raise SecPublicationError(
@@ -498,11 +544,16 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
     """Rebuild and write canonical truth atomically; finalize visibility later."""
     if not request.sources or request.requested_cutoff.tzinfo is None:
         raise SecPublicationError("explicit ordered sources and aware cutoff are required")
+    _validate_publication_request_bounds(request)
     # Authority resolution, exact replay identity, and current-slot writes must
     # observe one serial stock snapshot.  Lineage availability finalization
     # takes this identical transaction lock before exposing a new source.
     acquire_sec_financial_stock_lock(db, stock_id=request.stock_id)
-    outcome = _rebuild_mapping_result(db, request)
+    historical_replay = _historical_replay_authority(db, request)
+    outcome = (
+        _rebuild_mapping_result(db, request, parser_version=historical_replay[1])
+        if historical_replay else _rebuild_mapping_result(db, request)
+    )
     if request.outcome is not None and request.outcome != outcome:
         raise SecPublicationError("expected mapping result differs from database authority")
     if outcome.truncated_decision_count:
@@ -512,6 +563,8 @@ def publish_sec_mapping_result(db: Session, request: PublicationRequest) -> Publ
         request.requested_cutoff, request.amendment_policy, request.sources, outcome,
     )
     run_id, source_digest = _identity(authoritative_request)
+    if historical_replay is not None and run_id != historical_replay[0]:
+        raise SecPublicationError("historical publication rebuild differs from immutable replay identity")
     rules = {row.rule_id: row for row in db.execute(text("SELECT id,rule_id,metric_key,target_unit,period_policy FROM sec_metric_mapping_rules WHERE mapping_version_id=:v"), {"v": request.mapping_version_id}).mappings()}
     if not rules:
         raise SecPublicationError("approved mapping rules unavailable")

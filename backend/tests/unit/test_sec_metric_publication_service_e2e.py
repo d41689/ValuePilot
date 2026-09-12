@@ -263,7 +263,8 @@ def test_consolidated_scope_database_publishes_despite_dimensional_collision(db,
     db.commit()
     result = subprocess.run(['alembic','downgrade','20260909140000'],cwd=BACKEND,
         env={**os.environ,'DATABASE_URL':isolated_engine.url.render_as_string(hide_password=False)},capture_output=True,text=True)
-    assert result.returncode != 0 and 'retained parser-v2.9 lineage exists' in result.stderr
+    expected_version = financial_ingestion.PARSER_V2.removeprefix("xbrl-lineage-")
+    assert result.returncode != 0 and f'retained parser-{expected_version} lineage exists' in result.stderr
 
 
 def test_database_rejects_unproven_consolidated_scope_marker(db, tmp_path, monkeypatch):
@@ -334,14 +335,17 @@ def test_negated_label_database_publication_preserves_raw_value_and_blocks_downg
         "'http://www.xbrl.org/2009/role/negatedLabel'"
     )).scalar_one() > 0
     db.commit()
+    previous_head = db.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    db.commit()
     result = subprocess.run(
         ["alembic", "downgrade", "20260909120000"], cwd=BACKEND,
         env={**os.environ, "DATABASE_URL": isolated_engine.url.render_as_string(hide_password=False)},
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode != 0
-    assert "retained parser-v2.9 lineage exists" in result.stderr
-    assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260909150000"
+    expected_version = financial_ingestion.PARSER_V2.removeprefix("xbrl-lineage-")
+    assert f"retained parser-{expected_version} lineage exists" in result.stderr
+    assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == previous_head
 
 
 @pytest.mark.parametrize("mutation", ["wrong_role", "wrong_amount"])
