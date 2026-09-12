@@ -124,8 +124,53 @@ def test_missing_retained_labels_are_typed_unavailable_not_guessed(db_session, t
         publication_id=fact.source_ref_id, fact_id=fact.id)
     assert result["evidence_state"] == "unavailable"
     assert result["evidence_reason_code"] == "evidence_text_unavailable"
-    assert result["status"] == "published"  # legacy authorized metadata stays compatible
-    assert result["inputs"] and all("statement" not in item for item in result["inputs"])
+    assert result["status"] == "published"
+    assert result["metric_fact_id"] == fact.id
+    assert result["inputs"] == []
+    assert result["value_numeric"] is None
+    assert result["value_numeric_exact"] is None
+    assert not result["locator"]
+
+
+@pytest.mark.parametrize("failure_stage,reason", [
+    ("unpublished", "publication_not_published"),
+    ("authority", "evidence_input_authority_unavailable"),
+    ("statement", "evidence_locator_unavailable"),
+    ("statement", "evidence_text_unavailable"),
+    ("statement", "unsafe_evidence_text"),
+    ("statement", "evidence_input_bound_exceeded"),
+])
+def test_unavailable_response_removes_all_partial_value_and_input_proof(monkeypatch, failure_stage, reason):
+    from decimal import Decimal
+    from app.services import canonical_financials, sec_financial_evidence as service
+
+    publication = {"id": 8, "metric_fact_id": 7,
+                   "status": "unresolved" if failure_stage == "unpublished" else "published",
+                   "value_numeric": Decimal("123.45"), "is_current": True}
+    monkeypatch.setattr(service, "database_evaluation_snapshot", lambda _session: None)
+    monkeypatch.setattr(service, "authorized_publication", lambda _session, **kwargs: publication)
+    monkeypatch.setattr(canonical_financials, "_legacy_sec_publication_evidence", lambda _session, **kwargs: {
+        "publication_id": 8, "metric_fact_id": 7, "status": publication["status"],
+        "value_numeric": Decimal("123.45"),
+        "inputs": [{"canonical_operand": {"value_numeric": Decimal("77")}}],
+        "locator": {"ordered_input_occurrences": [{"raw_fact_id": 123}]},
+        "filings": [{"accession": "partial-filing-proof"}],
+    })
+
+    def graph(_session, *, include_statements, **kwargs):
+        if failure_stage == "authority" or (failure_stage == "statement" and include_statements):
+            raise service.EvidenceUnavailable(reason)
+        return []
+
+    monkeypatch.setattr(service, "_graph", graph)
+    result = service.resolve_evidence(None, stock_id=66, publication_id=8, fact_id=7)
+    assert result["evidence_state"] == "unavailable"
+    assert result["evidence_reason_code"] == reason
+    assert result["publication_id"] == 8 and result["metric_fact_id"] == 7
+    assert result["status"] == publication["status"]
+    assert result["value_numeric"] is None and result["value_numeric_exact"] is None
+    assert result["inputs"] == []
+    assert not result["locator"] and result["filings"] == []
 
 
 @pytest.mark.parametrize("bad_text", ["<script>alert(1)</script>", "/Users/private/secret", "file:///tmp/x", "x" * 8001])

@@ -72,3 +72,32 @@ head/base, diff, review state, and full successful job steps before merging.
 - Independent review, current full CI, acceptance reconciliation, and merge
   checkpoint remain pending. Stop when all have evidence and no in-scope risk
   remains; do not represent historical results as a current gate.
+
+## Review correction: unavailable evidence must not retain partial proof
+
+Terra identified an in-scope PRD H.9 violation: statement locator/text failure
+changed the evidence state to unavailable but retained a canonical value and
+legacy operand inputs. The delivery lead independently reproduced the API
+contract failure with synthetic inputs in a read-only, network-disabled Docker
+container. The current UI fails closed; this is not evidence of unauthorized
+data exposure. Merge is held until corrected and independently re-reviewed.
+
+Authorized minimal scope adds only `sec_financial_evidence.py` and its existing
+unit test file. Unify unavailable responses, including nonpublished results,
+so identity/status remain while numeric payloads and partial input/locator
+proof do not. No PRD weakening, source fetching or database writes are needed
+for the pure regression. The existing real-publication DB regression will also
+assert the corrected contract in the fresh full remote gate.
+
+Regression evidence: added six failure-stage/reason cases before the service
+change; the unchanged implementation failed all six (five retained numeric
+payloads, one lacked consistent status metadata). After the minimal helper
+change, the six new cases plus six existing pure safety/graph/reference cases
+passed: **12 passed, 9 deselected, 0.91 seconds**. Docker used the existing API
+dependency image with this worktree's backend bind-mounted read-only,
+`--network none --read-only --tmpfs /tmp`, synthetic unused database settings,
+and pytest `--noconftest -p no:cacheprovider`; no database fixture or app startup
+was invoked. The first invocation lacked PYTHONPATH and failed collection;
+setting `/code` corrected the harness before recording red/green evidence.
+`git diff --check` passed. These pure tests are iteration evidence only; final
+full remote CI and independent review remain required on the resulting head.
