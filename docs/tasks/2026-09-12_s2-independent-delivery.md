@@ -101,3 +101,23 @@ was invoked. The first invocation lacked PYTHONPATH and failed collection;
 setting `/code` corrected the harness before recording red/green evidence.
 `git diff --check` passed. These pure tests are iteration evidence only; final
 full remote CI and independent review remain required on the resulting head.
+
+## Full CI exposed two stale unavailable-evidence expectations
+
+Run [34726068693](https://github.com/d41689/ValuePilot/actions/runs/34726068693)
+on `876737f0c5183792c6db66ab4e548e6ec05cff1d` failed: **2 failed, 2,813 passed,
+2 warnings, 1,523.88 seconds**. Subsequent frontend/Rate Guard gates did not run;
+this is a failed full gate, not a pass. Both failures were in
+`test_sec_canonical_read_api.py`: the missing-statement-label fixture still
+expected filing/input proof, and an unresolved publication still expected
+inputs. These assertions contradicted the independently accepted PRD H.9 fix.
+
+The delivery lead authorized alignment of only that test file and this record.
+Keep the original fixtures and all privacy, owner visibility, source-conflict,
+and recursive forbidden-content checks. Assert explicit unavailable reasons,
+preserved identity/status metadata, and empty/null numeric, input, locator and
+filing proof. Remove only the now-unused parser-version import. The positive
+authenticated readable-evidence endpoint and bound retained-statement fields
+remain covered by `test_sec_financial_evidence.py`; its tests are unchanged.
+No production code or safety scanner is weakened. The failed remote run is the
+red evidence; another full remote run must prove the aligned final tree.
