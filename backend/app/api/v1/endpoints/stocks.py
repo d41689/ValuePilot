@@ -1822,6 +1822,7 @@ def read_sec_publication_evidence(
     publication_id: int,
     session: SessionDep,
     current_user: CurrentUser,
+    fact_id: int | None = Query(default=None, gt=0),
 ) -> Any:
     if session.get(Stock, stock_id) is None:
         raise HTTPException(status_code=404, detail="Stock not found")
@@ -1829,9 +1830,10 @@ def read_sec_publication_evidence(
         session,
         stock_id=stock_id,
         publication_id=publication_id,
+        fact_id=fact_id,
     )
     if evidence is None:
-        raise HTTPException(status_code=404, detail="SEC publication evidence not found")
+        raise HTTPException(status_code=404, detail={"code": "evidence_unavailable", "message": "SEC evidence is unavailable or does not match the selected fact."})
     return evidence
 
 
