@@ -9,6 +9,15 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Local environment — retained verification stacks still mount the source checkout
+
+- **Found:** 2026-09-22, read-only container-mount inventory before branch cleanup.
+- **Where:** local Docker projects `valuepilot-step-e-final-20260831` and `valuepilot-step-e-closing-gate-20260831`.
+- **Problem:** historical API/web/database containers remain running; their API/web services bind the original ValuePilot source directory. Additional historical Rate Guard containers also remain. Branch cleanup is not permission to delete their volumes or retained evidence.
+- **Severity:** low — environment ownership and resource-retirement follow-up; no runtime failure or data loss was observed by this inventory.
+- **Next step:** identify retained-data owners and required artifacts before retiring those exact historical stacks. Preserve the active development services, shared infrastructure, configurations and data. This consolidation performs no container stop, volume deletion or historical database cleanup.
+- **Context:** [consolidation contract](tasks/2026-09-22_branch-consolidation.md).
+
 ### Business economics — ROIC inputs/method, complete debt and per-share comparability
 - **Found:** 2026-09-10，S2收尾后企业经济性只读盘点。
 - **Severity:** medium，研究材料缺口；不是已有可靠ROIC显示被隐藏。
