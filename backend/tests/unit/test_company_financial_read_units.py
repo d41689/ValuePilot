@@ -70,6 +70,21 @@ def test_company_read_redacts_only_complete_oversized_metric(
     assert unavailable[0]["metric_key"] == "is.net_income"
     assert unavailable[0]["reason_code"] == reason
     assert unavailable[0]["value_numeric"] is None
+    from app.services.financial_history import build_financial_history
+    from app.services.research_workspace import _reconciled_workspace_facts
+    snapshot = database_evaluation_snapshot(db_session)
+    safe, blocked = _reconciled_workspace_facts(
+        db_session, facts=facts, user_id=user.id, evaluation_snapshot=snapshot,
+    )
+    history = build_financial_history(
+        db_session, stock_id=stock.id, user_id=user.id, facts=safe,
+        states=unavailable + blocked, evaluation_snapshot=snapshot,
+    )
+    assert history.available_fact_count == 1
+    assert history.state_count == 1
+    state = next(row for row in history.rows if row.row_kind == "metric_state")
+    assert state.metric_key == "is.net_income"
+    assert state.reason_code == reason
 
 
 def test_company_metric_discovery_never_returns_a_prefix(
@@ -160,6 +175,12 @@ def test_product_company_read_has_no_global_prefix(
     assert all(fact["value_numeric"] is not None for fact in facts)
     assert guard_calls == [110, 110, 110]
     if surface == "workspace":
+        history = payload["financial_history"]
+        assert history["total_rows"] == history["available_fact_count"] == 330
+        assert history["state_count"] == 0
+        assert {row["fact_id"] for row in history["rows"]} == {fact["id"] for fact in facts}
+        assert history["annual_window"]["status"] == "undetermined"
+        assert all(isinstance(row["value_numeric_exact"], str) for row in history["rows"])
         reports = payload["source_reconciliation"]
         assert reports["partitioning"] == "complete_metric_history"
         assert len(reports["by_metric"]) == 3

@@ -16,7 +16,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Full backend tests approached 30 minutes on the hosted runner; leave
+    # bounded headroom for them and the remaining frontend/Rate Guard gates.
+    timeout-minutes: 45
     env:
       DEV_HOST_WEB_PORT: 13001
       DEV_HOST_API_PORT: 18001

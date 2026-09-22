@@ -676,6 +676,11 @@ date_paths:
 # - source_extraction_keys: exact parser extraction field keys that produced
 #     the mapped fact; omitted means extraction lineage is unavailable rather
 #     than inferred
+# - semantic_alias_of: existing mapping id for an equivalent source label;
+#     equal normalized same-period candidates collapse to the original mapping,
+#     conflicting candidates reject the page before publication
+# - numeric_arithmetic: decimal opts reviewed monetary mappings into exact
+#     decimal scaling and the existing NUMERIC(38,12) persistence boundary
 # - notes: free-form text
 # ============================================================
 
@@ -768,6 +773,21 @@ mappings:
   - id: per_share.sales.fy
     json_path: annual_financials.per_unit_metrics.sales.*
     metric_key: per_share.sales
+    source_extraction_keys: [tables_time_series]
+    numeric_arithmetic: decimal
+    period_type: FY
+    unit: USD_per_share
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: per_share.revenues.fy
+    json_path: annual_financials.per_unit_metrics.revenues.*
+    metric_key: per_share.sales
+    semantic_alias_of: per_share.sales.fy
+    source_extraction_keys: [tables_time_series]
+    numeric_arithmetic: decimal
     period_type: FY
     unit: USD_per_share
     period_end_date:
@@ -821,6 +841,21 @@ mappings:
   - id: is.sales.fy
     json_path: annual_financials.income_statement_usd_millions.sales.*
     metric_key: is.sales
+    source_extraction_keys: [tables_time_series]
+    numeric_arithmetic: decimal
+    period_type: FY
+    unit: USD_millions
+    period_end_date:
+      derive: year_end_from_key
+    value:
+      numeric_from: $value
+
+  - id: is.revenues.fy
+    json_path: annual_financials.income_statement_usd_millions.revenues.*
+    metric_key: is.sales
+    semantic_alias_of: is.sales.fy
+    source_extraction_keys: [tables_time_series]
+    numeric_arithmetic: decimal
     period_type: FY
     unit: USD_millions
     period_end_date:

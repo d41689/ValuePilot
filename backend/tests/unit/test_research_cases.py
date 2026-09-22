@@ -72,7 +72,11 @@ def test_workspace_endpoint_derives_current_as_of_from_one_database_cutoff(
 
     def capture_workspace(_session, **kwargs):
         observed.update(kwargs)
-        return {"status": "captured"}
+        return {"status": "captured", "financial_history": {
+            "schema_version": 1, "evaluated_at": kwargs["evaluated_at"],
+            "annual_window": {"status": "undetermined", "years": []},
+            "total_rows": 0, "available_fact_count": 0, "state_count": 0, "rows": [],
+        }}
 
     monkeypatch.setattr(
         research_endpoint, "build_research_workspace", capture_workspace

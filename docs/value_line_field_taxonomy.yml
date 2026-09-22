@@ -49,6 +49,8 @@ mapping_semantics:
     fact_nature_rule: context_or_annual_meta
   per_share.sales.fy:
     fact_nature_rule: context_or_annual_meta
+  per_share.revenues.fy:
+    fact_nature_rule: context_or_annual_meta
   per_share.cash_flow.fy:
     fact_nature_rule: context_or_annual_meta
   per_share.capital_spending.fy:
@@ -58,6 +60,8 @@ mapping_semantics:
   is.net_income.fy:
     fact_nature_rule: context_or_annual_meta
   is.sales.fy:
+    fact_nature_rule: context_or_annual_meta
+  is.revenues.fy:
     fact_nature_rule: context_or_annual_meta
   is.depreciation.fy:
     fact_nature_rule: context_or_annual_meta

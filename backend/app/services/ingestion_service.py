@@ -1,9 +1,10 @@
 import logging
+import json
 import re
 import uuid
 from datetime import datetime, date
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, TypedDict
 from sqlalchemy.orm import Session
 from sqlalchemy import func, update, select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -46,9 +47,74 @@ from app.services.metric_fact_currentness import CurrentnessScope, current_metri
 from app.services.calculated_metrics.value_line_ratios import ValueLineRatioCalculator
 from app.services.calculated_metrics.piotroski_f_score import PiotroskiFScoreCalculator
 from app.services.privacy_erasure import lock_user_privacy_write
+from app.services.source_reconciliation import CanonicalReconciliationError
 
 
 LOGGER = logging.getLogger(__name__)
+CALCULATION_OUTCOMES_PREFIX = "calculation_outcomes: "
+COMPARISON_BLOCK_REASONS = frozenset({
+    "period_identity_unavailable", "comparison_identity_incomplete",
+    "ambiguous_current_duplicate", "source_mapping_version_mismatch",
+    "definition_family_mismatch", "mapping_version_mismatch", "period_mismatch",
+    "dimensions_mismatch", "unit_mismatch", "currency_mismatch",
+    "fact_nature_mismatch", "definition_mismatch", "numeric_value_unavailable",
+    "material_value_difference",
+})
+
+
+class CalculationOutcome(TypedDict):
+    calculation: Literal["value_line_ratios", "piotroski_f_score"]
+    status: Literal["unavailable"]
+    reason_code: Literal["unresolved_source_reconciliation"]
+    blocking_reasons: list[str]
+
+
+def document_calculation_outcomes(notes: str | None) -> list[CalculationOutcome]:
+    """Read bounded current diagnostics, never general notes or fact authority."""
+    if not isinstance(notes, str):
+        return []
+    by_calculation: dict[str, CalculationOutcome] = {}
+    for line in notes[-65536:].splitlines()[-64:]:
+        if not line.startswith(CALCULATION_OUTCOMES_PREFIX) or len(line) > 8192:
+            continue
+        try:
+            payload = json.loads(line[len(CALCULATION_OUTCOMES_PREFIX):])
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        outcomes = payload.get("outcomes")
+        if not isinstance(outcomes, list) or not 1 <= len(outcomes) <= 2:
+            continue
+        for outcome in outcomes:
+            if not isinstance(outcome, dict) or set(outcome) != {
+                "calculation", "status", "reason_code", "blocking_reasons"
+            }:
+                continue
+            calculation = outcome["calculation"]
+            reasons = outcome["blocking_reasons"]
+            if (
+                calculation not in ("value_line_ratios", "piotroski_f_score")
+                or outcome["status"] != "unavailable"
+                or outcome["reason_code"] != "unresolved_source_reconciliation"
+                or not isinstance(reasons, list)
+                or not 1 <= len(reasons) <= len(COMPARISON_BLOCK_REASONS)
+                or any(not isinstance(reason, str) or reason not in COMPARISON_BLOCK_REASONS
+                       for reason in reasons)
+            ):
+                continue
+            prior = by_calculation.get(calculation)
+            by_calculation[calculation] = {
+                "calculation": calculation,
+                "status": "unavailable",
+                "reason_code": "unresolved_source_reconciliation",
+                "blocking_reasons": sorted(set(reasons) | set(
+                    prior["blocking_reasons"] if prior else []
+                )),
+            }
+    return [by_calculation[key] for key in sorted(by_calculation)]
+
+
 VALUE_LINE_REPARSE_LOCK_SQL = text(
     "SELECT pg_advisory_xact_lock("
     "hashtextextended('valuepilot:value-line-reparse-document:' || "
@@ -352,7 +418,13 @@ class IngestionService:
                             method_decision=owner_earnings_gate,
                         )
 
-                    self._run_calculated_metrics(user_id=user_id, stock_id=stock.id)
+                    calculation_outcomes = self._run_calculated_metrics(
+                        user_id=user_id, stock_id=stock.id
+                    )
+                    if calculation_outcomes:
+                        self._record_calculation_outcomes(
+                            doc, outcomes=calculation_outcomes,
+                        )
                     page_savepoint.commit()
                     page_savepoint = None
 
@@ -365,6 +437,8 @@ class IngestionService:
                             "stock_id": stock.id,
                             "ticker": stock.ticker,
                             "exchange": stock.exchange,
+                            **({"calculation_outcomes": calculation_outcomes}
+                               if calculation_outcomes else {}),
                         }
                     )
                 except Exception as e:
@@ -396,6 +470,9 @@ class IngestionService:
             if parsed_company_pages == 1:
                 self._archive_single_company_value_line_pdf(doc)
 
+            # Later successful pages may append ordinary identity notes without
+            # new calculation blocks. Keep the existing summary in the read tail.
+            self._record_calculation_outcomes(doc, outcomes=[])
             self._finish_value_line_parse_run(
                 parse_run,
                 status="succeeded" if parsed_company_pages else "failed",
@@ -718,7 +795,9 @@ class IngestionService:
         doc.parse_status = "parsed"
 
         for stock_id in sorted(parsed_stock_ids):
-            self._run_calculated_metrics(user_id=user_id, stock_id=stock_id)
+            outcomes = self._run_calculated_metrics(user_id=user_id, stock_id=stock_id)
+            if outcomes:
+                self._record_calculation_outcomes(doc, outcomes=outcomes)
 
         if (
             prior_document_stock_id is not None
@@ -755,9 +834,68 @@ class IngestionService:
         self.db.add(doc)
         self.db.flush()
 
-    def _run_calculated_metrics(self, *, user_id: int, stock_id: int) -> None:
-        ValueLineRatioCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
-        PiotroskiFScoreCalculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
+    def _record_calculation_outcomes(
+        self, doc: PdfDocument, *, outcomes: list[CalculationOutcome],
+    ) -> None:
+        # Existing document projection only; never a replacement fact or authority.
+        # Keep one bounded document aggregate instead of appending one diagnostic
+        # per page: a tail-bounded reader must not lose the first page's warning.
+        by_calculation: dict[str, CalculationOutcome] = {}
+
+        def merge(items: list[CalculationOutcome]) -> None:
+            for item in items:
+                prior = by_calculation.get(item["calculation"])
+                by_calculation[item["calculation"]] = {
+                    **item,
+                    "blocking_reasons": sorted(set(item["blocking_reasons"]) | set(
+                        prior["blocking_reasons"] if prior else []
+                    )),
+                }
+
+        ordinary_lines = []
+        for line in (doc.notes or "").splitlines(keepends=True):
+            existing = document_calculation_outcomes(line)
+            if existing:
+                merge(existing)
+            else:
+                ordinary_lines.append(line)
+        merge(outcomes)
+        if not by_calculation:
+            return
+        payload = {"outcomes": [by_calculation[key] for key in sorted(by_calculation)]}
+        diagnostic = CALCULATION_OUTCOMES_PREFIX + json.dumps(payload, sort_keys=True)
+        ordinary_notes = "".join(ordinary_lines)
+        separator = "\n" if ordinary_notes and not ordinary_notes.endswith("\n") else ""
+        doc.notes = ordinary_notes + separator + diagnostic
+
+    def _run_calculated_metrics(
+        self, *, user_id: int, stock_id: int,
+    ) -> list[CalculationOutcome]:
+        outcomes: list[CalculationOutcome] = []
+        for name, calculator in (
+            ("value_line_ratios", ValueLineRatioCalculator),
+            ("piotroski_f_score", PiotroskiFScoreCalculator),
+        ):
+            try:
+                # Both services reconcile before any derived write. A true
+                # execution failure still reaches the existing page rollback.
+                calculator(self.db).calculate_for_stock(user_id=user_id, stock_id=stock_id)
+            except CanonicalReconciliationError as error:
+                reasons = [item.get("reason_code") for item in error.blocking_items]
+                if not reasons or any(
+                    not isinstance(reason, str) or reason not in COMPARISON_BLOCK_REASONS
+                    for reason in reasons
+                ):
+                    # Policy, permission, lineage-integrity and unknown failures
+                    # are not ordinary comparison outcomes.
+                    raise
+                outcomes.append({
+                    "calculation": name,
+                    "status": "unavailable",
+                    "reason_code": "unresolved_source_reconciliation",
+                    "blocking_reasons": sorted(set(reasons)),
+                })
+        return outcomes
 
     def _persist_owner_earnings_facts(
         self,

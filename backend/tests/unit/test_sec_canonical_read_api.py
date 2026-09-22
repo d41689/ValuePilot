@@ -20,7 +20,6 @@ from app.services.canonical_financials import (
     reviewed_method_gate,
 )
 from app.services.formula_engine import FormulaEngine
-from app.services.sec_financial_ingestion import PARSER_V2
 
 
 FORBIDDEN_EVIDENCE_KEYS = {
@@ -145,14 +144,20 @@ def test_authenticated_reads_share_sec_but_keep_private_facts_private(
     payload = evidence.json()
     assert payload["status"] == "published"
     assert payload["mapping_version"] == "sec-us-gaap-v1"
-    assert payload["filings"][0]["accession"]
-    assert payload["filings"][0]["form"] in {"10-Q", "10-K"}
-    assert payload["filings"][0]["accepted_at"]
-    assert payload["filings"][0]["parser_version"] == PARSER_V2
+    assert payload["publication_id"] == sec_fact.source_ref_id
+    assert payload["metric_fact_id"] == sec_fact.id
+    # This retained fixture lacks readable statement labels. Shared canonical
+    # facts remain visible, but an incomplete evidence response has no proof.
+    assert payload["evidence_state"] == "unavailable"
+    assert payload["evidence_reason_code"] == "evidence_text_unavailable"
+    assert payload["value_numeric"] is None
+    assert payload["value_numeric_exact"] is None
+    assert payload["inputs"] == []
+    assert payload["locator"] is None
+    assert payload["filings"] == []
     assert payload["context_id"]
     assert payload["period"]["end"]
     assert payload["fact_nature"] in {"actual", "derived_actual"}
-    assert payload["inputs"]
     _assert_safe(payload)
 
     conflict = publication_client.post(
@@ -192,9 +197,19 @@ def test_typed_unresolved_sec_state_is_observable_without_retained_content(
     assert all(row["reason_code"].startswith("unresolved_") for row in unresolved)
     evidence = publication_client.get(unresolved[0]["evidence_route"], headers=auth_headers(user))
     assert evidence.status_code == 200, evidence.text
-    assert evidence.json()["status"] == "unresolved"
-    assert evidence.json()["inputs"]
-    _assert_safe(evidence.json())
+    payload = evidence.json()
+    assert payload["status"] == "unresolved"
+    assert payload["reason_code"] == unresolved[0]["reason_code"]
+    assert payload["publication_id"] is not None
+    assert payload["metric_fact_id"] is None
+    assert payload["evidence_state"] == "unavailable"
+    assert payload["evidence_reason_code"] == "publication_not_published"
+    assert payload["value_numeric"] is None
+    assert payload["value_numeric_exact"] is None
+    assert payload["inputs"] == []
+    assert payload["locator"] is None
+    assert payload["filings"] == []
+    _assert_safe(payload)
 
 
 def test_reviewed_method_policy_defaults_system_outputs_to_typed_unsupported(
