@@ -307,6 +307,7 @@ def _validate_evidence(
             stock_id=stock_id,
             source_type=item.source_type,
             source_id=item.source_id,
+            lock_authority=True,
         )
         if not valid:
             raise ResearchCaseError(
@@ -327,6 +328,7 @@ def evidence_is_available(
     stock_id: int,
     source_type: str,
     source_id: int | None,
+    lock_authority: bool = False,
 ) -> bool:
     if source_type in {"user_note", "external_url"}:
         return True
@@ -340,7 +342,17 @@ def evidence_is_available(
         )
     if source_type == "metric_fact":
         source = session.get(MetricFact, source_id)
-        return bool(source and source.user_id == user_id and source.stock_id == stock_id)
+        if source is None or source.stock_id != stock_id:
+            return False
+        if source.source_type == "sec":
+            if source.user_id is not None or source.source_ref_id is None:
+                return False
+            from app.services.sec_financial_evidence import sec_fact_reference_available
+            return sec_fact_reference_available(
+                session, stock_id=stock_id, fact_id=source.id,
+                publication_id=source.source_ref_id, lock_authority=lock_authority,
+            )
+        return source.user_id == user_id
     if source_type == "filing_13f":
         return session.get(Filing13F, source_id) is not None
     if source_type == "holding_13f":
@@ -904,21 +916,23 @@ def serialize_revision_with_evidence_access(
     """Overlay current access without rewriting the recorded historical claim."""
 
     serialized = serialize_revision(revision)
-    serialized["evidence"] = [
-        {
-            **evidence,
-            "access_status": (
-                "available"
-                if evidence_is_available(
-                    session,
-                    user_id=user_id,
-                    stock_id=stock_id,
-                    source_type=str(evidence.get("source_type") or ""),
-                    source_id=evidence.get("source_id"),
-                )
-                else "source_unavailable"
-            ),
-        }
-        for evidence in (serialized["evidence"] or [])
-    ]
+    evidence_rows = []
+    for evidence in serialized["evidence"] or []:
+        available = evidence_is_available(
+            session, user_id=user_id, stock_id=stock_id,
+            source_type=str(evidence.get("source_type") or ""), source_id=evidence.get("source_id"),
+        )
+        projected = {key: value for key, value in evidence.items() if key != "financial_fact"}
+        projected["access_status"] = "available" if available else "source_unavailable"
+        if available and evidence.get("source_type") == "metric_fact":
+            source = session.get(MetricFact, evidence["source_id"])
+            if source is not None and source.source_type == "sec":
+                from app.services.sec_financial_evidence import sec_reference_row
+                row = sec_reference_row(session, stock_id=stock_id, fact_id=source.id, publication_id=source.source_ref_id)
+                if row is None:
+                    projected["access_status"] = "source_unavailable"
+                else:
+                    projected["financial_fact"] = row
+        evidence_rows.append(projected)
+    serialized["evidence"] = evidence_rows
     return serialized

@@ -1,0 +1,11 @@
+import type { FinancialHistory, FinancialHistoryRow } from './financialHistory';
+import type { ResearchNotes } from './researchPath';
+export function appendAnalysisObservation(notes: ResearchNotes | undefined, text: string): ResearchNotes;
+export type EconomicsPoint = { year: number; status: 'available' | 'unavailable'; reason: string | null;
+  inputs: FinancialHistoryRow[]; valueExact: string | null; text: string; unitLabel: string; policy: string };
+export type EconomicsSeries = { id: string; label: string; keys: string[]; kind: 'ratio' | 'difference';
+  formula: string; question: string; caveat: string; points: EconomicsPoint[] };
+export const ANALYSIS_METRICS: Array<{ key: string; label: string; description?: string; definition: string }>;
+export const REASONS: Record<string, string>;
+export function businessEconomics(history: FinancialHistory): { years: number[]; evaluatedAt: string; series: EconomicsSeries[] };
+export function analysisObservation(series: EconomicsSeries, point: EconomicsPoint, evaluatedAt: string): string | null;

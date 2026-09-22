@@ -64,6 +64,7 @@ from app.services.source_reconciliation import (
     read_bounded_company_facts,
     with_reconciliation_policy_snapshot,
 )
+from app.services.financial_history import build_financial_history
 
 
 def _piotroski_series(facts: list[MetricFact]) -> list[dict[str, Any]]:
@@ -416,8 +417,19 @@ def build_research_workspace(
         )
         for revision in revisions
     ]
+    financial_states = (
+        reconciliation_blocked_states + unsupported_method_states
+        + current_sec_unresolved_states(
+            session, stock_id=stock.id, knowledge_cutoff=evaluated_at
+        )
+    )
+    financial_history = build_financial_history(
+        session, stock_id=stock.id, user_id=user_id, facts=facts,
+        states=financial_states, evaluation_snapshot=evaluation_snapshot,
+    )
 
     return {
+        "financial_history": financial_history,
         "as_of": as_of.isoformat(),
         "case": serialize_case(case, stock),
         "current_identity": {
@@ -495,11 +507,7 @@ def build_research_workspace(
             }
             for fact in facts
         ]
-        + reconciliation_blocked_states
-        + unsupported_method_states
-        + current_sec_unresolved_states(
-            session, stock_id=stock.id, knowledge_cutoff=evaluated_at
-        ),
+        + financial_states,
         "system_method_gates": {
             method_key: method_gate_decisions[method_key].as_dict()
             for method_key in ("owner_earnings", "roic", "per_share_trend", "system_valuation")

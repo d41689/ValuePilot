@@ -9,6 +9,63 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Local environment — retained verification stacks still mount the source checkout
+
+- **Found:** 2026-09-22, read-only container-mount inventory before branch cleanup.
+- **Where:** local Docker projects `valuepilot-step-e-final-20260831` and `valuepilot-step-e-closing-gate-20260831`.
+- **Problem:** historical API/web/database containers remain running; their API/web services bind the original ValuePilot source directory. Additional historical Rate Guard containers also remain. Branch cleanup is not permission to delete their volumes or retained evidence.
+- **Severity:** low — environment ownership and resource-retirement follow-up; no runtime failure or data loss was observed by this inventory.
+- **Next step:** identify retained-data owners and required artifacts before retiring those exact historical stacks. Preserve the active development services, shared infrastructure, configurations and data. This consolidation performs no container stop, volume deletion or historical database cleanup.
+- **Context:** [consolidation contract](tasks/2026-09-22_branch-consolidation.md).
+
+### Business economics — ROIC inputs/method, complete debt and per-share comparability
+- **Found:** 2026-09-10，S2收尾后企业经济性只读盘点。
+- **Severity:** medium，研究材料缺口；不是已有可靠ROIC显示被隐藏。
+- **Problem:** AAPL有合法营业利润、权益等事实，但税项/商业票据/租赁等部分记录仍仅为retained raw，不能直接用于产品计算。ROIC另需PRD H.11审批与完整NOPAT/平均投入资本契约；目前方法不因页面存在数字而获准。现金与长期债务两部分不构成完整债务/净债务；每股趋势还缺拆股和股份口径证明。
+- **Next slice:** 先提出现有publication/mapping与方法policy的最小变更和数据预算，获独立审查与具体授权后实施；不绕过guard、不直接查询raw作为truth、不自动补税率/调整或采集。当前小切片只交付明确标识的利润率与CFO−PPE开支阅读计算。
+- **Context:** [数据盘点与切片任务](tasks/2026-09-10_business-economics-reading.md)。既有FT-05拆股限制继续有效，本条记录ROIC/偿债输入与方法缺口，不替代其验收。
+
+### Deployment workflow — skipped PR runs share the main deployment concurrency group
+
+- **Found:** 2026-09-22, branch consolidation after migration repair PR151.
+- **Where:** `.github/workflows/deploy.yml` workflow-level `deploy-prod-main` concurrency.
+- **Problem:** main CI triggered deploy run35787097359; the following S2 PR CI triggered a skipped deploy run35787155580 using the same cancel-in-progress group. The main run was marked cancelled even though its deployment step and API/web/Rate Guard checks completed successfully. A PR completion must not cancel a main deployment merely because its own deployment job is skipped.
+- **Severity:** medium — deployment orchestration and status reliability; no data loss or failed health check was observed in this occurrence.
+- **Follow-up:** isolate non-deploying workflow events from the production concurrency group, retaining serialization between actual main deployments. Verify the workflow-event race before changing the delivery policy. This consolidation uses the existing workflow and checks each completed deployment; no workflow redesign is included.
+- **Context:** [consolidation task](tasks/2026-09-22_branch-consolidation.md), [observed main run](https://github.com/d41689/ValuePilot/actions/runs/35787097359).
+
+### Value Line: broader legacy floating-point normalization
+
+- **Found:** 2026-09-12, MCO Plan A.
+- **Where:** `backend/app/services/mapping_spec.py::_normalize_numeric`.
+- **Problem:** Legacy normalization scales through binary floating point. The MCO revenue regression reproduced `4204100000.0000005` from `4204.1` million. Plan A fixes exact Decimal persistence only for the four reviewed annual/per-share sales/revenues mappings; other mapping paths retain their existing arithmetic and have not been audited for exact decimal preservation.
+- **Severity:** medium — precision and exact reconciliation risk, not evidence of a material error in every other metric.
+- **Next step:** audit other numeric mappings with retained fixtures and versioned policy/registry changes before broadening the normalization repair; do not silently reinterpret historical facts.
+- **Context:** [MCO Plan A](tasks/2026-09-12_mco-plan-a.md).
+
+
+### Local verification — database wall clock jumps during full-suite execution
+- **Found:** 2026-09-10, S2 v1.3 closing gate.
+- **Severity:** medium, environment/verification blocker; financial cutoff guards
+  must remain fail-closed rather than be weakened to hide it.
+- **Evidence:** two READ ONLY `clock_timestamp()` samples moved from
+  `2026-09-10T18:08:37.191657Z` to `16:34:05.590205Z` while the same container's
+  monotonic clock advanced 98.253 seconds. The second full pytest run then
+  failed and was stopped. Earlier full run: 61 failed / 2748 passed; all six
+  affected files passed in a new isolated schema (84 tests). The component
+  causing the wall-clock discontinuity has not been identified.
+- **Acceptance:** establish stable host/container/shared-database time without
+  backdating financial knowledge or bypassing currentness guards, then rerun
+  the exact full canonical gate in isolated test schemas. Do not restart shared
+  Postgres, change system time, or delete retained schemas without authorization.
+- **2026-09-10 rerun:** after the user reported a temporary time repair, all
+  canonical local Docker gates passed unchanged: backend 2809, frontend 252,
+  lint and production build. Across 21 READ ONLY samples over 1095.56 seconds,
+  no rollback was observed; adjacent wall/monotonic deltas differed by less
+  than 3 ms. The immediate gate blocker is cleared, but the root cause and
+  permanent repair remain unverified; this entry stays open for that follow-up.
+- **Context:** [S2 v1.3 gate evidence](tasks/2026-09-10_s2-annual-financials-evidence.md).
+
 ### Test isolation — committed currentness fixtures clean up only on success
 - **Found:** 2026-09-09, PR #147 canonical gate during an observed clock rollback.
 - **Severity:** low; failure cascades inside the disposable pytest schema only.
@@ -23,36 +80,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   not contaminate the next test. Do not weaken PIT or erase shared data.
 - **Context:** `backend/tests/unit/test_metric_fact_currentness.py`;
   [gate evidence](tasks/2026-09-09_single-company-data-readiness.md).
-
-### S2 — SEC evidence links bypass the authenticated API client
-- **Found:** 2026-09-09, PR #147 real AAPL case 1 browser/HTTP acceptance.
-- **Severity:** medium; blocks the ordinary user's evidence-reading workflow.
-- **Problem:** the research page uses Next Link for an authenticated SEC JSON
-  evidence route. Navigation does not attach the apiClient Bearer header;
-  ordinary GET returns 401, while the same authorized API request returns 200.
-- **Acceptance criteria:** display SEC evidence inside the existing research
-  page through the existing authenticated client, with typed loading/error and
-  identity/period/source details; preserve document-review links and source
-  authorization. No anonymous evidence access, URL token, or external SEC fetch.
-  Verify a real AAPL cash-flow/debt evidence click, not only a source-scanner test.
-- **Context:** [S1 runtime evidence](tasks/2026-09-09_single-company-data-readiness.md),
-  [S2 scope](plans/single-company-research-minimal-plan.md).
-
-### S2 — research UI still truncates otherwise-readable financial history
-- **Found:** 2026-09-09, PR #147 / `read_stock_facts` over AAPL stock 66.
-- **Severity:** medium; blocks ordinary financial reading.
-- **Problem:** PR #147 resolves the backend global-history/currentness bound
-  through complete metric units; actual AAPL workspace now returns 834 numeric
-  facts. The original research page still takes only the first 60 fundamentals,
-  hiding most metrics and providing no readable ten-year annual table.
-- **Acceptance criteria:** traverse the complete materialized response under
-  its existing evaluation boundary, with >60 displayed / >250 candidate /
-  >1,000-history fixtures; show annual human-readable labels, units, source roles
-  and explicit gaps. Keep all competing versions, recursive lineage, permissions
-  and PIT checks; no limit increase, silent prefix, historical deletion or second
-  fact truth. Verify actual AAPL browsing and preserve the backend regressions.
-- **Context:** [S1 diagnostic and dependency correction](tasks/2026-09-09_single-company-data-readiness.md),
-  [minimal S2 plan](plans/single-company-research-minimal-plan.md).
 
 ### Exclude generated files from development Docker build contexts
 - **Found:** 2026-09-09, PR #147 / S1 closing gate
@@ -320,6 +347,13 @@ deferral above.
   after splits, ADR changes, currency changes, or incompatible filing regimes)
 - **Problem:** coverage and provenance alone do not prove that historical facts
   or per-share values are comparable.
+- **S2 observation (2026-09-10):** retained AAPL weighted-average diluted share
+  counts expose no authoritative cross-year split/share-class basis in the
+  workspace comparison identity. The S2 reading surface therefore keeps exact
+  as-reported observations and separate chart points, but withholds share-count
+  YoY and cross-year lines. Do not interpret jumps as issuance or infer a split
+  factor from the values. Future comparability still requires the policy below.
+  [UX contract and verification](tasks/2026-09-10_s2-annual-financials-evidence.md#15-v13-财务阅读-ux-修订用户批准2026-09-10).
 - **Outcome:** complete the locked gold set with explicit comparability rather
   than concatenating incompatible observations.
 - **Acceptance criteria:**
@@ -1137,6 +1171,27 @@ corrected median is plausible. Parser/fingerprint v2 makes ordinary quarterly
 re-runs converge existing rows. A live empty-DB 2026-Q1 replay corrected 167
 current holdings across the five currently non-compliant filers; the lowest
 remaining common-stock median is $1.00 and compliant filings were unchanged.
+### MCO: comparative debt authority and unresolved source differences
+
+- **Found:** 2026-09-12, MCO Plan A continuation.
+- **Severity:** medium; explicit data/research gaps, not permission to fabricate values.
+- **Where:** generated prior-FY balance-sheet publication exclusion in `sec_financial_ingestion.py`; retained SEC / Value Line comparison.
+- **Problem:** FY2022 current long-term debt lacks the approved directly disclosed concept. FY2023 has a retained FY2024 comparative zero but no canonical publication authority under the current contract. User accepted both as visible nonnumeric gaps in the27-position core denominator. Comparative balance-sheet publication requires a separately reviewed contract, not a direct raw-fact promotion.
+- **Unresolved research:** FY2022 reported SEC EPS7.44 plus the retained Value Line footnote's1.86 gives9.30, not displayed8.57 (residual0.73). This is not proof either source is wrong. Do not invent an adjustment or overwrite a source.
+- **Other retained limits:** FY2018 remains `invalid_label_arc`; no all-history success claim. Value Line2010–2015 per-share extraction and original2029–2031 forecast-range representation remain outside this slice; do not relabel forecasts as actuals.
+- **Next step:** obtain authorized adjustment detail and separately define comparative/forecast authority. No new network acquisition or publication is authorized by this entry.
+- **Context:** [approved contract and retained evidence](tasks/2026-09-12_mco-plan-a.md).
+
+### MCO mixed-source EPS remains unavailable under incomplete quarterly identity
+
+- **Found:** 2026-09-12, stable-clock Plan A acceptance.
+- **Where:** `source_reconciliation.py` metric-wide period-identity guard; `research_workspace.py` blocked-state projection; financial details pagination.
+- **Problem:** After legitimate Value Line ingestion,20 quarterly EPS observations have no proven fiscal-year/quarter identity. The existing guard blocks the entire45-candidate EPS comparison unit, including FY2022–2024, while its canonical SEC facts and authorized original evidence remain intact. The UI shows typed `unavailable: unresolved_source_reconciliation`; its aggregate row displays the first candidate's2015-12-31 date with “fiscal year unproven”. That date must not be interpreted as limiting the blockage to2015.
+- **Severity:** medium — research usability and incomplete fiscal identity, contained by numeric redaction. No guard weakening or invented calendar is authorized.
+- **Scope decision:** Plan A AC1 verifies six additional published SEC positions/evidence; AC7 requires the nine-core-metric browser surface. Mixed-source EPS availability and clearer metric-wide labeling are follow-up work, not a claim of this delivery.
+- **Next:** establish reviewed quarterly identity from actual retained evidence and improve the scope label without narrowing conflict checks by guesswork.
+- **Context:** [stable-clock acceptance](reports/2026-09-12_mco-plan-a-stable-acceptance.md).
+
 ### Quant H3 historical filing/amendment PIT selector
 
 - **Found:** 2026-07-21, `T-2026-07-21-quant-trading-1-r0a`

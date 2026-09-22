@@ -11,7 +11,6 @@ from sqlalchemy.exc import DBAPIError
 
 from app.core.config import settings
 from app.services.ingestion_service import VALUE_LINE_REPARSE_LOCK_SQL
-from app.services.mapping_spec import MappingSpec
 from test_support.database_isolation import (
     build_isolated_database_url,
     create_test_schema,
@@ -30,9 +29,12 @@ BASE = make_url(settings.SQLALCHEMY_DATABASE_URI).set(
 BACKEND = Path(__file__).resolve().parents[2]
 PARENT = "20260901280000"
 HEAD = "20260904180000"
-APPROVED_MAPPING_VERSION = MappingSpec.load(
-    BACKEND / "docs" / "metric_facts_mapping_spec.yml"
-).source_mapping_version
+# This suite deliberately stops at the historical HEAD above, so its approved
+# identity must not follow later deployed mapping revisions.
+APPROVED_MAPPING_VERSION = (
+    "value-line-resolved-v2:"
+    "ad39a21849da51983b15588182cc8a66fa36999429d65fbc3a45323719452a4b"
+)
 
 
 def _alembic_result(url: str, *args: str) -> subprocess.CompletedProcess[str]:

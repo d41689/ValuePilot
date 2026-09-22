@@ -89,7 +89,10 @@ PARSER_V2_5 = "xbrl-lineage-v2.5"
 PARSER_V2_6 = "xbrl-lineage-v2.6"
 PARSER_V2_7 = "xbrl-lineage-v2.7"
 PARSER_V2_8 = "xbrl-lineage-v2.8"
-PARSER_V2 = "xbrl-lineage-v2.9"
+PARSER_V2_9 = "xbrl-lineage-v2.9"
+PARSER_V2_10 = "xbrl-lineage-v2.10"
+PARSER_V2_11 = "xbrl-lineage-v2.11"
+PARSER_V2 = "xbrl-lineage-v2.12"
 ARTIFACT_RETENTION_POLICY_V1 = "sec-financial-artifacts-v1"
 ARTIFACT_RETENTION_POLICY_VERSION = "sec-financial-artifacts-v2"
 ANNUAL_FORMS_BY_REGIME = {
@@ -912,6 +915,9 @@ def _is_parser_v2(parser_version: str) -> bool:
         PARSER_V2_6,
         PARSER_V2_7,
         PARSER_V2_8,
+        PARSER_V2_9,
+        PARSER_V2_10,
+        PARSER_V2_11,
         PARSER_V2,
     }
 
@@ -922,6 +928,9 @@ def _is_sgml_instance_parser(parser_version: str) -> bool:
         PARSER_V2_6,
         PARSER_V2_7,
         PARSER_V2_8,
+        PARSER_V2_9,
+        PARSER_V2_10,
+        PARSER_V2_11,
         PARSER_V2,
     }
 
@@ -929,20 +938,20 @@ def _is_sgml_instance_parser(parser_version: str) -> bool:
 def _is_generated_statement_parser(parser_version: str) -> bool:
     return parser_version in {
         PARSER_V2_2, PARSER_V2_3, PARSER_V2_4, PARSER_V2_5, PARSER_V2_6,
-        PARSER_V2_7, PARSER_V2_8, PARSER_V2
+        PARSER_V2_7, PARSER_V2_8, PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2
     }
 
 
 def _is_parser_v24(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2}
+    return parser_version in {PARSER_V2_4, PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2}
 
 
 def _is_parser_v25(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2}
+    return parser_version in {PARSER_V2_5, PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2}
 
 
 def _is_parser_v26(parser_version: str) -> bool:
-    return parser_version in {PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2}
+    return parser_version in {PARSER_V2_6, PARSER_V2_7, PARSER_V2_8, PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2}
 
 
 def _artifact_retention_policy_version(parser_version: str) -> str:
@@ -2587,9 +2596,14 @@ def _parse_primary_artifact(
                             require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
-                            allow_negated_label=parser_version in {PARSER_V2_8, PARSER_V2},
+                            allow_negated_label=parser_version in {PARSER_V2_8, PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2},
                             report_name=reference.report_name,
-                            allow_consolidated_candidate_scope=parser_version == PARSER_V2,
+                            allow_consolidated_candidate_scope=parser_version in {PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2},
+                            allow_unused_empty_documentation=parser_version in {PARSER_V2_10, PARSER_V2_11, PARSER_V2},
+                            allow_dollar_prefixed_negative=parser_version in {PARSER_V2_11, PARSER_V2},
+                            allow_shares_in_millions=parser_version in {PARSER_V2_11, PARSER_V2},
+                            allow_explicit_blank_prior_annual_column=parser_version == PARSER_V2,
+                            report_sha256=report_artifact.sha256,
                         )
                         occurrences = resolution.occurrences
                         (rejected_consolidated_concepts if resolution.candidate_scope ==
@@ -2640,9 +2654,14 @@ def _parse_primary_artifact(
                             require_exact_raw_label_fragment=_is_parser_v26(
                                 parser_version
                             ),
-                            allow_negated_label=parser_version in {PARSER_V2_8, PARSER_V2},
+                            allow_negated_label=parser_version in {PARSER_V2_8, PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2},
                             report_name=reference.report_name,
-                            allow_consolidated_candidate_scope=parser_version == PARSER_V2,
+                            allow_consolidated_candidate_scope=parser_version in {PARSER_V2_9, PARSER_V2_10, PARSER_V2_11, PARSER_V2},
+                            allow_unused_empty_documentation=parser_version in {PARSER_V2_10, PARSER_V2_11, PARSER_V2},
+                            allow_dollar_prefixed_negative=parser_version in {PARSER_V2_11, PARSER_V2},
+                            allow_shares_in_millions=parser_version in {PARSER_V2_11, PARSER_V2},
+                            allow_explicit_blank_prior_annual_column=parser_version == PARSER_V2,
+                            report_sha256=report_artifact.sha256,
                         )
                         occurrences = resolution.occurrences
                         (rejected_consolidated_concepts if resolution.candidate_scope ==
@@ -2702,12 +2721,14 @@ def _parse_primary_artifact(
                 presented_periods.append(PresentedPeriodEvidence(
                     occurrence.column_header, item.period_start, end,
                     str(evidence_artifact.id), int(occurrence.locator.get("row", 0)),
-                    occurrence.concept, int(occurrence.locator.get("column", 0))))
+                    occurrence.concept, int(occurrence.locator.get("column", 0)),
+                    occurrence.locator.get("explicit_blank_prior_annual_column")))
             focus = build_explicit_fiscal_focus(
                 dei_facts=[DeiFocusEvidence(item.concept_namespace_uri, item.concept.rsplit(":", 1)[-1],
                     item.raw_value or "", tuple(item.dimensions_structured)) for item in parsed],
                 presented_periods=presented_periods, form=filing.form_type,
-                statement_period_end=filing.report_date, approved_dei_namespaces=DEI_URIS)
+                statement_period_end=filing.report_date, approved_dei_namespaces=DEI_URIS,
+                allow_explicit_blank_prior_annual_column=parser_version == PARSER_V2)
         parse_savepoint = db.begin_nested()
         run = SecFinancialParseRun(
             filing_id=filing.id,
