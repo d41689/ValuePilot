@@ -335,11 +335,15 @@ export default function ResearchCaseWorkspacePage() {
   });
   const workspace = workspaceQuery.data;
   const storageKey = workspace
-    ? `vp-research-draft:${workspace.case.id}:${workspace.case.head_revision_number}`
+    ? `vp-research-draft:${workspace.case.id}:${loadedHead ?? workspace.case.head_revision_number}`
     : null;
 
   useEffect(() => {
     if (!workspace || loadedHead === workspace.case.head_revision_number) return;
+    if (loadedHead !== null && dirty) {
+      setConflict(true);
+      return;
+    }
     const serverDraft = initialDraft(workspace);
     let restored = serverDraft;
     let didRestore = false;
@@ -357,7 +361,7 @@ export default function ResearchCaseWorkspacePage() {
     setDirty(didRestore);
     setConflict(false);
     setLoadedHead(workspace.case.head_revision_number);
-  }, [loadedHead, workspace]);
+  }, [dirty, loadedHead, workspace]);
 
   useEffect(() => {
     if (!dirty || !draft || !storageKey) return;
@@ -376,7 +380,7 @@ export default function ResearchCaseWorkspacePage() {
   function updateDraft(patch: Partial<Draft>) {
     setDraft((current) => (current ? { ...current, ...patch } : current));
     setDirty(true);
-    setConflict(false);
+    setConflict(loadedHead !== null && loadedHead !== workspace?.case.head_revision_number);
   }
 
   function addEvidence(item: Evidence) {
@@ -394,6 +398,7 @@ export default function ResearchCaseWorkspacePage() {
   const saveMutation = useMutation({
     mutationFn: async (decisionAction: DecisionAction) => {
       if (!workspace || !draft) throw new Error('Workspace is not ready.');
+      if (loadedHead === null || loadedHead !== workspace.case.head_revision_number) throw new Error('Reconcile the changed case before saving.');
       if (hasResearchNotes(draft.researchNotes)) throw new Error('Append or clear your five-step notes before saving.');
       const targetDecision =
         draft.targetState === 'monitoring'
@@ -402,7 +407,7 @@ export default function ResearchCaseWorkspacePage() {
             ? 'pass'
             : null;
       const payload: Record<string, unknown> = {
-        expected_head_revision_number: workspace.case.head_revision_number,
+        expected_head_revision_number: loadedHead,
         target_state: draft.targetState,
         thesis: draft.thesis || null,
         variant_view: draft.variantView || null,
@@ -512,13 +517,13 @@ export default function ResearchCaseWorkspacePage() {
           <Button
             type="button"
             variant="outline"
-            disabled={terminal || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending}
+            disabled={terminal || conflict || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending}
             onClick={() => saveMutation.mutate('draft')}
           >
             {saveMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saveMutation.isPending ? 'Saving…' : 'Save revision'}
           </Button>
-          {draft.targetState === 'monitoring' || draft.targetState === 'closed' ? <Button type="button" disabled={terminal || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending} onClick={() => saveMutation.mutate(workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'review' : 'decision')}>{workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'Record review decision' : 'Record decision'}</Button> : null}
+          {draft.targetState === 'monitoring' || draft.targetState === 'closed' ? <Button type="button" disabled={terminal || conflict || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending} onClick={() => saveMutation.mutate(workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'review' : 'decision')}>{workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'Record review decision' : 'Record decision'}</Button> : null}
         </div>
       </div>
 
@@ -531,8 +536,17 @@ export default function ResearchCaseWorkspacePage() {
         <div className="space-y-3 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-950">
           <div className="flex items-start gap-2"><ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" /> This case changed after your draft opened. Your local draft was kept; reload current evidence before deciding how to reconcile it.</div>
           <Button type="button" size="sm" variant="outline" onClick={() => void workspaceQuery.refetch()}>Reload current case</Button>
+          <p className="text-xs">Reload refreshes the server view without replacing your draft. Copy any text you want to keep before discarding it.</p>
         </div>
       ) : null}
+      {dirty || conflict ? <Button type="button" size="sm" variant="outline" disabled={saveMutation.isPending || workspaceQuery.isFetching} onClick={async () => {
+            const refreshed = await workspaceQuery.refetch();
+            if (refreshed.error || !refreshed.data) return;
+            if (!window.confirm('Discard this local draft, including five-step notes, and load the latest revision? This does not change server history.')) return;
+            if (storageKey) window.localStorage.removeItem(storageKey);
+            setDraft(initialDraft(refreshed.data)); setDirty(false); setConflict(false);
+            setLoadedHead(refreshed.data.case.head_revision_number);
+          }}>Discard local draft and use latest revision</Button> : null}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border p-3 text-xs text-muted-foreground">
         <span>Decision: {workspace.case.decision ? label(workspace.case.decision) : 'Undecided'} · Review: {workspace.case.next_review_on ?? 'not scheduled'}</span>
