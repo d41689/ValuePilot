@@ -61,7 +61,7 @@ function fixture({ serverHead = 3, loadedHead = 2, dirty = true, notes = true } 
       setItem: (key, value) => storage.set(key, value) } },
     setDraft: value => { result.draft = typeof value === 'function' ? value(result.draft) : value; },
     setDirty: value => { result.dirty = value; },
-    setConflict: value => { result.conflict = value; },
+    setConflict: value => { result.conflict = typeof value === 'function' ? value(result.conflict) : value; },
     setLoadedHead: value => { result.loadedHead = value; },
     crypto: { randomUUID: () => 'test-correlation' },
     apiClient: { post: async (url, payload) => { result.requests.push({ url, payload }); return {}; } },
@@ -111,20 +111,27 @@ test('browser persistence remains addressed to the loaded draft head during a co
   assert.equal(execute(`(${variable('storageKey').initializer.getText(tree)})`, context), 'vp-research-draft:2:3');
 });
 
-test('editing a preserved stale draft does not clear the conflict warning', () => {
-  const { context, result } = fixture();
-  context.conflict = true;
-  result.conflict = true;
-  execute(`${updateDraft}\nupdateDraft({ thesis: 'Further user edits' });`, context);
-  assert.equal(result.draft.thesis, 'Further user edits');
-  assert.equal(result.conflict, true);
+test('editing after a conflict keeps the warning for cached and refreshed server heads', () => {
+  for (const serverHead of [2, 3]) {
+    const { context, result } = fixture({ serverHead });
+    context.conflict = true;
+    result.conflict = true;
+    execute(`${updateDraft}\nupdateDraft({ thesis: 'Further user edits' });`, context);
+    assert.equal(result.draft.thesis, 'Further user edits');
+    assert.equal(result.conflict, true);
+  }
 });
 
-test('save rejects a newer server head and sends the original expected head when aligned', async () => {
+test('save rejects a newer server head or latched 409 conflict and sends the original expected head when aligned', async () => {
   const stale = fixture({ notes: false });
   const saveStale = execute(`${initializers}\n(${mutationFn})`, stale.context);
   await assert.rejects(saveStale('draft'));
   assert.equal(stale.result.requests.length, 0);
+  const cachedConflict = fixture({ serverHead: 2, notes: false });
+  cachedConflict.context.conflict = true;
+  cachedConflict.result.conflict = true;
+  await assert.rejects(execute(`${initializers}\n(${mutationFn})`, cachedConflict.context)('draft'));
+  assert.equal(cachedConflict.result.requests.length, 0);
   const aligned = fixture({ serverHead: 2, notes: false });
   await execute(`${initializers}\n(${mutationFn})`, aligned.context)('draft');
   assert.equal(aligned.result.requests.length, 1);

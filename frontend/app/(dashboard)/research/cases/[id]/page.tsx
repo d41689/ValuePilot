@@ -380,7 +380,7 @@ export default function ResearchCaseWorkspacePage() {
   function updateDraft(patch: Partial<Draft>) {
     setDraft((current) => (current ? { ...current, ...patch } : current));
     setDirty(true);
-    setConflict(loadedHead !== null && loadedHead !== workspace?.case.head_revision_number);
+    setConflict((current) => current || (loadedHead !== null && loadedHead !== workspace?.case.head_revision_number));
   }
 
   function addEvidence(item: Evidence) {
@@ -398,7 +398,7 @@ export default function ResearchCaseWorkspacePage() {
   const saveMutation = useMutation({
     mutationFn: async (decisionAction: DecisionAction) => {
       if (!workspace || !draft) throw new Error('Workspace is not ready.');
-      if (loadedHead === null || loadedHead !== workspace.case.head_revision_number) throw new Error('Reconcile the changed case before saving.');
+      if (conflict || loadedHead === null || loadedHead !== workspace.case.head_revision_number) throw new Error('Reconcile the changed case before saving.');
       if (hasResearchNotes(draft.researchNotes)) throw new Error('Append or clear your five-step notes before saving.');
       const targetDecision =
         draft.targetState === 'monitoring'
