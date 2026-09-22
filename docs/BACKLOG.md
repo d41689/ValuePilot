@@ -9,6 +9,15 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Deployment workflow — skipped PR runs share the main deployment concurrency group
+
+- **Found:** 2026-09-22, branch consolidation after migration repair PR151.
+- **Where:** `.github/workflows/deploy.yml` workflow-level `deploy-prod-main` concurrency.
+- **Problem:** main CI triggered deploy run35787097359; the following S2 PR CI triggered a skipped deploy run35787155580 using the same cancel-in-progress group. The main run was marked cancelled even though its deployment step and API/web/Rate Guard checks completed successfully. A PR completion must not cancel a main deployment merely because its own deployment job is skipped.
+- **Severity:** medium — deployment orchestration and status reliability; no data loss or failed health check was observed in this occurrence.
+- **Follow-up:** isolate non-deploying workflow events from the production concurrency group, retaining serialization between actual main deployments. Verify the workflow-event race before changing the delivery policy. This consolidation uses the existing workflow and checks each completed deployment; no workflow redesign is included.
+- **Context:** [consolidation task](tasks/2026-09-22_branch-consolidation.md), [observed main run](https://github.com/d41689/ValuePilot/actions/runs/35787097359).
+
 ### Value Line: broader legacy floating-point normalization
 
 - **Found:** 2026-09-12, MCO Plan A.
