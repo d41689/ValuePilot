@@ -1822,10 +1822,56 @@ sort by catalog order, other metric key alphabetically, fiscal year descending
 key. The annual table and fixed 50-row detail pages are two views of the same
 response, not extra facts or independent reads. Every returned row is
 traversable. Refresh replaces the entire response, resets pagination and clears
-old evidence. Amount/share display uses decimal-string arithmetic, millions,
+old evidence. Amount/share display uses decimal-string arithmetic, billions,
 two decimals and an explicit display-rounding label; the exact value remains
 available. Small nonzero values rounding to zero display `<0.01` or `>-0.01`.
 NULL, invalid numeric, true zero and unknown currency are distinct states.
+
+#### Descriptive business-economics reading (2026-09-10)
+
+The same authorized `financial_history` response may support three explicitly
+non-persistent display calculations under `business-economics-reading-v1`:
+`is.operating_income / is.revenue` (operating margin),
+`is.gross_profit / is.revenue` (gross margin), and
+`is.operating_cash_flow - cf.capital_expenditures` (CFO less reported PPE
+purchases). These are arithmetic reading aids, not canonical metric keys,
+published financial facts, method outputs, valuation inputs or screening scores.
+They MUST NOT be labeled ROIC, owner earnings, distributable cash or a moat
+assessment. The existing nine-key S2 cell/count contract is unchanged.
+
+Each operand must be a unique, unblocked, full-FY SEC primary as-filed actual
+with a known fiscal year, currency, exact value, positive fact/publication IDs,
+the appropriate canonical family and SEC mapping definition, and proven empty
+dimensions. Competing same-FY observations are not filtered down to a preferred
+source. Unknown annual identity and relevant metric/slot/cycle states prevent
+calculation; unknown state scope is treated conservatively. Operands must agree
+on exact period start/end, currency, source semantics, mapping versions and
+dimension identity. Quarter/transition-year inputs are not annualized. Ratios
+require positive revenue; negative operating/gross profit remains a legitimate
+negative margin. Negative PPE spending is not silently flipped or guessed.
+
+Decimal strings are calculated exactly, with ratios retained as their exact
+operand pair and rounded only for two-decimal percentage display. A small
+nonzero ratio is labeled `<0.01%` or `>-0.01%`; the cash difference preserves
+exact decimals and uses the explicitly labeled billion-currency display.
+Inputs, full periods, fact/publication IDs, formula, evaluation time and reading
+policy remain inspectable. Each operand opens its existing authenticated fact
+evidence; a display calculation does not fabricate its own fact ID or evidence
+publication. Refresh replaces the response and resets the analysis selection.
+
+Only an explicit user action may append clearly labeled calculation context to
+the existing client-local observation draft. It preserves all existing notes,
+does not manufacture an explanation or judgment, does not attach an unreviewed
+evidence reference, and invokes no new server save/publication path. Terminal,
+conflicted or saving cases cannot insert context. A newer server revision must
+not replace a dirty draft or advance its expected head; conflict resolution
+requires explicit user action against freshly retrieved data.
+
+ROIC, owner earnings, net debt/solvency and per-share growth remain uncomputed
+by this surface. Missing canonical inputs, unreviewed method prerequisites and
+unproven share comparability are not bypassed. In particular §H.11 still governs
+every ROIC/owner-earnings/per-share method output; a margin cannot be relabeled
+as a workaround. Raw retained XBRL is never a display-calculation input.
 
 Market-price authority, user intrinsic-value publication, valuation methods,
 industry/economic applicability, new acquisition rights, and evidence

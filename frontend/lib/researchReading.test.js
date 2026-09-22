@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'); const path = require('node:path'); const vm = require('node:vm');
 const ts = require('typescript'); const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
+const { appendAnalysisObservation } = require('./businessEconomics');
 const root = path.resolve(__dirname, '..');
 function load(relative) {
   const file = path.join(root, relative);
@@ -53,4 +54,98 @@ test('actual five-step editor is blank and disabled in historical/terminal mode'
   assert.equal((html.match(/<textarea[^>]*disabled=""/g) || []).length, 5);
   assert.match(html, /Only Save revision/);
   assert.doesNotMatch(html, />Buy|>Own|>Watch/);
+});
+
+test('business economics reader exposes formulas, precise operands, evidence and honest ROIC limits', () => {
+  const { EconomicsCalculation, BusinessEconomics } = load('components/research/BusinessEconomics.tsx');
+  const { businessEconomics } = require('./businessEconomics');
+  const input = (key, value, id) => ({ ...row, row_kind: 'fact', row_key: `fact:${id}`, status: 'available',
+    fact_id: id, publication_id: id + 1000, metric_key: key, value_numeric_exact: value, fiscal_quarter: null, source_type: 'sec',
+    comparison_identity: { identity_complete: true, definition_family: `canonical:${key}`,
+      definition_id: key === 'is.revenue' ? 'sec.revenue' : 'sec.operating_income', definition_basis: 'as_filed',
+      mapping_version: 'v1', source_mapping_version: 'v1', dimensions_identity: 'empty',
+      source_identity: `sec-publication:${id + 1000}`, duration_days: 364, period_duration_kind: 'fiscal_year' } });
+  const history = { evaluated_at: '2026-09-10T23:00:00Z', annual_window: { status: 'determined', years: [2023, 2024, 2025] },
+    rows: [input('is.revenue', '416161000000', 2198), input('is.operating_income', '133050000000', 2092)] };
+  const series = businessEconomics(history).series[0];
+  const html = renderToStaticMarkup(React.createElement(EconomicsCalculation, { series, point: series.points.at(-1),
+    evaluatedAt: history.evaluated_at, readOnly: false, onSelect() {}, onResearch() {} }));
+  for (const expected of ['Operating margin', '31.97%', '133,050,000,000', '416,161,000,000', '2092', '2198', '2024-09-29', '2025-09-27', 'Inspect Operating income', 'Research this calculation']) assert.ok(html.includes(expected), expected);
+  const disabled = renderToStaticMarkup(React.createElement(EconomicsCalculation, { series, point: series.points[0],
+    evaluatedAt: history.evaluated_at, readOnly: true, onSelect() {}, onResearch() {} }));
+  assert.doesNotMatch(disabled, /Research this calculation|133,050,000,000/);
+  const page = renderToStaticMarkup(React.createElement(BusinessEconomics, { history, readOnly: true, onSelect() {}, onResearch() {} }));
+  for (const text of ['ROIC', 'NOPAT', 'debt', 'split', 'Operating margin', 'Gross margin']) assert.ok(page.includes(text), text);
+  const cash = businessEconomics(history).series.find(s => s.id === 'cash_after_ppe');
+  const cashHtml = renderToStaticMarkup(React.createElement(EconomicsCalculation, { series: cash, point: cash.points.at(-1),
+    evaluatedAt: history.evaluated_at, readOnly: true, onSelect() {}, onResearch() {} }));
+  assert.match(cashHtml, /not owner earnings/);
+  assert.doesNotMatch(page, /Buy signal|Strong moat|ROIC: [0-9]/);
+  const action = page.match(/<button[^>]*disabled=""[^>]*>Research this calculation/);
+  assert.ok(action, 'read-only mode disables research insertion');
+});
+
+const casePageSource = fs.readFileSync(path.join(root, 'app/(dashboard)/research/cases/[id]/page.tsx'), 'utf8');
+const casePageTree = ts.createSourceFile('page.tsx', casePageSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let annualFinancialsTable;
+function findAnnualFinancialsTable(node) {
+  if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(casePageTree) === 'AnnualFinancialsTable') annualFinancialsTable = node;
+  ts.forEachChild(node, findAnnualFinancialsTable);
+}
+findAnnualFinancialsTable(casePageTree);
+assert.ok(annualFinancialsTable, 'The annual financials table must remain reachable from the research case page');
+function annualFinancialsProp(name) {
+  const attribute = annualFinancialsTable.attributes.properties.find(item => item.name?.getText(casePageTree) === name);
+  assert.ok(attribute?.initializer && ts.isJsxExpression(attribute.initializer), `Missing ${name} expression`);
+  return attribute.initializer.expression.getText(casePageTree);
+}
+const economicsReadOnly = annualFinancialsProp('readOnly');
+const economicsOnResearch = annualFinancialsProp('onResearch');
+function executePage(code, context) {
+  const compiled = ts.transpileModule(code, { compilerOptions: {
+    target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS,
+  } }).outputText;
+  return vm.runInNewContext(compiled, context);
+}
+function callbackFixture({ terminal = false, conflict = false, pending = false, loadedHead = 2, workspaceHead = 2 } = {}) {
+  const researchNotes = { observation: 'Existing observation', explanations: 'Existing explanation',
+    evidenceNeeded: 'Existing evidence need', falsification: 'Existing falsifier', judgment: 'Existing judgment' };
+  const result = { updates: [], requests: [], scrolls: 0 };
+  const context = {
+    terminal, conflict, loadedHead, workspace: { case: { head_revision_number: workspaceHead } },
+    saveMutation: { isPending: pending }, draft: { researchNotes }, appendAnalysisObservation,
+    updateDraft: patch => result.updates.push(patch),
+    document: { getElementById: () => ({ scrollIntoView: () => { result.scrolls += 1; } }) },
+    apiClient: { post: (...args) => { result.requests.push(args); } }, callbackText: 'Display calculation context',
+  };
+  return { context, result, researchNotes };
+}
+
+test('actual economics research callback rejects unsafe draft heads and aligned editing stays local', () => {
+  const blocked = [
+    { terminal: true },
+    { conflict: true },
+    { pending: true },
+    { loadedHead: null },
+    { loadedHead: 2, workspaceHead: 3 },
+  ];
+  for (const state of blocked) {
+    const setup = callbackFixture(state);
+    assert.equal(executePage(`(${economicsReadOnly})`, setup.context), true, JSON.stringify(state));
+    executePage(`(${economicsOnResearch})(callbackText)`, setup.context);
+    assert.equal(setup.result.updates.length, 0, JSON.stringify(state));
+    assert.equal(setup.result.scrolls, 0, JSON.stringify(state));
+    assert.equal(setup.result.requests.length, 0, JSON.stringify(state));
+  }
+
+  const aligned = callbackFixture();
+  assert.equal(executePage(`(${economicsReadOnly})`, aligned.context), false);
+  executePage(`(${economicsOnResearch})(callbackText)`, aligned.context);
+  assert.equal(aligned.result.updates.length, 1);
+  assert.deepEqual(aligned.result.updates[0].researchNotes, {
+    ...aligned.researchNotes,
+    observation: 'Existing observation\n\nDisplay calculation context',
+  });
+  assert.equal(aligned.result.scrolls, 1);
+  assert.equal(aligned.result.requests.length, 0);
 });
