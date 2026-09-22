@@ -206,3 +206,9 @@ Validation performed after revision:
   acceptance criteria, all retained relative file links resolve in the isolated
   branch, no trailing whitespace. `git diff --cached --check` passed and the
   staged file list contained exactly the proposal and this record.
+
+## Authorized consolidation delivery
+
+The user subsequently authorized branch consolidation, including commits, pushes, PRs and merges. Draft PR150 records the already accepted 0.2 story review; this pass does not reopen product scope or authorize implementation/trading. Its original isolated head `144d4214` passed the full canonical CI (run35778282652: 2,786 backend / 233 frontend / 42 Rate Guard, migrations, lint, production build and topology).
+
+Prepare the reviewed migration/S2/MCO dependencies locally, then incorporate the completed main chain and rerun final canonical CI before merging this documentation PR. The investor-priorities document now exists through S2, so its former pending path becomes a working relative link. The independent investment-memory proposal remains a separately retained, unmerged draft. The prior mixed-workspace clock failures above remain historical; they are not evidence against, or a substitute for validation of, the final branch.

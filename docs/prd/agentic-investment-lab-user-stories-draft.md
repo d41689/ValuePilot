@@ -804,5 +804,5 @@ Robinhood 是候选 adapter，不是策略核心。S1 可使用内部确定性 p
 - [Research Decision Support architecture](../architecture/research-decision-support.md)。
 - [ValuePilot authoritative PRD](value-pilot-prd-v0.1.md)。
 - 工作区背景草案：`docs/prd/investment-memory-monitoring-prd-draft.md`（尚未纳入本分支）。
-- 工作区投资者故事优先级：`docs/plans/value-investor-user-story-priorities.md`（尚未纳入本分支）。
+- [投资者故事优先级](../plans/value-investor-user-story-priorities.md)。
 - [本次文档任务记录](../tasks/2026-09-22_agentic-investment-lab-user-stories.md)。
