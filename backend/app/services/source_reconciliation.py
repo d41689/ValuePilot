@@ -221,6 +221,7 @@ class ReconciliationCandidate:
     period_duration_kind: str = ""
     lineage_fact_ids: tuple[int, ...] = ()
     identity_complete: bool = True
+    period_basis: str | None = None
 
 
 class CanonicalReconciliationError(CanonicalSourceConflictError):
@@ -1235,6 +1236,8 @@ def materialize_reconciliation_candidates(
         source_authority_complete = True
         source_mapping_version = str(metadata.get("source_mapping_version") or "")
         period_duration_kind = str(metadata.get("period_duration_kind") or "")
+        period_basis = metadata.get("period_basis")
+        period_basis = period_basis if period_basis in {"instant", "duration"} else None
         fiscal_year = metadata.get("fiscal_year")
         fiscal_year = fiscal_year if isinstance(fiscal_year, int) else None
         fiscal_quarter = metadata.get("fiscal_quarter_ordinal")
@@ -1275,6 +1278,7 @@ def materialize_reconciliation_candidates(
                 definition_id = str(authority["rule_id"])
                 source_mapping_version = str(authority["mapping_version_id"])
                 period_start = authority["period_start_date"]
+                period_basis = authority["period_basis"]
                 fiscal_year = int(authority["fiscal_year"])
                 fiscal_quarter = authority["fiscal_quarter_ordinal"]
                 duration_days = (
@@ -1515,6 +1519,7 @@ def materialize_reconciliation_candidates(
                 period_duration_kind=period_duration_kind,
                 lineage_fact_ids=lineage,
                 identity_complete=identity_complete,
+                period_basis=period_basis,
             )
         )
     return candidates, excluded

@@ -561,12 +561,20 @@ not every revision whose content happens to be complete.
 
 ### G.3 Evidence
 
-Evidence supports Value Line document/fact, 13F filing/holding/change/signal,
+Evidence supports Value Line document/fact, canonical SEC fact, 13F filing/holding/change/signal,
 stock price, user-authored note, and external HTTPS URL references.
 
 - Every reference is validated for existence, user visibility, and matching
   stock where applicable.
 - A shared stock/fact ID cannot reveal another user's private document/snippet.
+- A `metric_fact` reference may identify an authorized shared SEC fact only
+  through the `source_type=sec`, NULL-owner branch, with exact case stock,
+  fact/publication binding, finalized lineage and current mapping authority.
+  Other NULL-owner facts are not shared by implication; owned non-SEC evidence
+  retains its existing access boundary. All SEC canonical operands must be
+  authorized under a bounded input-graph read. Revision validation holds the
+  referenced mapping authority against concurrent mutation through the save
+  transaction; existing privacy, stock, case and expected-head rules remain.
 - Revisions keep only the permitted minimal recorded claim and source metadata;
   proprietary excerpts stay behind original document access control.
 - Ordinary document removal archives retained bytes/extractions/facts and removes
@@ -574,6 +582,12 @@ stock price, user-authored note, and external HTTPS URL references.
   reads remain available only while current source authorization permits them.
 - A lost permission/source renders `source_unavailable`; historical claims are
   not silently replaced by current data.
+- SEC references retain the existing `source_type=metric_fact`, `source_id`,
+  label/claim/source-date storage contract, with no persistent numeric snapshot.
+  Authorized revision reads may add a read-only `financial_fact` projection of
+  that original fact and publication for evidence reopening. Superseded is not
+  permission loss and never selects a replacement ID. The derived projection
+  is absent on loss of source access; allowed recorded claims/identities remain.
 - External URLs accept normalized HTTPS only, are never server-fetched, render
   as untrusted external links with visible domain and safe new-window isolation.
 
@@ -1489,6 +1503,44 @@ return an authorized evidence resolver or canonical SEC source URL; they MUST
 NOT return a raw-table browsing endpoint, arbitrary raw fact content, internal
 storage key/path, filesystem URL, or local artifact location.
 
+The existing `/stocks/{stock_id}/sec-publications/{publication_id}/evidence`
+read accepts optional `fact_id`; numeric S2 entry points supply it and the
+server verifies the exact stock/fact/publication tuple. A mismatch or missing
+current authority returns a non-disclosing typed 404. Historical superseded
+facts remain readable only under current source permission, without substitution
+of a current ID. Mapping approval/retirement and finalized relation creation and
+transaction visibility are checked at one evidence request snapshot.
+
+An authorized response retains legacy fields and adds `value_numeric_exact`,
+`currentness`, and independent `evidence_state`/`evidence_reason_code`. Each
+raw input's `statement` contains only explicitly bound retained lexical/display
+values, raw sign/scale/decimals/unit, display multiplier and label role, report
+name, row label, column header/date, concept/context and safe ordinal locator.
+The publication locator must identify the exact raw fact, parse run, statement
+authority, report reference and occurrence, not a fuzzy concept/year match.
+The authority digest includes its presentation anchors and is not the same
+digest as the raw occurrence. No artifact is reparsed or fetched by this read.
+
+Canonical-operand inputs expand recursively, preserving all operand IDs, exact
+canonical values and arithmetic signs. The complete traversal is bounded to
+32 inputs and depth 8; locator payloads are bounded to 256 KiB per queried
+record and each exposed text field to 8,000 characters. Missing authority,
+locator or required text, cycles, unsafe content or a bound breach returns typed
+unavailable without partial input/value proof. These limits are not permission
+to select a prefix. Public raw XBRL does not become queryable financial truth.
+Only whitelisted plain text, safe ordinals and canonical external SEC links are
+returned; retained HTML/scripts/internal storage paths are not rendered or
+exposed. Unknown optional presentation fields remain NULL. Display sign and
+scale never modify the fact's canonical value.
+
+The browser uses the existing authenticated `apiClient` with endpoint-relative
+paths, including when its base URL is absolute. SEC external links do not use
+that bearer client. A successful evidence response must match the selected
+fact/publication, exact numeric value, period, unit/currency and source nature;
+mismatch, 403/404, unavailable and refresh clear prior details. Existing 401
+refresh/login behavior remains. An authenticated HTTP response alone does not
+constitute browser or user acceptance.
+
 The publication write surface is an operator service/CLI with bounded stock,
 mapping version and cutoff inputs. It is not a user endpoint and cannot accept
 caller-defined metric keys, taxonomy rules, SQL, source precedence, or
@@ -1690,6 +1742,90 @@ than pretending one partial prefix has a complete-company report digest.
 Incomplete units remain visible in both fundamentals and reconciliation status.
 Other consumers and the standalone reconciliation endpoint retain their
 existing resource bounds and contracts.
+
+#### Research annual-financial history projection (S2)
+
+The authenticated research workspace adds `financial_history` (schema version
+1) alongside the compatible legacy `fundamentals` response. The workspace
+endpoint binds a typed response model that preserves all legacy fields.
+`financial_history` is a read-only projection of the **final guard-returned**
+fact set, including text-only facts, and all typed unavailable states. Metadata
+comes from the shared comparison adapter at the same EvaluationSnapshot; no
+failed candidate can be reintroduced from a metadata or evidence query.
+
+The projection returns `schema_version`, `evaluated_at`, `annual_window`,
+`total_rows`, `available_fact_count`, `state_count`, and `rows`. Each row has
+`row_kind` (`fact`, `slot_state`, `metric_state`, `filing_cycle_state`), stable
+`row_key`, `status`, `reason_code`, nullable `metric_key`, fact/publication IDs,
+`value_numeric_exact` (base-unit Decimal string), `value_text`, unit/currency,
+period type/basis/start/end, fiscal year/quarter, source type/role/nature,
+comparison identity, optional state scope, document ID, and evidence capability
+(`sec_statement`, `document_review`, `reference_only`, `unavailable`). Capability
+names an available resolver, not proof that a particular evidence read succeeds.
+Only fact rows carry fact IDs or values. Fact keys are `fact:<id>`; publication
+states use `publication:<id>:<reason>`; other state keys use a stable canonical
+scope encoding rather than array positions. Exact duplicate states may collapse;
+different identities must remain distinct. Facts are never merged by value.
+
+The local presentation catalog uses nine existing canonical keys: `is.revenue`,
+`is.net_income`, `is.operating_cash_flow`, `cf.capital_expenditures`,
+`bs.cash_and_equivalents`, `cap.long_term_debt_current`,
+`cap.long_term_debt_noncurrent`, `equity.weighted_average_diluted_shares`, and
+`cf.stock_based_compensation`. Labels distinguish debt components from total
+debt, diluted weighted-average shares from period-end shares, and reported
+capital expenditure from maintenance-capex estimates. It adds no economic
+definitions, aliases or source precedence.
+
+The S2 reading surface may derive non-persistent YoY display comparisons from
+this single response, not publish new facts. Each adjacent-FY input must be a
+unique unblocked actual observation with proven compatible metric, definition,
+mapping, dimensions, source class/role, units, currency and annual period.
+Publication identities remain distinct provenance, not an equality condition
+across years. Unknown or competing observations and nonpositive prior values
+produce explicit unavailable / not-meaningful comparisons, never guessed
+percentages. Full fiscal-year length differences are disclosed without
+annualization; short/transition years are not compared. Share-count comparisons
+additionally require authoritative split and
+share-class comparability, which this S2 projection does not supply: show
+separate as-reported points, no cross-year line or YoY, and an explicit warning;
+do not infer a split or silently adjust retained values. Decimal inputs remain
+exact; rounded chart coordinates never become financial evidence. Charts must
+not bridge missing/incompatible years or combine unlike units/currencies on an
+unlabeled or dual axis. Latest-year overview and question-oriented trends may
+precede a collapsible ten-year table, but missing/conflicting evidence remains
+visible and all observations, exact evidence and complete detail remain reachable.
+Change prompts are factual research questions, not system investment conclusions.
+
+An annual window requires a visible, authorized, identity-proven FY actual
+main-statement period with a known fiscal year and ended period. Its latest
+proven fiscal year Y anchors ten labels Y−9 through Y; the window does not claim
+the latest filing in the world was acquired. No anchor means `undetermined`,
+not a calendar-year guess. Cells retain lists of observations and states;
+same-year periods, source roles, definitions, units and identities never
+overwrite one another. Quarter/YTD/TTM/AS_OF, estimates and unproven fiscal
+metadata remain in separately labeled detail, not FY actual cells.
+
+For the nine core metrics within a determined window, the server generates a
+`slot_state / unavailable / not_returned` only when no assignable actual
+observation or proven covering state exists. It has the expected metric and
+FY label, but no fabricated period dates, IDs or values. Its key is
+`expected:<stock_id>:<metric_key>:FY:<year>:not_returned`. This means only that
+the response did not provide an assignable fact, not that SEC disclosure was
+absent. Whole-metric and explicitly scoped filing-cycle states are shown at
+their actual scope, not expanded into duplicate missing-year states. An
+unknown state scope is not guessed. No annual window means no synthetic rows.
+
+`total_rows = len(rows) = available_fact_count + state_count`; facts count
+includes guarded text facts and states count includes `not_returned`. Rows
+sort by catalog order, other metric key alphabetically, fiscal year descending
+(unknown last), period end descending, basis, source type/role/nature and stable
+key. The annual table and fixed 50-row detail pages are two views of the same
+response, not extra facts or independent reads. Every returned row is
+traversable. Refresh replaces the entire response, resets pagination and clears
+old evidence. Amount/share display uses decimal-string arithmetic, millions,
+two decimals and an explicit display-rounding label; the exact value remains
+available. Small nonzero values rounding to zero display `<0.01` or `>-0.01`.
+NULL, invalid numeric, true zero and unknown currency are distinct states.
 
 Market-price authority, user intrinsic-value publication, valuation methods,
 industry/economic applicability, new acquisition rights, and evidence

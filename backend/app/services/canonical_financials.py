@@ -2049,6 +2049,13 @@ def _canonical_sec_url(*, cik: str, accession: str, primary_document: str) -> st
 
 
 def resolve_sec_publication_evidence(
+    session: Session, *, stock_id: int, publication_id: int, fact_id: int | None = None
+) -> dict[str, Any] | None:
+    from app.services.sec_financial_evidence import resolve_evidence
+    return resolve_evidence(session, stock_id=stock_id, publication_id=publication_id, fact_id=fact_id)
+
+
+def _legacy_sec_publication_evidence(
     session: Session, *, stock_id: int, publication_id: int
 ) -> dict[str, Any] | None:
     decision = session.execute(
@@ -2246,7 +2253,9 @@ def current_sec_unresolved_states(
         text(
             """
             SELECT ranked.id, ranked.status, ranked.reason_code, ranked.metric_key,
-                   ranked.period_type, ranked.period_end_date, ranked.known_at
+                   ranked.period_type, ranked.period_end_date, ranked.known_at,
+                   ranked.fiscal_year, ranked.fiscal_quarter_ordinal,
+                   ranked.period_start_date, ranked.period_basis
             FROM (
               SELECT p.*,
                      row_number() OVER (
@@ -2287,6 +2296,10 @@ def current_sec_unresolved_states(
             "value_numeric": None,
             "unit": None,
             "period": row.period_type,
+            "fiscal_year": row.fiscal_year,
+            "fiscal_quarter_ordinal": row.fiscal_quarter_ordinal,
+            "period_start_date": row.period_start_date,
+            "period_basis": row.period_basis,
             "period_end_date": row.period_end_date,
             "source_type": "sec",
             "known_at": row.known_at,

@@ -9,6 +9,28 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Local verification — database wall clock jumps during full-suite execution
+- **Found:** 2026-09-10, S2 v1.3 closing gate.
+- **Severity:** medium, environment/verification blocker; financial cutoff guards
+  must remain fail-closed rather than be weakened to hide it.
+- **Evidence:** two READ ONLY `clock_timestamp()` samples moved from
+  `2026-09-10T18:08:37.191657Z` to `16:34:05.590205Z` while the same container's
+  monotonic clock advanced 98.253 seconds. The second full pytest run then
+  failed and was stopped. Earlier full run: 61 failed / 2748 passed; all six
+  affected files passed in a new isolated schema (84 tests). The component
+  causing the wall-clock discontinuity has not been identified.
+- **Acceptance:** establish stable host/container/shared-database time without
+  backdating financial knowledge or bypassing currentness guards, then rerun
+  the exact full canonical gate in isolated test schemas. Do not restart shared
+  Postgres, change system time, or delete retained schemas without authorization.
+- **2026-09-10 rerun:** after the user reported a temporary time repair, all
+  canonical local Docker gates passed unchanged: backend 2809, frontend 252,
+  lint and production build. Across 21 READ ONLY samples over 1095.56 seconds,
+  no rollback was observed; adjacent wall/monotonic deltas differed by less
+  than 3 ms. The immediate gate blocker is cleared, but the root cause and
+  permanent repair remain unverified; this entry stays open for that follow-up.
+- **Context:** [S2 v1.3 gate evidence](tasks/2026-09-10_s2-annual-financials-evidence.md).
+
 ### Test isolation — committed currentness fixtures clean up only on success
 - **Found:** 2026-09-09, PR #147 canonical gate during an observed clock rollback.
 - **Severity:** low; failure cascades inside the disposable pytest schema only.
@@ -23,36 +45,6 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
   not contaminate the next test. Do not weaken PIT or erase shared data.
 - **Context:** `backend/tests/unit/test_metric_fact_currentness.py`;
   [gate evidence](tasks/2026-09-09_single-company-data-readiness.md).
-
-### S2 — SEC evidence links bypass the authenticated API client
-- **Found:** 2026-09-09, PR #147 real AAPL case 1 browser/HTTP acceptance.
-- **Severity:** medium; blocks the ordinary user's evidence-reading workflow.
-- **Problem:** the research page uses Next Link for an authenticated SEC JSON
-  evidence route. Navigation does not attach the apiClient Bearer header;
-  ordinary GET returns 401, while the same authorized API request returns 200.
-- **Acceptance criteria:** display SEC evidence inside the existing research
-  page through the existing authenticated client, with typed loading/error and
-  identity/period/source details; preserve document-review links and source
-  authorization. No anonymous evidence access, URL token, or external SEC fetch.
-  Verify a real AAPL cash-flow/debt evidence click, not only a source-scanner test.
-- **Context:** [S1 runtime evidence](tasks/2026-09-09_single-company-data-readiness.md),
-  [S2 scope](plans/single-company-research-minimal-plan.md).
-
-### S2 — research UI still truncates otherwise-readable financial history
-- **Found:** 2026-09-09, PR #147 / `read_stock_facts` over AAPL stock 66.
-- **Severity:** medium; blocks ordinary financial reading.
-- **Problem:** PR #147 resolves the backend global-history/currentness bound
-  through complete metric units; actual AAPL workspace now returns 834 numeric
-  facts. The original research page still takes only the first 60 fundamentals,
-  hiding most metrics and providing no readable ten-year annual table.
-- **Acceptance criteria:** traverse the complete materialized response under
-  its existing evaluation boundary, with >60 displayed / >250 candidate /
-  >1,000-history fixtures; show annual human-readable labels, units, source roles
-  and explicit gaps. Keep all competing versions, recursive lineage, permissions
-  and PIT checks; no limit increase, silent prefix, historical deletion or second
-  fact truth. Verify actual AAPL browsing and preserve the backend regressions.
-- **Context:** [S1 diagnostic and dependency correction](tasks/2026-09-09_single-company-data-readiness.md),
-  [minimal S2 plan](plans/single-company-research-minimal-plan.md).
 
 ### Exclude generated files from development Docker build contexts
 - **Found:** 2026-09-09, PR #147 / S1 closing gate
@@ -320,6 +312,13 @@ deferral above.
   after splits, ADR changes, currency changes, or incompatible filing regimes)
 - **Problem:** coverage and provenance alone do not prove that historical facts
   or per-share values are comparable.
+- **S2 observation (2026-09-10):** retained AAPL weighted-average diluted share
+  counts expose no authoritative cross-year split/share-class basis in the
+  workspace comparison identity. The S2 reading surface therefore keeps exact
+  as-reported observations and separate chart points, but withholds share-count
+  YoY and cross-year lines. Do not interpret jumps as issuance or infer a split
+  factor from the values. Future comparability still requires the policy below.
+  [UX contract and verification](tasks/2026-09-10_s2-annual-financials-evidence.md#15-v13-财务阅读-ux-修订用户批准2026-09-10).
 - **Outcome:** complete the locked gold set with explicit comparability rather
   than concatenating incompatible observations.
 - **Acceptance criteria:**

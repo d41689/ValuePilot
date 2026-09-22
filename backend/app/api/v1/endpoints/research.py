@@ -42,6 +42,7 @@ from app.services.research_inbox import (
     snooze_action,
 )
 from app.services.research_workspace import build_research_workspace
+from app.schemas.financial_history import WorkspaceResponse
 from app.services.canonical_financials import (
     database_evaluation_cutoff,
     evaluation_business_date,
@@ -203,7 +204,7 @@ def get_case(
     }
 
 
-@router.get("/cases/{case_id}/workspace", response_model=dict)
+@router.get("/cases/{case_id}/workspace", response_model=WorkspaceResponse)
 def get_case_workspace(
     case_id: int,
     session: SessionDep,
