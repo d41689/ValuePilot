@@ -247,6 +247,15 @@ def sec_reference_row(session: Session, *, stock_id: int, fact_id: int, publicat
     ).model_dump(mode="json")
 
 
+def _unavailable_evidence(publication: dict, reason: str, metadata: dict | None = None) -> dict:
+    """Retain response metadata, but never a partial input or numeric proof."""
+    result = dict(metadata or {})
+    result.update(publication_id=publication["id"], metric_fact_id=publication["metric_fact_id"],
+                  status=publication["status"], evidence_state="unavailable", evidence_reason_code=reason,
+                  value_numeric=None, value_numeric_exact=None, inputs=[], locator=None, filings=[])
+    return result
+
+
 def resolve_evidence(session: Session, *, stock_id: int, publication_id: int,
                      fact_id: int | None = None) -> dict | None:
     from app.services.canonical_financials import _legacy_sec_publication_evidence
@@ -257,16 +266,12 @@ def resolve_evidence(session: Session, *, stock_id: int, publication_id: int,
         return None
     if publication["status"] != "published":
         result = _legacy_sec_publication_evidence(session, stock_id=stock_id, publication_id=publication_id)
-        result.update(evidence_state="unavailable", evidence_reason_code="publication_not_published", value_numeric_exact=None)
-        return result
+        return _unavailable_evidence(publication, "publication_not_published", result)
     try:
         _graph(session, stock_id=stock_id, publication=publication, snapshot=snapshot,
                include_statements=False, lock_authority=False)
     except EvidenceUnavailable as error:
-        # No partial proof and no cached/legacy operand values on failure.
-        return {"publication_id": publication_id, "metric_fact_id": publication["metric_fact_id"],
-                "evidence_state": "unavailable", "evidence_reason_code": error.code,
-                "inputs": [], "value_numeric_exact": None}
+        return _unavailable_evidence(publication, error.code)
     result = _legacy_sec_publication_evidence(session, stock_id=stock_id, publication_id=publication_id)
     result.update(evidence_state="available", evidence_reason_code=None,
                   value_numeric_exact=format(publication["value_numeric"], "f") if publication["value_numeric"] is not None else None,
@@ -275,10 +280,7 @@ def resolve_evidence(session: Session, *, stock_id: int, publication_id: int,
         inputs = _graph(session, stock_id=stock_id, publication=publication, snapshot=snapshot,
                         include_statements=True, lock_authority=False)
     except EvidenceUnavailable as error:
-        # All input authority was checked above. Preserve legacy authorized
-        # metadata, but never attach a partial statement-proof tree.
-        result.update(evidence_state="unavailable", evidence_reason_code=error.code)
-        return result
+        return _unavailable_evidence(publication, error.code, result)
     for legacy, expanded in zip(result["inputs"], inputs, strict=True):
         legacy.update(expanded)
     return result

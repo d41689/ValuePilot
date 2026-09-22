@@ -335,11 +335,15 @@ export default function ResearchCaseWorkspacePage() {
   });
   const workspace = workspaceQuery.data;
   const storageKey = workspace
-    ? `vp-research-draft:${workspace.case.id}:${workspace.case.head_revision_number}`
+    ? `vp-research-draft:${workspace.case.id}:${loadedHead ?? workspace.case.head_revision_number}`
     : null;
 
   useEffect(() => {
     if (!workspace || loadedHead === workspace.case.head_revision_number) return;
+    if (loadedHead !== null && dirty) {
+      setConflict(true);
+      return;
+    }
     const serverDraft = initialDraft(workspace);
     let restored = serverDraft;
     let didRestore = false;
@@ -357,7 +361,7 @@ export default function ResearchCaseWorkspacePage() {
     setDirty(didRestore);
     setConflict(false);
     setLoadedHead(workspace.case.head_revision_number);
-  }, [loadedHead, workspace]);
+  }, [dirty, loadedHead, workspace]);
 
   useEffect(() => {
     if (!dirty || !draft || !storageKey) return;
@@ -374,26 +378,29 @@ export default function ResearchCaseWorkspacePage() {
   }, [dirty]);
 
   function updateDraft(patch: Partial<Draft>) {
+    if (saveMutation.isPending) return;
     setDraft((current) => (current ? { ...current, ...patch } : current));
     setDirty(true);
-    setConflict(false);
+    setConflict((current) => current || (loadedHead !== null && loadedHead !== workspace?.case.head_revision_number));
   }
 
-  function addEvidence(item: Evidence) {
-    if (!draft) return;
+  function addEvidence(item: Evidence): boolean {
+    if (!draft || saveMutation.isPending) return false;
     const duplicate = draft.evidence.some(
       (evidence) =>
         evidence.source_type === item.source_type &&
         evidence.source_id === item.source_id &&
         evidence.url === item.url,
     );
-    if (duplicate) return;
+    if (duplicate) return true;
     updateDraft({ evidence: [...draft.evidence, item] });
+    return true;
   }
 
   const saveMutation = useMutation({
     mutationFn: async (decisionAction: DecisionAction) => {
       if (!workspace || !draft) throw new Error('Workspace is not ready.');
+      if (conflict || loadedHead === null || loadedHead !== workspace.case.head_revision_number) throw new Error('Reconcile the changed case before saving.');
       if (hasResearchNotes(draft.researchNotes)) throw new Error('Append or clear your five-step notes before saving.');
       const targetDecision =
         draft.targetState === 'monitoring'
@@ -402,7 +409,7 @@ export default function ResearchCaseWorkspacePage() {
             ? 'pass'
             : null;
       const payload: Record<string, unknown> = {
-        expected_head_revision_number: workspace.case.head_revision_number,
+        expected_head_revision_number: loadedHead,
         target_state: draft.targetState,
         thesis: draft.thesis || null,
         variant_view: draft.variantView || null,
@@ -512,13 +519,13 @@ export default function ResearchCaseWorkspacePage() {
           <Button
             type="button"
             variant="outline"
-            disabled={terminal || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending}
+            disabled={terminal || conflict || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending}
             onClick={() => saveMutation.mutate('draft')}
           >
             {saveMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saveMutation.isPending ? 'Saving…' : 'Save revision'}
           </Button>
-          {draft.targetState === 'monitoring' || draft.targetState === 'closed' ? <Button type="button" disabled={terminal || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending} onClick={() => saveMutation.mutate(workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'review' : 'decision')}>{workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'Record review decision' : 'Record decision'}</Button> : null}
+          {draft.targetState === 'monitoring' || draft.targetState === 'closed' ? <Button type="button" disabled={terminal || conflict || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending} onClick={() => saveMutation.mutate(workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'review' : 'decision')}>{workspace.case.state === 'monitoring' && draft.targetState === 'monitoring' ? 'Record review decision' : 'Record decision'}</Button> : null}
         </div>
       </div>
 
@@ -531,8 +538,17 @@ export default function ResearchCaseWorkspacePage() {
         <div className="space-y-3 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-950">
           <div className="flex items-start gap-2"><ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" /> This case changed after your draft opened. Your local draft was kept; reload current evidence before deciding how to reconcile it.</div>
           <Button type="button" size="sm" variant="outline" onClick={() => void workspaceQuery.refetch()}>Reload current case</Button>
+          <p className="text-xs">Reload refreshes the server view without replacing your draft. Copy any text you want to keep before discarding it.</p>
         </div>
       ) : null}
+      {dirty || conflict ? <Button type="button" size="sm" variant="outline" disabled={saveMutation.isPending || workspaceQuery.isFetching} onClick={async () => {
+            const refreshed = await workspaceQuery.refetch();
+            if (refreshed.error || !refreshed.data) return;
+            if (!window.confirm('Discard this local draft, including five-step notes, and load the latest revision? This does not change server history.')) return;
+            if (storageKey) window.localStorage.removeItem(storageKey);
+            setDraft(initialDraft(refreshed.data)); setDirty(false); setConflict(false);
+            setLoadedHead(refreshed.data.case.head_revision_number);
+          }}>Discard local draft and use latest revision</Button> : null}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border p-3 text-xs text-muted-foreground">
         <span>Decision: {workspace.case.decision ? label(workspace.case.decision) : 'Undecided'} · Review: {workspace.case.next_review_on ?? 'not scheduled'}</span>
@@ -551,7 +567,7 @@ export default function ResearchCaseWorkspacePage() {
       />
       {financialSelection?.evaluatedAt === workspace.financial_history.evaluated_at ? <FinancialEvidencePanel
         key={`${workspace.financial_history.evaluated_at}:${financialSelection.row.row_key}`}
-        stockId={workspace.case.stock_id} row={financialSelection.row} readOnly={terminal}
+        stockId={workspace.case.stock_id} row={financialSelection.row} readOnly={terminal || saveMutation.isPending}
         onClose={() => setFinancialSelection(null)} onAdd={addEvidence}
       /> : null}
 
@@ -604,15 +620,15 @@ export default function ResearchCaseWorkspacePage() {
             {!showFullThesis ? <CardContent><p className="whitespace-pre-wrap break-words text-sm">{draft.thesis ? `${draft.thesis.slice(0, 240)}${draft.thesis.length > 240 ? '…' : ''}` : 'No thesis recorded yet. Use the five questions above, or open the editor to write freely.'}</p><p className="mt-2 text-xs text-muted-foreground">Preview only; your full text and existing notes are preserved.</p></CardContent> : null}
             {showFullThesis ? <>
             <CardContent className="space-y-5">
-              <div className="space-y-2"><label htmlFor="thesis" className="text-sm font-medium">Thesis</label><Textarea id="thesis" rows={8} value={draft.thesis} disabled={terminal} onChange={(event) => updateDraft({ thesis: event.target.value })} placeholder="Business quality, durable economics, normalized earnings power, and why value exceeds price…" /></div>
-              <div className="space-y-2"><label htmlFor="variant-view" className="text-sm font-medium">Disconfirming view</label><Textarea id="variant-view" rows={5} value={draft.variantView} disabled={terminal} onChange={(event) => updateDraft({ variantView: event.target.value })} placeholder="The strongest bear case and evidence that would falsify the thesis…" /></div>
+              <div className="space-y-2"><label htmlFor="thesis" className="text-sm font-medium">Thesis</label><Textarea id="thesis" rows={8} value={draft.thesis} disabled={terminal || saveMutation.isPending} onChange={(event) => updateDraft({ thesis: event.target.value })} placeholder="Business quality, durable economics, normalized earnings power, and why value exceeds price…" /></div>
+              <div className="space-y-2"><label htmlFor="variant-view" className="text-sm font-medium">Disconfirming view</label><Textarea id="variant-view" rows={5} value={draft.variantView} disabled={terminal || saveMutation.isPending} onChange={(event) => updateDraft({ variantView: event.target.value })} placeholder="The strongest bear case and evidence that would falsify the thesis…" /></div>
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2"><label htmlFor="assumptions" className="text-sm font-medium">Key assumptions · one per line</label><Textarea id="assumptions" rows={5} value={draft.assumptionsText} disabled={terminal} onChange={(event) => updateDraft({ assumptionsText: event.target.value })} /></div>
-                <div className="space-y-2"><label htmlFor="risks" className="text-sm font-medium">Risks / kill criteria · one per line</label><Textarea id="risks" rows={5} value={draft.risksText} disabled={terminal} onChange={(event) => updateDraft({ risksText: event.target.value })} /></div>
+                <div className="space-y-2"><label htmlFor="assumptions" className="text-sm font-medium">Key assumptions · one per line</label><Textarea id="assumptions" rows={5} value={draft.assumptionsText} disabled={terminal || saveMutation.isPending} onChange={(event) => updateDraft({ assumptionsText: event.target.value })} /></div>
+                <div className="space-y-2"><label htmlFor="risks" className="text-sm font-medium">Risks / kill criteria · one per line</label><Textarea id="risks" rows={5} value={draft.risksText} disabled={terminal || saveMutation.isPending} onChange={(event) => updateDraft({ risksText: event.target.value })} /></div>
               </div>
-              <div className="space-y-2"><label htmlFor="decision-reason" className="text-sm font-medium">Decision rationale</label><Textarea id="decision-reason" rows={4} value={draft.decisionReason} disabled={terminal} onChange={(event) => updateDraft({ decisionReason: event.target.value })} /></div>
+              <div className="space-y-2"><label htmlFor="decision-reason" className="text-sm font-medium">Decision rationale</label><Textarea id="decision-reason" rows={4} value={draft.decisionReason} disabled={terminal || saveMutation.isPending} onChange={(event) => updateDraft({ decisionReason: event.target.value })} /></div>
               <p className="text-xs text-muted-foreground">Not ready to judge is a valid research outcome. Lifecycle and valuation below are separate choices; saving a valuation range also updates your published user value under the existing rules.</p>
-              <Button type="button" variant="outline" disabled={terminal || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending} onClick={() => saveMutation.mutate('draft')}>Save research revision</Button>
+              <Button type="button" variant="outline" disabled={terminal || conflict || !dirty || hasResearchNotes(draft.researchNotes) || saveMutation.isPending} onClick={() => saveMutation.mutate('draft')}>Save research revision</Button>
             </CardContent>
             </> : null}
           </Card>
@@ -625,7 +641,7 @@ export default function ResearchCaseWorkspacePage() {
                   {draft.evidence.map((item, index) => (
                     <div key={evidenceKey(item, index)} className="flex items-start justify-between gap-3 rounded-lg border p-3 text-sm">
                       <div><div className="font-medium">{item.label}</div><div className="mt-1 text-xs text-muted-foreground">{label(item.source_type)} · {item.claim}</div></div>
-                      {!terminal ? <Button type="button" size="sm" variant="outline" onClick={() => updateDraft({ evidence: draft.evidence.filter((_, evidenceIndex) => evidenceIndex !== index) })}>Remove</Button> : null}
+                      {!terminal ? <Button type="button" size="sm" variant="outline" disabled={saveMutation.isPending} onClick={() => updateDraft({ evidence: draft.evidence.filter((_, evidenceIndex) => evidenceIndex !== index) })}>Remove</Button> : null}
                     </div>
                   ))}
                 </div>
@@ -635,9 +651,10 @@ export default function ResearchCaseWorkspacePage() {
                   <Input aria-label="External evidence label" placeholder="Source label" value={externalLabel} onChange={(event) => setExternalLabel(event.target.value)} />
                   <Input aria-label="External evidence HTTPS URL" placeholder="https://…" value={externalUrl} onChange={(event) => setExternalUrl(event.target.value)} />
                   <Input aria-label="External evidence claim" placeholder="Claim supported" value={externalClaim} onChange={(event) => setExternalClaim(event.target.value)} />
-                  <Button type="button" variant="outline" className="md:col-span-3" disabled={!externalLabel.trim() || !externalUrl.trim() || !externalClaim.trim()} onClick={() => {
-                    addEvidence({ source_type: 'external_url', url: externalUrl.trim(), label: externalLabel.trim(), claim: externalClaim.trim() });
-                    setExternalLabel(''); setExternalUrl(''); setExternalClaim('');
+                  <Button type="button" variant="outline" className="md:col-span-3" disabled={saveMutation.isPending || !externalLabel.trim() || !externalUrl.trim() || !externalClaim.trim()} onClick={() => {
+                    if (addEvidence({ source_type: 'external_url', url: externalUrl.trim(), label: externalLabel.trim(), claim: externalClaim.trim() })) {
+                      setExternalLabel(''); setExternalUrl(''); setExternalClaim('');
+                    }
                   }}><Plus className="h-4 w-4" /> Add external HTTPS evidence</Button>
                 </div>
               ) : null}
@@ -651,14 +668,14 @@ export default function ResearchCaseWorkspacePage() {
             <Card>
               <CardHeader><CardTitle>Decision & valuation</CardTitle><CardDescription>Only an explicit save changes case state or publishes user intrinsic value.</CardDescription></CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-2"><label className="text-sm font-medium">Target lifecycle state</label><Select value={draft.targetState} onValueChange={(value) => updateDraft({ targetState: value as CaseState, decision: value === 'monitoring' ? draft.decision || 'watch' : value === 'closed' ? 'pass' : '', nextReviewOn: value === 'monitoring' ? draft.nextReviewOn : '' })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{availableTransitions[workspace.case.state].map((state) => <SelectItem key={state} value={state}>{stateLabels[state]}</SelectItem>)}</SelectContent></Select></div>
-                {draft.targetState === 'monitoring' ? <div className="space-y-2"><label className="text-sm font-medium">Decision</label><Select value={draft.decision || 'watch'} onValueChange={(value) => updateDraft({ decision: value as Decision })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="watch">Watch</SelectItem><SelectItem value="own">Own</SelectItem></SelectContent></Select></div> : null}
-                {draft.targetState === 'monitoring' ? <div className="space-y-2"><label htmlFor="next-review" className="text-sm font-medium">Next review date</label><Input id="next-review" type="date" value={draft.nextReviewOn} onChange={(event) => updateDraft({ nextReviewOn: event.target.value })} /></div> : null}
-                {draft.targetState === 'voided' ? <div className="space-y-2"><label htmlFor="void-reason" className="text-sm font-medium">Void reason</label><Textarea id="void-reason" value={draft.voidReason} onChange={(event) => updateDraft({ voidReason: event.target.value })} /></div> : null}
-                <div className="space-y-2"><label className="text-sm font-medium">Valuation status</label><Select value={draft.valuationMode} onValueChange={(value) => updateDraft({ valuationMode: value as ValuationMode })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Not assessed</SelectItem><SelectItem value="range">USD intrinsic value range</SelectItem><SelectItem value="unavailable">Cannot value responsibly</SelectItem></SelectContent></Select></div>
-                {draft.valuationMode === 'range' ? <div className="grid grid-cols-3 gap-2"><Input aria-label="Valuation low" inputMode="decimal" placeholder="Low" value={draft.valuationLow} onChange={(event) => updateDraft({ valuationLow: event.target.value })} /><Input aria-label="Valuation base" inputMode="decimal" placeholder="Base" value={draft.valuationBase} onChange={(event) => updateDraft({ valuationBase: event.target.value })} /><Input aria-label="Valuation high" inputMode="decimal" placeholder="High" value={draft.valuationHigh} onChange={(event) => updateDraft({ valuationHigh: event.target.value })} /></div> : null}
-                {draft.valuationMode === 'unavailable' ? <Textarea aria-label="Valuation unavailable reason" placeholder="Why a responsible valuation is not currently possible" value={draft.valuationUnavailableReason} onChange={(event) => updateDraft({ valuationUnavailableReason: event.target.value })} /> : null}
-                {draft.valuationMode !== 'none' ? <div className="space-y-2"><label htmlFor="valuation-date" className="text-sm font-medium">Valuation as-of date</label><Input id="valuation-date" type="date" value={draft.valuationAsOf} onChange={(event) => updateDraft({ valuationAsOf: event.target.value })} /></div> : null}
+                <div className="space-y-2"><label className="text-sm font-medium">Target lifecycle state</label><Select value={draft.targetState} disabled={saveMutation.isPending} onValueChange={(value) => updateDraft({ targetState: value as CaseState, decision: value === 'monitoring' ? draft.decision || 'watch' : value === 'closed' ? 'pass' : '', nextReviewOn: value === 'monitoring' ? draft.nextReviewOn : '' })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{availableTransitions[workspace.case.state].map((state) => <SelectItem key={state} value={state}>{stateLabels[state]}</SelectItem>)}</SelectContent></Select></div>
+                {draft.targetState === 'monitoring' ? <div className="space-y-2"><label className="text-sm font-medium">Decision</label><Select value={draft.decision || 'watch'} disabled={saveMutation.isPending} onValueChange={(value) => updateDraft({ decision: value as Decision })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="watch">Watch</SelectItem><SelectItem value="own">Own</SelectItem></SelectContent></Select></div> : null}
+                {draft.targetState === 'monitoring' ? <div className="space-y-2"><label htmlFor="next-review" className="text-sm font-medium">Next review date</label><Input id="next-review" type="date" value={draft.nextReviewOn} disabled={saveMutation.isPending} onChange={(event) => updateDraft({ nextReviewOn: event.target.value })} /></div> : null}
+                {draft.targetState === 'voided' ? <div className="space-y-2"><label htmlFor="void-reason" className="text-sm font-medium">Void reason</label><Textarea id="void-reason" value={draft.voidReason} disabled={saveMutation.isPending} onChange={(event) => updateDraft({ voidReason: event.target.value })} /></div> : null}
+                <div className="space-y-2"><label className="text-sm font-medium">Valuation status</label><Select value={draft.valuationMode} disabled={saveMutation.isPending} onValueChange={(value) => updateDraft({ valuationMode: value as ValuationMode })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Not assessed</SelectItem><SelectItem value="range">USD intrinsic value range</SelectItem><SelectItem value="unavailable">Cannot value responsibly</SelectItem></SelectContent></Select></div>
+                {draft.valuationMode === 'range' ? <div className="grid grid-cols-3 gap-2"><Input aria-label="Valuation low" inputMode="decimal" placeholder="Low" value={draft.valuationLow} disabled={saveMutation.isPending} onChange={(event) => updateDraft({ valuationLow: event.target.value })} /><Input aria-label="Valuation base" inputMode="decimal" placeholder="Base" value={draft.valuationBase} disabled={saveMutation.isPending} onChange={(event) => updateDraft({ valuationBase: event.target.value })} /><Input aria-label="Valuation high" inputMode="decimal" placeholder="High" value={draft.valuationHigh} disabled={saveMutation.isPending} onChange={(event) => updateDraft({ valuationHigh: event.target.value })} /></div> : null}
+                {draft.valuationMode === 'unavailable' ? <Textarea aria-label="Valuation unavailable reason" placeholder="Why a responsible valuation is not currently possible" value={draft.valuationUnavailableReason} disabled={saveMutation.isPending} onChange={(event) => updateDraft({ valuationUnavailableReason: event.target.value })} /> : null}
+                {draft.valuationMode !== 'none' ? <div className="space-y-2"><label htmlFor="valuation-date" className="text-sm font-medium">Valuation as-of date</label><Input id="valuation-date" type="date" value={draft.valuationAsOf} disabled={saveMutation.isPending} onChange={(event) => updateDraft({ valuationAsOf: event.target.value })} /></div> : null}
               </CardContent>
             </Card>
           ) : null}
@@ -684,7 +701,7 @@ export default function ResearchCaseWorkspacePage() {
             <CardHeader><CardTitle className="flex items-center gap-2"><FileText className="h-4 w-4" /> Your uploaded reports</CardTitle><CardDescription>Account-owned PDF reports, including Value Line. Retained SEC statement evidence opens from financial values above.</CardDescription></CardHeader>
             <CardContent className="space-y-2">
               {workspace.documents.length === 0 ? <div className="text-sm text-muted-foreground">No uploaded PDF report is linked to this stock for your account. This does not mean SEC evidence is unavailable.</div> : workspace.documents.map((document) => (
-                <div key={document.id} className="rounded-lg border p-3 text-sm"><div className="font-medium">{document.file_name}</div><div className="mt-1 text-xs text-muted-foreground">{document.report_date ?? 'undated'} · {label(document.parse_status)}{document.identity_needs_review ? ' · identity review needed' : ''}</div><Button type="button" size="sm" variant="outline" className="mt-2" disabled={terminal} onClick={() => addEvidence({ source_type: 'pdf_document', source_id: document.id, source_date: document.report_date ?? undefined, label: document.file_name, claim: `Authorized report reviewed for ${workspace.case.ticker}.` })}>Add as evidence</Button></div>
+                <div key={document.id} className="rounded-lg border p-3 text-sm"><div className="font-medium">{document.file_name}</div><div className="mt-1 text-xs text-muted-foreground">{document.report_date ?? 'undated'} · {label(document.parse_status)}{document.identity_needs_review ? ' · identity review needed' : ''}</div><Button type="button" size="sm" variant="outline" className="mt-2" disabled={terminal || saveMutation.isPending} onClick={() => addEvidence({ source_type: 'pdf_document', source_id: document.id, source_date: document.report_date ?? undefined, label: document.file_name, claim: `Authorized report reviewed for ${workspace.case.ticker}.` })}>Add as evidence</Button></div>
               ))}
             </CardContent>
           </Card>
@@ -692,8 +709,8 @@ export default function ResearchCaseWorkspacePage() {
           <Card>
             <CardHeader><CardTitle className="flex items-center gap-2"><Landmark className="h-4 w-4" /> 13F context</CardTitle><CardDescription>13F is delayed up to 45 days after quarter end and is not proof of a current holding, cost basis, or complete portfolio.</CardDescription></CardHeader>
             <CardContent className="space-y-3">
-              {workspace.oracles_lens ? <div className="rounded-lg border p-3 text-sm"><div className="font-medium">Oracle&apos;s Lens · {workspace.oracles_lens.report_quarter}</div><div className="mt-1 text-xs text-muted-foreground">Consensus {workspace.oracles_lens.consensus_score ?? '—'} · distinctive {workspace.oracles_lens.distinctive_score ?? '—'} · confidence {workspace.oracles_lens.confidence ?? '—'}</div><Button type="button" size="sm" variant="outline" className="mt-2" disabled={terminal} onClick={() => addEvidence({ source_type: 'oracles_lens_signal', source_id: workspace.oracles_lens!.signal_id, label: `Oracle's Lens ${workspace.oracles_lens!.report_quarter}`, claim: 'Reviewed the model signal and its disclosed limitations.' })}>Add signal evidence</Button></div> : <div className="text-sm text-muted-foreground">No current Oracle&apos;s Lens signal.</div>}
-              {workspace.holders_13f.status === 'unavailable' ? <div className="text-sm text-muted-foreground">{workspace.holders_13f.reason?.message ?? 'No active 13F holder context.'}</div> : workspace.holders_13f.top_holders?.slice(0, 8).map((holder) => <div key={holder.holding_id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm"><div><Link href={`/13f/managers/${holder.manager.id}`} className="font-medium text-primary hover:underline">{holder.manager.display_name ?? holder.manager.canonical_name ?? `Manager #${holder.manager.id}`}</Link><div className="text-xs text-muted-foreground">Reported weight {holder.portfolio_weight_pct ?? '—'}% · {money(holder.value_usd, 'USD')} · holding streak {holder.holding_streak_quarters} quarter(s)</div></div><Button type="button" size="sm" variant="outline" disabled={terminal} onClick={() => addEvidence({ source_type: 'holding_13f', source_id: holder.holding_id, source_date: workspace.holders_13f.as_of_quarter ?? undefined, label: `${holder.manager.display_name ?? holder.manager.canonical_name ?? 'Manager'} 13F holding`, claim: `Reported position for ${workspace.holders_13f.as_of_quarter ?? 'the current active quarter'}.` })}>Add</Button></div>)}
+              {workspace.oracles_lens ? <div className="rounded-lg border p-3 text-sm"><div className="font-medium">Oracle&apos;s Lens · {workspace.oracles_lens.report_quarter}</div><div className="mt-1 text-xs text-muted-foreground">Consensus {workspace.oracles_lens.consensus_score ?? '—'} · distinctive {workspace.oracles_lens.distinctive_score ?? '—'} · confidence {workspace.oracles_lens.confidence ?? '—'}</div><Button type="button" size="sm" variant="outline" className="mt-2" disabled={terminal || saveMutation.isPending} onClick={() => addEvidence({ source_type: 'oracles_lens_signal', source_id: workspace.oracles_lens!.signal_id, label: `Oracle's Lens ${workspace.oracles_lens!.report_quarter}`, claim: 'Reviewed the model signal and its disclosed limitations.' })}>Add signal evidence</Button></div> : <div className="text-sm text-muted-foreground">No current Oracle&apos;s Lens signal.</div>}
+              {workspace.holders_13f.status === 'unavailable' ? <div className="text-sm text-muted-foreground">{workspace.holders_13f.reason?.message ?? 'No active 13F holder context.'}</div> : workspace.holders_13f.top_holders?.slice(0, 8).map((holder) => <div key={holder.holding_id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm"><div><Link href={`/13f/managers/${holder.manager.id}`} className="font-medium text-primary hover:underline">{holder.manager.display_name ?? holder.manager.canonical_name ?? `Manager #${holder.manager.id}`}</Link><div className="text-xs text-muted-foreground">Reported weight {holder.portfolio_weight_pct ?? '—'}% · {money(holder.value_usd, 'USD')} · holding streak {holder.holding_streak_quarters} quarter(s)</div></div><Button type="button" size="sm" variant="outline" disabled={terminal || saveMutation.isPending} onClick={() => addEvidence({ source_type: 'holding_13f', source_id: holder.holding_id, source_date: workspace.holders_13f.as_of_quarter ?? undefined, label: `${holder.manager.display_name ?? holder.manager.canonical_name ?? 'Manager'} 13F holding`, claim: `Reported position for ${workspace.holders_13f.as_of_quarter ?? 'the current active quarter'}.` })}>Add</Button></div>)}
               {(workspace.holders_13f.recent_changes ?? []).length > 0 ? <div className="space-y-2"><div className="text-xs font-medium uppercase text-muted-foreground">Latest reported changes</div>{workspace.holders_13f.recent_changes!.slice(0, 8).map((change, index) => <div key={`${change.manager.id}-${change.change_status}-${index}`} className="rounded-lg border p-3 text-xs"><span className="font-medium">{change.manager.display_name ?? change.manager.canonical_name ?? `Manager #${change.manager.id}`}</span> · {label(change.change_status)} · value change {money(change.value_delta_usd, 'USD')}</div>)}</div> : null}
               {(workspace.holders_13f.data_caveats ?? []).map((caveat) => <div key={caveat.code} className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">{caveat.message}</div>)}
             </CardContent>
