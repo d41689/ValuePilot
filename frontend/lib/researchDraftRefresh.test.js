@@ -32,9 +32,14 @@ const initializers = ['listToText', 'textToList', 'initialDraft'].map(name =>
 const draftEffect = statements.find(node => ts.isExpressionStatement(node)
   && ts.isCallExpression(node.expression) && node.expression.expression.getText(tree) === 'useEffect'
   && node.getText(tree).includes('initialDraft(workspace)')).getText(tree);
+const persistenceEffect = statements.find(node => ts.isExpressionStatement(node)
+  && ts.isCallExpression(node.expression) && node.expression.expression.getText(tree) === 'useEffect'
+  && node.getText(tree).includes('window.localStorage.setItem(storageKey')).getText(tree);
 const updateDraft = statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'updateDraft').getText(tree);
+const addEvidence = statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'addEvidence').getText(tree);
 const mutationOptions = variable('saveMutation').initializer.arguments[0];
 const mutationFn = mutationOptions.properties.find(node => node.name?.getText(tree) === 'mutationFn').initializer.getText(tree);
+const mutationOnSuccess = mutationOptions.properties.find(node => node.name?.getText(tree) === 'onSuccess').initializer.getText(tree);
 let discardHandler;
 function findDiscardHandler(node) {
   if (ts.isJsxAttribute(node) && node.name.getText(tree) === 'onClick'
@@ -63,8 +68,11 @@ function fixture({ serverHead = 3, loadedHead = 2, dirty = true, notes = true } 
     setDirty: value => { result.dirty = value; },
     setConflict: value => { result.conflict = typeof value === 'function' ? value(result.conflict) : value; },
     setLoadedHead: value => { result.loadedHead = value; },
+    saveMutation: { isPending: false },
     crypto: { randomUUID: () => 'test-correlation' },
     apiClient: { post: async (url, payload) => { result.requests.push({ url, payload }); return {}; } },
+    queryClient: { invalidateQueries: async () => undefined },
+    showAppToast: () => undefined, toast: {},
   };
   return { context, result, storage };
 }
@@ -120,6 +128,89 @@ test('editing after a conflict keeps the warning for cached and refreshed server
     assert.equal(result.draft.thesis, 'Further user edits');
     assert.equal(result.conflict, true);
   }
+});
+
+test('pending save rejects direct draft and evidence callbacks, then editing reopens unchanged', () => {
+  const setup = fixture({ serverHead: 2, dirty: false, notes: false });
+  const original = setup.result.draft;
+  setup.context.saveMutation.isPending = true;
+  execute(`${updateDraft}\nupdateDraft({ thesis: 'Blocked while saving' });`, setup.context);
+  execute(`${updateDraft}\n${addEvidence}\naddEvidence({ source_type: 'test', label: 'Blocked', claim: 'Blocked' });`, setup.context);
+  assert.equal(setup.result.draft, original);
+  assert.equal(setup.result.dirty, false);
+
+  setup.context.saveMutation.isPending = false;
+  execute(`${updateDraft}\nupdateDraft({ thesis: 'Editable after error' });`, setup.context);
+  assert.equal(setup.result.draft.thesis, 'Editable after error');
+  assert.equal(setup.result.dirty, true);
+});
+
+test('save lifecycle cannot accept a later edit that success would erase', async () => {
+  const setup = fixture({ serverHead: 2, notes: false });
+  setup.context.storageKey = 'vp-research-draft:2:2';
+  setup.context.draft.thesis = 'Submitted A';
+  setup.result.draft.thesis = 'Submitted A';
+  let finishPost;
+  setup.context.apiClient.post = async (url, payload) => {
+    setup.result.requests.push({ url, payload });
+    await new Promise(resolve => { finishPost = resolve; });
+    return {};
+  };
+
+  const save = execute(`${initializers}\n(${mutationFn})`, setup.context)('draft');
+  assert.equal(setup.result.requests[0].payload.thesis, 'Submitted A');
+  setup.context.saveMutation.isPending = true;
+  execute(`${updateDraft}\nupdateDraft({ thesis: 'Edited B during save' });`, setup.context);
+  assert.equal(setup.result.draft.thesis, 'Submitted A');
+
+  setup.context.draft = setup.result.draft;
+  execute(persistenceEffect, setup.context);
+  assert.equal(JSON.parse(setup.storage.get(setup.context.storageKey)).thesis, 'Submitted A');
+
+  finishPost();
+  await save;
+  await execute(`(${mutationOnSuccess})`, setup.context)();
+  assert.equal(setup.storage.has(setup.context.storageKey), false);
+  assert.equal(setup.result.dirty, false);
+  assert.equal(setup.result.loadedHead, null);
+
+  setup.context.workspace = { ...setup.context.workspace,
+    case: { ...setup.context.workspace.case, head_revision_number: 3 },
+    revisions: [{ thesis: 'Submitted A' }] };
+  setup.context.loadedHead = setup.result.loadedHead;
+  setup.context.dirty = setup.result.dirty;
+  execute(`${initializers}\n${draftEffect}`, setup.context);
+  assert.equal(setup.result.draft.thesis, 'Submitted A');
+  assert.equal(setup.result.dirty, false);
+  assert.equal(setup.result.loadedHead, 3);
+});
+
+test('every draft-mutating control is frozen while save is pending', () => {
+  const controls = [];
+  let lowerSave;
+  function inspectControl(node) {
+    const element = ts.isJsxElement(node) ? node.openingElement : ts.isJsxSelfClosingElement(node) ? node : null;
+    if (element) {
+      const tag = element.tagName.getText(tree);
+      const attributes = element.attributes.properties;
+      const handlers = attributes.filter(attribute =>
+        ['onChange', 'onValueChange', 'onClick', 'onAdd', 'onAppend', 'onClear'].includes(attribute.name?.getText(tree)))
+        .map(attribute => attribute.getText(tree)).join(' ');
+      if (handlers.includes('updateDraft') || handlers.includes('addEvidence')) {
+        const guard = attributes.find(attribute => ['disabled', 'readOnly'].includes(attribute.name?.getText(tree)));
+        controls.push({ tag, guard: guard?.getText(tree) ?? '' });
+      }
+      if (tag === 'Button' && node.getText(tree).includes('Save research revision')) lowerSave = element;
+    }
+    ts.forEachChild(node, inspectControl);
+  }
+  inspectControl(page);
+  assert.ok(controls.length >= 16, `Expected the complete draft control inventory, found ${controls.length}`);
+  assert.deepEqual(controls.filter(control => !control.guard.includes('saveMutation.isPending')), []);
+  assert.ok(lowerSave, 'The lower save action must remain reachable');
+  const lowerDisabled = lowerSave.attributes.properties.find(attribute => attribute.name?.getText(tree) === 'disabled')?.getText(tree) ?? '';
+  assert.match(lowerDisabled, /saveMutation\.isPending/);
+  assert.match(lowerDisabled, /conflict/);
 });
 
 test('save rejects a newer server head or latched 409 conflict and sends the original expected head when aligned', async () => {
