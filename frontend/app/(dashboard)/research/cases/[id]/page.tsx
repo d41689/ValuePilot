@@ -41,6 +41,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { AnnualFinancialsTable } from '@/components/research/AnnualFinancialsTable';
+import { appendAnalysisObservation } from '@/lib/businessEconomics';
 import { FinancialEvidencePanel } from '@/components/research/FinancialEvidencePanel';
 import { ResearchPath } from '@/components/research/ResearchPath';
 import { emptyResearchNotes, hasResearchNotes, appendResearchNotes, type ResearchNotes } from '@/lib/researchPath';
@@ -562,6 +563,12 @@ export default function ResearchCaseWorkspacePage() {
         key={workspace.financial_history.evaluated_at}
         history={workspace.financial_history}
         refreshing={workspaceQuery.isFetching}
+        readOnly={terminal || conflict || saveMutation.isPending || loadedHead === null || loadedHead !== workspace.case.head_revision_number}
+        onResearch={text => {
+          if (terminal || conflict || saveMutation.isPending || loadedHead === null || loadedHead !== workspace.case.head_revision_number) return;
+          updateDraft({ researchNotes: appendAnalysisObservation(draft.researchNotes, text) });
+          document.getElementById('research-path')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }}
         onRefresh={() => { setFinancialSelection(null); void workspaceQuery.refetch(); }}
         onSelect={row => setFinancialSelection({ evaluatedAt: workspace.financial_history.evaluated_at, row })}
       />

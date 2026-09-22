@@ -148,4 +148,4 @@ function cashQuestion(income, cash) {
   }
   return 'Does reported profit translate into operating cash flow? Compare the periods and evidence before attributing a cause; operating cash flow is not owner earnings.';
 }
-module.exports = { annualReading, compareAnnual, formatBillions, chartGeometry, cashQuestion };
+module.exports = { annualReading, compareAnnual, formatBillions, chartGeometry, cashQuestion, observationProblem };

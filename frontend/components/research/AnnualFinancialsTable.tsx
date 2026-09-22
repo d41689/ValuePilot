@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { CORE_METRICS, annualCells, pageRows, type FinancialHistory, type FinancialHistoryRow } from '@/lib/financialHistory';
 import { annualReading, formatBillions } from '@/lib/financialTrends';
 import { AnnualValue, FinancialTrends, readingReason } from './FinancialTrends';
+import { BusinessEconomics } from './BusinessEconomics';
 
 function stateText(row: FinancialHistoryRow) {
   return row.reason_code === 'not_returned'
@@ -23,11 +24,13 @@ function Period({ row }: { row: FinancialHistoryRow }) {
   </div>;
 }
 
-export function AnnualFinancialsTable({ history, onSelect, onRefresh, refreshing }: {
+export function AnnualFinancialsTable({ history, onSelect, onRefresh, refreshing, onResearch, readOnly = true }: {
   history: FinancialHistory;
   onSelect: (row: FinancialHistoryRow) => void;
   onRefresh: () => void;
   refreshing: boolean;
+  onResearch?: (text: string) => void;
+  readOnly?: boolean;
 }) {
   const [page, setPage] = useState(1);
   const [showDetails, setShowDetails] = useState(false);
@@ -56,6 +59,7 @@ export function AnnualFinancialsTable({ history, onSelect, onRefresh, refreshing
         <p className="text-xs text-muted-foreground">Sources for latest-year readings: {sources.join('; ') || 'No comparable actuals'}. Source and period exceptions remain in the annual table and evidence.</p>
         <div className="text-xs text-muted-foreground">YoY compares adjacent, compatible reported fiscal years: (current − prior) / prior. It is a display calculation, not a published fact or an adjustment. N/M means a zero/negative prior value or a current loss.</div>
       </> : null}
+      <BusinessEconomics history={history} onSelect={onSelect} readOnly={readOnly || !onResearch} onResearch={onResearch ?? (() => {})} />
       {readings.some(reading => reading.points.some(point => point.reason || point.row?.unit === 'shares')) ? <div className="space-y-1 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
         <div className="font-semibold">Reading limits — gaps are not zero</div>
         {readings.map(reading => {

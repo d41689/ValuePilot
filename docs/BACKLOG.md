@@ -9,6 +9,22 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Local environment — retained verification stacks still mount the source checkout
+
+- **Found:** 2026-09-22, read-only container-mount inventory before branch cleanup.
+- **Where:** local Docker projects `valuepilot-step-e-final-20260831` and `valuepilot-step-e-closing-gate-20260831`.
+- **Problem:** historical API/web/database containers remain running; their API/web services bind the original ValuePilot source directory. Additional historical Rate Guard containers also remain. Branch cleanup is not permission to delete their volumes or retained evidence.
+- **Severity:** low — environment ownership and resource-retirement follow-up; no runtime failure or data loss was observed by this inventory.
+- **Next step:** identify retained-data owners and required artifacts before retiring those exact historical stacks. Preserve the active development services, shared infrastructure, configurations and data. This consolidation performs no container stop, volume deletion or historical database cleanup.
+- **Context:** [consolidation contract](tasks/2026-09-22_branch-consolidation.md).
+
+### Business economics — ROIC inputs/method, complete debt and per-share comparability
+- **Found:** 2026-09-10，S2收尾后企业经济性只读盘点。
+- **Severity:** medium，研究材料缺口；不是已有可靠ROIC显示被隐藏。
+- **Problem:** AAPL有合法营业利润、权益等事实，但税项/商业票据/租赁等部分记录仍仅为retained raw，不能直接用于产品计算。ROIC另需PRD H.11审批与完整NOPAT/平均投入资本契约；目前方法不因页面存在数字而获准。现金与长期债务两部分不构成完整债务/净债务；每股趋势还缺拆股和股份口径证明。
+- **Next slice:** 先提出现有publication/mapping与方法policy的最小变更和数据预算，获独立审查与具体授权后实施；不绕过guard、不直接查询raw作为truth、不自动补税率/调整或采集。当前小切片只交付明确标识的利润率与CFO−PPE开支阅读计算。
+- **Context:** [数据盘点与切片任务](tasks/2026-09-10_business-economics-reading.md)。既有FT-05拆股限制继续有效，本条记录ROIC/偿债输入与方法缺口，不替代其验收。
+
 ### Deployment workflow — skipped PR runs share the main deployment concurrency group
 
 - **Found:** 2026-09-22, branch consolidation after migration repair PR151.

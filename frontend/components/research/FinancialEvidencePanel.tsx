@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, LoaderCircle, Plus, X } from 'lucide-react';
 import apiClient from '@/lib/api/client';
 import { CORE_METRICS, formatExactDecimal, readFinancialEvidence, inputEvidenceFilings, type FinancialHistoryRow } from '@/lib/financialHistory';
+import { ANALYSIS_METRICS } from '@/lib/businessEconomics';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -52,7 +53,7 @@ function InputEvidence({ inputs, auditExpanded }: { inputs: EvidenceInput[]; aud
 }
 
 export function FinancialEvidenceReading({ row, evidence, auditExpanded }: { row: FinancialHistoryRow; evidence?: SecEvidence; auditExpanded: boolean }) {
-  const metric = CORE_METRICS.find(item => item.key === row.metric_key);
+  const metric = CORE_METRICS.find(item => item.key === row.metric_key) ?? ANALYSIS_METRICS.find(item => item.key === row.metric_key);
   return <>
     <div className="rounded-lg border bg-muted/20 p-4 [overflow-wrap:anywhere]">
       <h4 className="font-semibold">{metric?.label ?? row.metric_key ?? 'Financial fact'}</h4>
@@ -111,7 +112,7 @@ export function FinancialEvidencePanel({ stockId, row, onClose, onAdd, readOnly 
       {!sec ? <div className="rounded border p-3 text-sm">{row.evidence_capability === 'document_review' && row.document_id ? <Link href={`/documents/${row.document_id}/review`} className="text-primary hover:underline">Review original evidence in the authorized document</Link> : 'Reference only: no original-document resolver is available for this fact. A fact reference does not imply SEC/PDF evidence exists.'}</div> : null}
       <Button type="button" disabled={!canAdd} onClick={() => {
         if (!canAdd || row.fact_id === null) return;
-        onAdd({ source_type: 'metric_fact', source_id: row.fact_id, label: `${CORE_METRICS.find(item => item.key === row.metric_key)?.label ?? row.metric_key} ${row.fiscal_year ? `FY${row.fiscal_year}` : row.period_type ?? ''}`,
+        onAdd({ source_type: 'metric_fact', source_id: row.fact_id, label: `${CORE_METRICS.find(item => item.key === row.metric_key)?.label ?? ANALYSIS_METRICS.find(item => item.key === row.metric_key)?.label ?? row.metric_key} ${row.fiscal_year ? `FY${row.fiscal_year}` : row.period_type ?? ''}`,
           source_date: row.period_end ?? undefined,
           claim: `Reviewed ${row.metric_key} for ${row.period_end ?? 'an unproven period'}; immutable fact #${row.fact_id}${sec ? ' and its retained SEC statement evidence' : ' (reference only unless original document reviewed)'}.` });
       }}><Plus className="h-4 w-4" />Add to research evidence</Button>
