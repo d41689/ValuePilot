@@ -16,6 +16,15 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 - **Next slice:** 先提出现有publication/mapping与方法policy的最小变更和数据预算，获独立审查与具体授权后实施；不绕过guard、不直接查询raw作为truth、不自动补税率/调整或采集。当前小切片只交付明确标识的利润率与CFO−PPE开支阅读计算。
 - **Context:** [数据盘点与切片任务](tasks/2026-09-10_business-economics-reading.md)。既有FT-05拆股限制继续有效，本条记录ROIC/偿债输入与方法缺口，不替代其验收。
 
+### Deployment workflow — skipped PR runs share the main deployment concurrency group
+
+- **Found:** 2026-09-22, branch consolidation after migration repair PR151.
+- **Where:** `.github/workflows/deploy.yml` workflow-level `deploy-prod-main` concurrency.
+- **Problem:** main CI triggered deploy run35787097359; the following S2 PR CI triggered a skipped deploy run35787155580 using the same cancel-in-progress group. The main run was marked cancelled even though its deployment step and API/web/Rate Guard checks completed successfully. A PR completion must not cancel a main deployment merely because its own deployment job is skipped.
+- **Severity:** medium — deployment orchestration and status reliability; no data loss or failed health check was observed in this occurrence.
+- **Follow-up:** isolate non-deploying workflow events from the production concurrency group, retaining serialization between actual main deployments. Verify the workflow-event race before changing the delivery policy. This consolidation uses the existing workflow and checks each completed deployment; no workflow redesign is included.
+- **Context:** [consolidation task](tasks/2026-09-22_branch-consolidation.md), [observed main run](https://github.com/d41689/ValuePilot/actions/runs/35787097359).
+
 ### Value Line: broader legacy floating-point normalization
 
 - **Found:** 2026-09-12, MCO Plan A.

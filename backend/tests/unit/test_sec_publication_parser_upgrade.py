@@ -14,7 +14,8 @@ from app.services.sec_financial_ingestion import (
 )
 from app.services.sec_financial_mapping import MappingResult
 from test_sec_metric_publication_service_e2e import (
-    _request, _FailedAmendmentClient, db as publication_db, isolated_engine,
+    _request, _consolidated_generated_client, _FailedAmendmentClient,
+    db as publication_db, isolated_engine,
 )
 
 
@@ -23,9 +24,11 @@ def counts(db):
                  for table in ("sec_metric_publication_runs", "sec_metric_publications", "metric_facts"))
 
 
-def old_published_request(db, tmp_path, monkeypatch, parser_version=PARSER_V2_9):
+def old_published_request(
+    db, tmp_path, monkeypatch, parser_version=PARSER_V2_9, client=None,
+):
     monkeypatch.setattr(publication, "SEC_PUBLICATION_V1_PARSER_VERSION", parser_version)
-    original = _request(db, tmp_path, parser_version=parser_version)
+    original = _request(db, tmp_path, parser_version=parser_version, client=client)
     report = ingest_latest_financial_filings(
         db, stock_id=original.stock_id, client=_FailedAmendmentClient(), storage_root=tmp_path,
         max_filings=1, now=datetime(2026, 8, 28, 17, tzinfo=timezone.utc), parser_version=parser_version,
@@ -55,20 +58,59 @@ def test_old_parser_exact_publication_replays_and_evidence_remains_readable(
     publication_db, tmp_path, monkeypatch, parser_version,
 ):
     db = publication_db
-    request, original = old_published_request(db, tmp_path, monkeypatch, parser_version)
+    request, original = old_published_request(
+        db, tmp_path, monkeypatch, parser_version,
+        client=_consolidated_generated_client(),
+    )
     before = counts(db)
+    decision_id = db.execute(text(
+        "SELECT id FROM sec_metric_publications WHERE metric_fact_id=:fact"
+    ), {"fact": original.fact_ids[0]}).scalar_one()
     replay = publication.publish_sec_mapping_result(db, request)
     db.commit()
     assert replay.replayed and replay.available
     assert replay.run_id == original.run_id
     assert replay.fact_ids == original.fact_ids
     assert counts(db) == before
-    decision_id = db.execute(text(
-        "SELECT id FROM sec_metric_publications WHERE metric_fact_id=:fact"
-    ), {"fact": replay.fact_ids[0]}).scalar_one()
     evidence = resolve_sec_publication_evidence(db, stock_id=request.stock_id, publication_id=decision_id)
     assert evidence is not None
+    assert evidence["evidence_state"] == "available"
+    assert evidence["publication_id"] == decision_id
+    assert evidence["metric_fact_id"] == original.fact_ids[0]
+    assert len(evidence["inputs"]) == 1
+    assert len(evidence["filings"]) == 2
     assert {item["parser_version"] for item in evidence["filings"]} == {parser_version}
+
+
+@pytest.mark.parametrize("parser_version", [PARSER_V2_9, PARSER_V2_10, PARSER_V2_11])
+def test_old_parser_exact_replay_with_missing_retained_labels_stays_typed_unavailable(
+    publication_db, tmp_path, monkeypatch, parser_version,
+):
+    db = publication_db
+    request, original = old_published_request(db, tmp_path, monkeypatch, parser_version)
+    before = counts(db)
+    decision_id = db.execute(text(
+        "SELECT id FROM sec_metric_publications WHERE metric_fact_id=:fact"
+    ), {"fact": original.fact_ids[0]}).scalar_one()
+    replay = publication.publish_sec_mapping_result(db, request)
+    db.commit()
+    assert replay.replayed and replay.available
+    assert replay.run_id == original.run_id
+    assert replay.fact_ids == original.fact_ids
+    assert counts(db) == before
+    evidence = resolve_sec_publication_evidence(
+        db, stock_id=request.stock_id, publication_id=decision_id,
+    )
+    assert evidence is not None
+    assert evidence["evidence_state"] == "unavailable"
+    assert evidence["evidence_reason_code"] == "evidence_text_unavailable"
+    assert evidence["publication_id"] == decision_id
+    assert evidence["metric_fact_id"] == original.fact_ids[0]
+    assert evidence["inputs"] == []
+    assert evidence["filings"] == []
+    assert evidence["value_numeric"] is None
+    assert evidence["value_numeric_exact"] is None
+    assert evidence["locator"] is None
 
 
 def test_old_parser_replay_rejects_changed_or_forged_requests(publication_db, tmp_path, monkeypatch):
