@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
@@ -34,6 +36,15 @@ BACKEND = Path(__file__).resolve().parents[2]
 HEAD = "20260904180000"
 REPORT_IDENTITY_PARENT = "20260904170000"
 PRE_REPORT_IDENTITY = "20260904160000"
+DEPLOYED_BASE = "20260904140000"
+
+
+def _repository_head() -> str:
+    config = Config(str(BACKEND / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND / "alembic"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
 
 
 def _alembic(
@@ -348,3 +359,197 @@ def test_empty_schema_roundtrips_fact_time_authority(isolated) -> None:
         assert "value_line_fact_known_at" not in columns
         assert "value_line_created_txid" not in columns
     _alembic(url, "upgrade", HEAD)
+
+
+def test_populated_deployed_revision_upgrades_to_head_without_losing_lineage(
+    isolated,
+) -> None:
+    url, engine = isolated
+    _alembic(url, "upgrade", DEPLOYED_BASE)
+    with engine.begin() as connection:
+        user_id, stock_id = _create_identity(
+            connection,
+            email="populated-upgrade@example.com",
+            ticker="POPUP",
+        )
+        document_id = _create_document(
+            connection, user_id=user_id, stock_id=stock_id
+        )
+        run_id = _start_run(
+            connection, user_id=user_id, document_id=document_id
+        )
+        fact_ids: list[int] = []
+        extraction_ids: list[int] = []
+        for year, value in ((2024, "1.25"), (2025, "1.50")):
+            extraction_id = int(
+                connection.scalar(
+                    text(
+                        "INSERT INTO metric_extractions "
+                        "(user_id,document_id,page_number,field_key,raw_value_text,"
+                        "original_text_snippet,parsed_value_json,unit,currency,"
+                        "period_type,period_end_date,parser_version,corrected_by_user,"
+                        "value_line_parse_run_id) "
+                        "VALUES (:user,:document,1,'eps',:value,:snippet,"
+                        "json_build_object('value',:value),'currency_per_share','USD',"
+                        "'FY',CAST(:period_end AS date),'value-line-v1',false,:run) "
+                        "RETURNING id"
+                    ),
+                    {
+                        "user": user_id,
+                        "document": document_id,
+                        "value": value,
+                        "snippet": f"FY{year} EPS {value}",
+                        "period_end": f"{year}-12-31",
+                        "run": run_id,
+                    },
+                )
+            )
+            fact_id = int(
+                connection.scalar(
+                    text(
+                        "INSERT INTO metric_facts "
+                        "(user_id,stock_id,metric_key,value_numeric,unit,currency,"
+                        "period_type,period_end_date,source_type,source_document_id,"
+                        "is_current,value_line_parse_run_id) "
+                        "VALUES (:user,:stock,'per_share.eps',CAST(:value AS numeric),"
+                        "'currency_per_share','USD','FY',CAST(:period_end AS date),"
+                        "'parsed',:document,true,:run) RETURNING id"
+                    ),
+                    {
+                        "user": user_id,
+                        "stock": stock_id,
+                        "value": value,
+                        "period_end": f"{year}-12-31",
+                        "document": document_id,
+                        "run": run_id,
+                    },
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO value_line_fact_extraction_inputs "
+                    "(fact_id,extraction_id,value_line_parse_run_id,input_role,"
+                    "input_ordinal,created_txid) "
+                    "VALUES (:fact,:extraction,:run,'primary',1,0)"
+                ),
+                {"fact": fact_id, "extraction": extraction_id, "run": run_id},
+            )
+            fact_ids.append(fact_id)
+            extraction_ids.append(extraction_id)
+        connection.execute(
+            text("UPDATE value_line_parse_runs SET status='succeeded' WHERE id=:run"),
+            {"run": run_id},
+        )
+
+    with engine.connect() as connection:
+        before_facts = connection.execute(
+            text(
+                "SELECT id,value_numeric::text,period_end_date::text,is_current,"
+                "source_document_id,value_line_parse_run_id FROM metric_facts "
+                "WHERE id=ANY(:ids) ORDER BY id"
+            ),
+            {"ids": fact_ids},
+        ).tuples().all()
+        before_extractions = connection.execute(
+            text(
+                "SELECT id,page_number,raw_value_text,original_text_snippet,"
+                "period_end_date::text,value_line_parse_run_id "
+                "FROM metric_extractions WHERE id=ANY(:ids) ORDER BY id"
+            ),
+            {"ids": extraction_ids},
+        ).tuples().all()
+        before_lineage = connection.execute(
+            text(
+                "SELECT fact_id,extraction_id,value_line_parse_run_id,input_role,"
+                "input_ordinal FROM value_line_fact_extraction_inputs "
+                "WHERE fact_id=ANY(:ids) ORDER BY fact_id"
+            ),
+            {"ids": fact_ids},
+        ).tuples().all()
+        migration_started_after = connection.scalar(text("SELECT clock_timestamp()"))
+
+    _alembic(url, "upgrade", "head")
+
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text("SELECT version_num FROM alembic_version")
+        ) == _repository_head()
+        facts = connection.execute(
+            text(
+                "SELECT id,value_numeric::text,period_end_date::text,is_current,"
+                "source_document_id,value_line_parse_run_id "
+                "FROM metric_facts WHERE id=ANY(:ids) ORDER BY id"
+            ),
+            {"ids": fact_ids},
+        ).tuples().all()
+        assert facts == before_facts
+        assert [row[0] for row in facts] == fact_ids
+        assert [row[2] for row in facts] == ["2024-12-31", "2025-12-31"]
+        assert [row[3] for row in facts] == [True, True]
+
+        assert connection.execute(
+            text(
+                "SELECT id,page_number,raw_value_text,original_text_snippet,"
+                "period_end_date::text,value_line_parse_run_id "
+                "FROM metric_extractions WHERE id=ANY(:ids) ORDER BY id"
+            ),
+            {"ids": extraction_ids},
+        ).tuples().all() == before_extractions
+        assert connection.execute(
+            text(
+                "SELECT fact_id,extraction_id,value_line_parse_run_id,input_role,"
+                "input_ordinal FROM value_line_fact_extraction_inputs "
+                "WHERE fact_id=ANY(:ids) ORDER BY fact_id"
+            ),
+            {"ids": fact_ids},
+        ).tuples().all() == before_lineage
+
+        authority = connection.execute(
+            text(
+                "SELECT fact.id,fact.value_line_fact_known_at,"
+                "fact.value_line_created_txid,identity.document_id,identity.user_id,"
+                "identity.stock_id,identity.report_date "
+                "FROM metric_facts fact "
+                "JOIN value_line_document_report_identity_revisions identity "
+                "ON identity.id=fact.value_line_report_identity_revision_id "
+                "WHERE fact.id=ANY(:ids) ORDER BY fact.id"
+            ),
+            {"ids": fact_ids},
+        ).mappings().all()
+        assert [row.id for row in authority] == fact_ids
+        assert all(
+            row.value_line_fact_known_at >= migration_started_after
+            for row in authority
+        )
+        assert all(row.value_line_created_txid is None for row in authority)
+        assert all(row.document_id == document_id for row in authority)
+        assert all(row.user_id == user_id for row in authority)
+        assert all(row.stock_id == stock_id for row in authority)
+        assert all(str(row.report_date) == "2026-01-09" for row in authority)
+
+        trigger = connection.execute(
+            text(
+                "SELECT tgenabled,tgdeferrable,tginitdeferred FROM pg_trigger "
+                "WHERE tgrelid='metric_facts'::regclass "
+                "AND tgname='trg_metric_fact_sec_reciprocal'"
+            )
+        ).one()
+        assert trigger == ("O", True, True)
+
+        with pytest.raises(
+            DBAPIError, match="SEC fact publication reciprocity mismatch"
+        ):
+            with connection.begin_nested():
+                connection.execute(
+                    text(
+                        "INSERT INTO metric_facts "
+                        "(stock_id,metric_key,value_numeric,unit,currency,"
+                        "period_type,period_end_date,source_type,source_ref_id,is_current) "
+                        "VALUES (:stock,'is.revenue',1,'currency','USD','FY',"
+                        "'2025-12-31','sec',9223372036854775807,true)"
+                    ),
+                    {"stock": stock_id},
+                )
+                connection.execute(
+                    text("SET CONSTRAINTS trg_metric_fact_sec_reciprocal IMMEDIATE")
+                )

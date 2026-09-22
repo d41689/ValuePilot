@@ -15,6 +15,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # The preceding report-identity backfill queues this deferred trigger;
+    # validate those events before altering metric_facts in the same upgrade.
+    op.execute("SET CONSTRAINTS trg_metric_fact_sec_reciprocal IMMEDIATE")
     op.add_column(
         "metric_facts",
         sa.Column(
