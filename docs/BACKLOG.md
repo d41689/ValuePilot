@@ -9,6 +9,16 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Value Line: broader legacy floating-point normalization
+
+- **Found:** 2026-09-12, MCO Plan A.
+- **Where:** `backend/app/services/mapping_spec.py::_normalize_numeric`.
+- **Problem:** Legacy normalization scales through binary floating point. The MCO revenue regression reproduced `4204100000.0000005` from `4204.1` million. Plan A fixes exact Decimal persistence only for the four reviewed annual/per-share sales/revenues mappings; other mapping paths retain their existing arithmetic and have not been audited for exact decimal preservation.
+- **Severity:** medium — precision and exact reconciliation risk, not evidence of a material error in every other metric.
+- **Next step:** audit other numeric mappings with retained fixtures and versioned policy/registry changes before broadening the normalization repair; do not silently reinterpret historical facts.
+- **Context:** [MCO Plan A](tasks/2026-09-12_mco-plan-a.md).
+
+
 ### Local verification — database wall clock jumps during full-suite execution
 - **Found:** 2026-09-10, S2 v1.3 closing gate.
 - **Severity:** medium, environment/verification blocker; financial cutoff guards
