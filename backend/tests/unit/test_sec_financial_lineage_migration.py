@@ -341,6 +341,114 @@ def test_parser_v29_guard_round_trip_and_dimension_scope_contract() -> None:
         drop_test_schema(_BASE_DATABASE_URL, schema)
 
 
+def test_parser_v210_guard_round_trip_inherits_v29_and_v28() -> None:
+    backend = Path(__file__).resolve().parents[2]
+    schema = new_test_schema_name()
+    url = build_isolated_database_url(_BASE_DATABASE_URL, schema)
+    create_test_schema(_BASE_DATABASE_URL, schema)
+    engine = create_engine(url)
+    names = (
+        "validate_sec_parser_v2_structured_unit",
+        "guard_sec_statement_report_reference_insert",
+        "guard_sec_statement_fact_authority_insert",
+        "guard_sec_statement_occurrence_insert",
+    )
+
+    def definitions():
+        with engine.connect() as connection:
+            return {name: connection.execute(text(
+                "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE n.nspname=current_schema() AND p.proname=:name"
+            ), {"name": name}).scalar_one() for name in names}
+
+    try:
+        _alembic(backend, url, "upgrade", "20260909150000")
+        before = definitions()
+        _alembic(backend, url, "upgrade", "20260912100000")
+        after = definitions()
+        assert all("xbrl-lineage-v2.10" in source for source in after.values())
+        assert all("xbrl-lineage-v2.9" in source for source in after.values())
+        occurrence = after["guard_sec_statement_occurrence_insert"]
+        assert "IN ('xbrl-lineage-v2.8','xbrl-lineage-v2.9','xbrl-lineage-v2.10')" in occurrence
+        assert "NOT IN ('xbrl-lineage-v2.9','xbrl-lineage-v2.10')" in occurrence
+        assert "generated statement consolidated scope mismatch" in occurrence
+        assert "http://www.xbrl.org/2009/role/negatedLabel" in occurrence
+        _alembic(backend, url, "downgrade", "20260909150000")
+        assert definitions() == before
+        _alembic(backend, url, "upgrade", "20260912100000")
+        assert definitions() == after
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema)
+
+
+def test_parser_v211_guard_round_trip_preserves_v210_sources() -> None:
+    backend = Path(__file__).resolve().parents[2]
+    schema = new_test_schema_name()
+    url = build_isolated_database_url(_BASE_DATABASE_URL, schema)
+    create_test_schema(_BASE_DATABASE_URL, schema)
+    engine = create_engine(url)
+    names = ("validate_sec_parser_v2_structured_unit", "guard_sec_statement_report_reference_insert",
+             "guard_sec_statement_fact_authority_insert", "guard_sec_statement_occurrence_insert")
+    def definitions():
+        with engine.connect() as connection:
+            return {name: connection.execute(text(
+                "SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n "
+                "ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname=:name"
+            ), {"name": name}).scalar_one() for name in names}
+    try:
+        _alembic(backend, url, "upgrade", "20260912110000")
+        before = definitions()
+        _alembic(backend, url, "upgrade", "20260912120000")
+        after = definitions()
+        assert all("xbrl-lineage-v2.11" in source and "xbrl-lineage-v2.10" in source for source in after.values())
+        occurrence = after["guard_sec_statement_occurrence_insert"]
+        assert "run.parser_version='xbrl-lineage-v2.11'" in occurrence
+        assert "IN ('xbrl-lineage-v2.8','xbrl-lineage-v2.9','xbrl-lineage-v2.10','xbrl-lineage-v2.11')" in occurrence
+        assert "NOT IN ('xbrl-lineage-v2.9','xbrl-lineage-v2.10','xbrl-lineage-v2.11')" in occurrence
+        _alembic(backend, url, "downgrade", "20260912110000")
+        assert definitions() == before
+        _alembic(backend, url, "upgrade", "20260912120000")
+        assert definitions() == after
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema)
+
+
+def test_parser_v212_guard_round_trip_preserves_v211_sources() -> None:
+    backend = Path(__file__).resolve().parents[2]
+    schema = new_test_schema_name()
+    url = build_isolated_database_url(_BASE_DATABASE_URL, schema)
+    create_test_schema(_BASE_DATABASE_URL, schema)
+    engine = create_engine(url)
+    names = ("validate_sec_parser_v2_structured_unit", "guard_sec_statement_report_reference_insert",
+             "guard_sec_statement_fact_authority_insert", "guard_sec_statement_occurrence_insert")
+    def definitions():
+        with engine.connect() as connection:
+            return {name: connection.execute(text(
+                "SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n "
+                "ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname=:name"
+            ), {"name": name}).scalar_one() for name in names}
+    try:
+        _alembic(backend, url, "upgrade", "20260912120000")
+        before = definitions()
+        _alembic(backend, url, "upgrade", "20260912130000")
+        after = definitions()
+        assert all("xbrl-lineage-v2.12" in source and "xbrl-lineage-v2.11" in source for source in after.values())
+        occurrence = after["guard_sec_statement_occurrence_insert"]
+        assert "run.parser_version IN ('xbrl-lineage-v2.11','xbrl-lineage-v2.12')" in occurrence
+        assert "explicit_blank_prior_annual_column" in occurrence
+        assert "generated statement blank annual column mismatch" in occurrence
+        _alembic(backend, url, "downgrade", "20260912120000")
+        assert definitions() == before
+        _alembic(backend, url, "upgrade", "20260912130000")
+        assert definitions() == after
+    finally:
+        engine.dispose()
+        drop_test_schema(_BASE_DATABASE_URL, schema)
+
+
 def test_statement_report_xml_helper_matches_ascii_whitespace_sgml_boundary() -> None:
     backend_dir = Path(__file__).resolve().parents[2]
     schema_name = new_test_schema_name()

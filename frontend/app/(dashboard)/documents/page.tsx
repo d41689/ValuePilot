@@ -20,6 +20,7 @@ import activeReportHelpers from '@/lib/documentActiveReport';
 import documentCompareHelpers from '@/lib/documentCompare';
 import documentDownloadHelpers from '@/lib/documentDownload';
 import documentEvidenceHelpers from '@/lib/documentEvidence';
+import { getCalculationWarnings, getDocumentProcessingResult } from '@/lib/documentProcessing';
 import { canUploadDocuments, getDocumentsUploadNotice } from '@/lib/documentsAccess';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -51,6 +52,7 @@ type DocumentRow = {
   source: string;
   template_label: string;
   parse_status: string;
+  calculation_outcomes?: unknown[];
   upload_time: string | null;
   report_date: string | null;
   page_count: number;
@@ -240,12 +242,14 @@ export default function DocumentsPage() {
       const res = await apiClient.post(`/documents/${docId}/reparse`);
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       setActiveReparseId(null);
       documentsQuery.refetch();
+      const result = getDocumentProcessingResult(data);
       toast({
-        title: 'Reparse complete',
-        description: 'Latest parsed data is now available in the screener.',
+        title: result.title,
+        description: [result.description, ...result.warnings].join(' '),
+        ...(result.tone === 'danger' ? { variant: 'destructive' as const } : {}),
       });
     },
     onError: (error: unknown) => {
@@ -532,6 +536,9 @@ export default function DocumentsPage() {
                       </TableCell>
                       <TableCell>
                         <Badge variant={meta.variant}>{meta.label}</Badge>
+                        {getCalculationWarnings(doc).map(warning => (
+                          <p key={warning} className="mt-2 max-w-xs text-xs text-amber-800">{warning}</p>
+                        ))}
                       </TableCell>
                       <TableCell>
                         <Badge variant={doc.is_active_report ? 'success' : 'secondary'}>

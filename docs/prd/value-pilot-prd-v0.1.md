@@ -1164,6 +1164,57 @@ parser additionally checks the verified retained presentation linkbase; the
 database does not claim to read that file. All prior exact display, numeric,
 label and lineage guards continue to apply. Older parser behavior is unchanged.
 
+Parser `xbrl-lineage-v2.10` inherits v2.9 and permits an empty English label
+resource only for the exact role
+`http://www.xbrl.org/2003/role/documentation`, and only when that concept/role
+is not selected by the applicable presentation arc. Resource identity,
+locator/arc structure and ambiguity checks still apply before this exception.
+An empty selected documentation label, or an empty standard/terse/other label,
+remains invalid. This is not permission to ignore malformed linkbases or to
+narrow concept-wide rejection within the established candidate scopes.
+Earlier parsers retain their original behavior. PostgreSQL recognizes the new
+version and preserves the existing numeric, consolidated-scope and immutable
+lineage guards; the trusted parser checks label XML, not a new database XML
+parser. New parsing appends versioned runs and never rewrites previous failures.
+
+Parser `xbrl-lineage-v2.11` inherits v2.10 and adds two bounded generated-table
+display rules. A leading dollar symbol followed by a parenthesized unsigned
+decimal (with optional correctly grouped thousands separators and whitespace)
+is an accounting negative, for example `$ (1)`; additional signs or malformed
+grouping do not establish this new display authority. Raw lexical value/sign,
+canonical value and the existing negated-label comparison remain unchanged.
+PostgreSQL applies the same version-specific negative-display validation and
+continues to require exact scaled equality with the raw value.
+
+For a simple share unit with no denominator, an explicit case-insensitive
+`shares in millions` title declares a positive display multiplier of 1,000,000.
+A currency-in-millions declaration alone does not scale shares. Conflicting
+share-scale declarations are rejected. The trusted parser proves the title
+declaration, and the existing database numeric/lineage checks remain mandatory.
+Earlier parsers retain their previous display rules. Fiscal-cycle anchoring,
+context/dimension identity, candidate scope and conflict rejection are not
+relaxed by either addition.
+
+Parser `xbrl-lineage-v2.12` inherits v2.11 and may exclude a proven incomplete
+annual row from prior-cycle inference. The accepted current generated-HTML
+numeric occurrence must have an immediately adjacent, real empty `td` with
+no row/column span, an explicit adjacent annual header 350–380 days earlier,
+and no same-concept raw candidate for that period (including other dimensions).
+Only whitespace/NBSP and empty spans qualify; absent cells, dashes, hidden
+content, nested tables and rejected candidates do not establish this proof.
+The bounded locator binds the blank cell's content/hash, row/column, header,
+report filename and report hash to the accepted occurrence. The trusted parser
+proves the actual retained HTML structure; PostgreSQL validates version,
+metadata bindings, blank-content grammar, period gap and raw-candidate absence
+without claiming to reopen the file.
+
+This rule does not interpret the blank as zero, suppress another occurrence
+or infer prior dates from the two-years-earlier value. Other complete rows
+must still prove one consistent prior fiscal cycle; otherwise fail closed.
+All normal current-cycle, conflict, dimension, numeric and source guards remain
+mandatory. Old versions keep their exact anchoring behavior; a new versioned
+run is appended, and downgrade is refused while v2.12 lineage is retained.
+
 ### H.6 Point-in-time and supersession
 
 For cutoff `T`, a replay may use only:
@@ -1708,6 +1759,30 @@ silently replace the Value Line input, while an unresolved conflict still
 blocks calculation. Original manual inputs and manual corrections are not
 silently substituted into these automated Value Line calculations; adopting a
 reviewed correction requires a separate explicit consumer policy.
+
+An explicitly classified ordinary source-comparison block in optional Value
+Line ratio or Piotroski generation is an unavailable calculation outcome, not
+a failure of an otherwise legally parsed source page. Upload and reparse retain
+the valid extraction/fact lineage, publish no blocked numeric calculation, and
+expose `calculation`, `status=unavailable`,
+`reason_code=unresolved_source_reconciliation` and bounded `blocking_reasons`.
+The shared reconciliation guard and source-selection policy remain unchanged.
+Every blocking reason must belong to the reviewed normal-comparison allowlist;
+unknown or mixed integrity/authority failures still abort the page/reparse.
+Parser failures, database errors and unexpected execution failures retain the
+existing atomic rollback behavior. A broad catch of all reconciliation or
+execution exceptions is forbidden.
+
+These optional-calculation diagnostics may use the existing document notes
+projection, with a bounded machine-owned prefix and schema. Current document
+listing, upload and reparse expose only that recognized diagnostic, never
+arbitrary notes or exception content. They are current processing diagnostics,
+not new financial truth or historical point-in-time calculation authority;
+snapshot/cursor listing does not retrofit them into its retained snapshot.
+The UI distinguishes source parsing success from calculation availability.
+Previously stored calculated facts remain subject to the complete lineage and
+current-competitor read guard; this outcome must not expose a stale numeric
+score, silently demote unrelated periods, or invent a replacement score.
 
 The research workspace emits numeric fundamentals and Piotroski history only
 from guard-returned eligible facts. A blocked slot is replaced by a typed

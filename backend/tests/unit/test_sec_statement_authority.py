@@ -20,6 +20,7 @@ from app.services.sec_statement_authority import (
     match_statement_occurrence,
     parse_generated_statement_occurrences,
     parse_statement_occurrences,
+    _display_decimal,
 )
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -279,6 +280,93 @@ def _real_sec_shared_label_resource_linkbase() -> bytes:
     </link:linkbase>""".encode()
 
 
+@pytest.mark.parametrize("variant,reason", [
+    ("unused", None),
+    ("whitespace_text", None),
+    ("legacy", "invalid_label_arc"),
+    ("selected", "invalid_label_arc"),
+    ("ambiguous_presentation", "invalid_label_arc"),
+    ("standard", "invalid_label_arc"),
+    ("terse", "invalid_label_arc"),
+    ("lookalike_role", "invalid_label_arc"),
+    ("padded_role", "invalid_label_arc"),
+    ("duplicate_resource", "ambiguous_label_resource"),
+    ("duplicate_locator", "ambiguous_label_locator"),
+    ("duplicate_arc", "invalid_label_arc"),
+    ("unbound_arc", "invalid_label_arc"),
+    ("conflicting_label", "unproven_generated_statement_presentation"),
+    ("conflicting_amount", "unresolved_generated_statement_occurrence"),
+    ("conflicting_context", "ambiguous_generated_statement_occurrence"),
+    ("conflicting_dimension", "ambiguous_generated_statement_occurrence"),
+])
+def test_v210_ignores_only_unused_empty_exact_documentation_labels(variant, reason):
+    documentation = b"http://www.xbrl.org/2003/role/documentation"
+    labels = _real_sec_shared_label_resource_linkbase().replace(
+        b"Revenue recognized from customer contracts.",
+        b" \n\t " if variant == "whitespace_text" else b"",
+    )
+    pre = _presentation_linkbase()
+    candidates = [_generated_raw()]
+    if variant == "selected":
+        pre = pre.replace(b"http://www.xbrl.org/2003/role/terseLabel", documentation)
+    if variant == "ambiguous_presentation":
+        pre = pre.replace(b"</link:presentationLink>",
+            b'<link:presentationArc xlink:from="parent" xlink:to="revenue" order="2"/>'
+            b'</link:presentationLink>')
+    if variant in {"standard", "terse"}:
+        role = b"label" if variant == "standard" else b"terseLabel"
+        labels = labels.replace(documentation, b"http://www.xbrl.org/2003/role/unused")
+        labels = labels.replace(
+            b"role/" + role + b'"\n          xml:lang="en-US">Net sales',
+            b"role/" + role + b'"\n          xml:lang="en-US">',
+        )
+        # Keep documentation nonempty so the failure proves the display role.
+        labels = labels.replace(b'role/unused"\n          xml:lang="en-US">',
+                                b'role/unused"\n          xml:lang="en-US">Description')
+    if variant == "lookalike_role":
+        labels = labels.replace(documentation, b"https://example.test/role/documentation")
+    if variant == "padded_role":
+        labels = labels.replace(documentation, b" " + documentation + b" ")
+    if variant == "duplicate_resource":
+        labels = labels.replace(b"</link:labelLink>",
+            b'<link:label xlink:label="lab-revenue" xlink:role="' + documentation +
+            b'" xml:lang="en-US"/></link:labelLink>')
+    if variant == "duplicate_locator":
+        labels = labels.replace(b"</link:labelLink>",
+            b'<link:loc xlink:label="loc-revenue" xlink:href="a.xsd#us-gaap_Assets"/></link:labelLink>')
+    if variant == "duplicate_arc":
+        labels = labels.replace(b"</link:labelLink>",
+            b'<link:labelArc xlink:from="loc-revenue" xlink:to="lab-revenue"/></link:labelLink>')
+    if variant == "unbound_arc":
+        labels = labels.replace(b'xlink:to="lab-revenue"', b'xlink:to="missing"')
+    if variant == "conflicting_label":
+        labels = labels.replace(b"</link:labelLink>",
+            b'<link:label xlink:label="other" xlink:role="http://www.xbrl.org/2003/role/terseLabel" xml:lang="en-US">Other sales</link:label>'
+            b'<link:labelArc xlink:from="loc-revenue" xlink:to="other"/></link:labelLink>')
+    if variant == "conflicting_amount":
+        candidates = [_generated_raw(raw_value="109418000000")]
+    if variant == "conflicting_context":
+        candidates.append(_generated_raw(raw_fact_id=12, context_id="other"))
+    if variant == "conflicting_dimension":
+        candidates.append(_generated_raw(raw_fact_id=12, dimensions=(("axis", "member"),)))
+    kwargs = dict(
+        filename="R8.htm", statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=pre, label_linkbase=labels, candidates=candidates,
+        presentation_artifact_id=21, presentation_sha256="1" * 64,
+        label_artifact_id=22, label_sha256="2" * 64,
+        allow_unused_empty_documentation=variant != "legacy",
+    )
+    if reason:
+        with pytest.raises(StatementAuthorityParseError, match=reason):
+            parse_generated_statement_occurrences(_generated_statement_html(), **kwargs)
+    else:
+        result = parse_generated_statement_occurrences(_generated_statement_html(), **kwargs)
+        assert len(result.occurrences) == 1
+        assert result.occurrences[0].raw_value == "109417000000"
+        assert result.occurrences[0].locator["row_label"] == "Net sales"
+        assert result.candidate_scope == "all_contexts_v1"
+
+
 @pytest.mark.parametrize(
     "role,displayed,raw_value,enabled,accepted",
     [
@@ -398,6 +486,199 @@ def _generated_raw(**changes):
     )
     values.update(changes)
     return RawOccurrenceIdentity(**values)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_v211_dollar_accounting_negative_restores_exact_prior_year_anchor(enabled):
+    # Minimal retained FY2023 MCO R9 row: all three periods and raw values exist.
+    # Losing the middle '$ (1)' creates a false 2023 -> 2021 anchor gap.
+    fragment = "us-gaap_OtherComprehensiveIncomeDefinedBenefitPlansNetUnamortizedGainLossArisingDuringPeriodTax"
+    label = "Net actuarial gains (losses) and prior service cost, tax"
+    content = f'''<table><tr><th rowspan="2">CONSOLIDATED STATEMENT OF SHAREHOLDERS' EQUITY (Parenthetical) - USD ($), $ in Millions</th>
+      <th colspan="3">12 Months Ended</th></tr><tr><th>Dec. 31, 2023</th><th>Dec. 31, 2022</th><th>Dec. 31, 2021</th></tr>
+      <tr><td><a onclick="Show.showAR(this, 'defref_{fragment}', window)">{label}</a></td><td>(2)</td><td>$ (1)</td><td>$ 18</td></tr></table>'''.encode()
+    candidates = [_generated_raw(raw_fact_id=index, context_id=f"c-{year}",
+        concept=fragment.replace("_", ":", 1), raw_value=value,
+        period_start=date(year, 1, 1), period_end=date(year, 12, 31))
+        for index, (year, value) in enumerate(((2023, "-2000000"), (2022, "-1000000"), (2021, "18000000")), 1)]
+    result = parse_generated_statement_occurrences(
+        content, filename="R9.htm", statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(concept=fragment),
+        label_linkbase=_label_linkbase(concept=fragment, label=label), candidates=candidates,
+        presentation_artifact_id=21, presentation_sha256="1" * 64,
+        label_artifact_id=22, label_sha256="2" * 64,
+        allow_dollar_prefixed_negative=enabled,
+    )
+    periods = [PresentedPeriodEvidence(o.column_header, c.period_start, c.period_end,
+        "R9", o.locator["row"], o.concept, o.locator["column"])
+        for o in result.occurrences for c in candidates if c.context_id == o.context_id]
+    kwargs = dict(dei_facts=[
+        DeiFocusEvidence("dei", "DocumentFiscalYearFocus", "2023", ()),
+        DeiFocusEvidence("dei", "DocumentFiscalPeriodFocus", "FY", ())],
+        presented_periods=periods, form="10-K", statement_period_end=date(2023, 12, 31),
+        approved_dei_namespaces=("dei",))
+    if not enabled:
+        assert len(result.occurrences) == 2
+        with pytest.raises(StatementAuthorityParseError, match="unproven_prior_fiscal_cycle_anchor"):
+            build_explicit_fiscal_focus(**kwargs)
+    else:
+        assert [o.raw_value for o in result.occurrences] == ["-2000000", "-1000000", "18000000"]
+        assert result.occurrences[1].locator["display_value"] == "$ (1)"
+        focus = build_explicit_fiscal_focus(**kwargs)
+        assert (focus.fiscal_year_start, focus.prior_fiscal_year_start) == (date(2023, 1, 1), date(2022, 1, 1))
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("$ (1)", Decimal("-1")), ("$(1,234.5)", Decimal("-1234.5")),
+    ("$ ( 0 )", Decimal("0")), ("$ (-1)", None), ("$ (+1)", None),
+    ("$ (1) trailing", None), ("$ ((1))", None), ("$ (1,23)", None),
+    ("$ (NaN)", None), ("$ (Infinity)", None), ("USD (1)", None),
+])
+def test_v211_dollar_accounting_grammar_is_exact(value, expected):
+    assert _display_decimal(value, allow_dollar_prefixed_negative=True) == expected
+    assert _display_decimal(value) is None
+
+
+@pytest.mark.parametrize("variant", [
+    "blank", "old_version", "dash", "unknown_text", "missing_cell", "spanned_cell",
+    "nonempty_span", "hidden_span", "nested_table", "rowspan", "image",
+    "raw_prior_exists", "rejected_raw_prior_exists", "rejected_value", "wrong_header",
+    "no_independent_anchor", "no_older_or_independent_anchor", "conflicting_anchor",
+    "same_concept_conflicting_anchor", "all_blank",
+    "duplicate_blank_colspan", "duplicate_blank_rowspan", "duplicate_current_colspan",
+    "duplicate_current_rowspan", "duplicate_blank_class", "duplicate_same_span",
+])
+def test_v212_explicit_blank_prior_year_is_not_an_older_year_anchor(variant):
+    # Retained FY2020 R8 row: 2020 ($16m), a truly blank 2019, 2018 ($1m).
+    fragment = "us-gaap_OtherComprehensiveIncomeLossCashFlowHedgeGainLossAfterReclassificationTax"
+    concept = fragment.replace("_", ":", 1)
+    label = "Net unrealized and unrealized gain on cash flow hedges, tax"
+    middle = '<td class="text">\u00a0<span></span></td>'
+    middle = {
+        "dash": "<td>-</td>", "unknown_text": "<td>not available</td>",
+        "missing_cell": "", "spanned_cell": '<td colspan="2"> </td>',
+        "nonempty_span": "<td><span>0</span></td>", "image": '<td><img src="zero.png"/></td>',
+        "hidden_span": '<td><span style="display:none">0</span></td>',
+        "nested_table": '<td><table></table></td>', "rowspan": '<td rowspan="2"> </td>',
+        "rejected_value": "<td>3</td>",
+    }.get(variant, middle)
+    content = f'''<table><tr><th rowspan="2">CONSOLIDATED STATEMENT OF SHAREHOLDERS' EQUITY (Parenthetical), $ in Millions</th>
+      <th colspan="3">12 Months Ended</th></tr><tr><th>Dec. 31, 2020</th><th>Dec. 31, 2019</th><th>Dec. 31, 2018</th></tr>
+      <tr><td><a onclick="Show.showAR(this, 'defref_{fragment}', window)">{label}</a></td><td>$ (16)</td>{middle}<td>$ (1)</td></tr></table>'''.encode()
+    if variant == "wrong_header":
+        content = content.replace(b"Dec. 31, 2019", b"Dec. 31, 2017")
+    if variant.startswith("duplicate_blank_"):
+        attribute = variant.removeprefix("duplicate_blank_")
+        content = content.replace(b'<td class="text">',
+            f'<td {attribute}="2" {attribute.upper()}="1" class="text">'.encode())
+    if variant.startswith("duplicate_current_"):
+        attribute = variant.removeprefix("duplicate_current_")
+        content = content.replace(b"<td>$ (16)</td>",
+            f'<td {attribute}="2" {attribute}="1">$ (16)</td>'.encode())
+    if variant == "duplicate_same_span":
+        content = content.replace(b'<td class="text">', b'<td colspan="1" colspan="1" class="text">')
+    if variant in {"no_older_or_independent_anchor", "all_blank"}:
+        content = content.replace(b"<td>$ (1)</td>", b"<td> </td>")
+    if variant == "all_blank":
+        content = content.replace(b"<td>$ (16)</td>", b"<td> </td>")
+    candidates = [_generated_raw(raw_fact_id=index, context_id=f"c-{year}", concept=concept,
+        raw_value=value, period_start=date(year, 1, 1), period_end=date(year, 12, 31))
+        for index, (year, value) in enumerate(((2020, "-16000000"), (2018, "-1000000")), 1)]
+    if variant in {"raw_prior_exists", "rejected_raw_prior_exists"}:
+        candidates.append(replace(candidates[0], raw_fact_id=3, context_id="prior",
+            raw_value="0", period_start=date(2019, 1, 1), period_end=date(2019, 12, 31),
+            is_hidden=variant == "rejected_raw_prior_exists"))
+    def parse():
+        return parse_generated_statement_occurrences(
+        content, filename="R8.htm", statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(concept=fragment),
+        label_linkbase=_label_linkbase(concept=fragment, label=label), candidates=candidates,
+        presentation_artifact_id=21, presentation_sha256="1" * 64,
+        label_artifact_id=22, label_sha256="2" * 64,
+        allow_partial=True, allow_dollar_prefixed_negative=True,
+        allow_explicit_blank_prior_annual_column=variant != "old_version",
+        report_sha256=hashlib.sha256(content).hexdigest(),
+        )
+    if variant == "rowspan":
+        with pytest.raises(StatementAuthorityParseError, match="invalid_statement_table_shape"):
+            parse()
+        return
+    result = parse()
+    marked = [o for o in result.occurrences if "explicit_blank_prior_annual_column" in o.locator]
+    should_mark = variant in {"blank", "no_independent_anchor", "no_older_or_independent_anchor", "conflicting_anchor", "same_concept_conflicting_anchor"}
+    assert bool(marked) is should_mark
+    if variant in {"missing_cell", "spanned_cell", "nonempty_span", "hidden_span", "rejected_value"}:
+        assert concept in result.rejected_concepts
+        assert not result.occurrences
+        return
+    expected_values = [] if variant == "all_blank" else ["-16000000"] if variant == "no_older_or_independent_anchor" else ["-16000000", "-1000000"]
+    assert [o.raw_value for o in result.occurrences] == expected_values
+    periods = [PresentedPeriodEvidence(o.column_header, c.period_start, c.period_end,
+        "R8", o.locator["row"], o.concept, o.locator["column"],
+        o.locator.get("explicit_blank_prior_annual_column"))
+        for o in result.occurrences for c in candidates if c.context_id == o.context_id]
+    if variant not in {"no_independent_anchor", "no_older_or_independent_anchor", "all_blank"}:
+        periods += [PresentedPeriodEvidence(f"12 Months Ended Dec. 31, {year}",
+            date(year, 1, 1), date(year, 12, 31), "R2", 3, "us-gaap:Revenue", column)
+            for column, year in ((2, 2020), (3, 2019))]
+    if variant in {"conflicting_anchor", "same_concept_conflicting_anchor"}:
+        periods += [PresentedPeriodEvidence(f"12 Months Ended Dec. 31, {year}",
+            date(year, 1, 1), date(year, 12, 31), "R8", 4,
+            concept if variant == "same_concept_conflicting_anchor" else "us-gaap:NetIncomeLoss", column)
+            for column, year in ((2, 2020), (3, 2018))]
+    kwargs = dict(dei_facts=[DeiFocusEvidence("dei", "DocumentFiscalYearFocus", "2020", ()),
+        DeiFocusEvidence("dei", "DocumentFiscalPeriodFocus", "FY", ())],
+        presented_periods=periods, form="10-K", statement_period_end=date(2020, 12, 31),
+        approved_dei_namespaces=("dei",),
+        allow_explicit_blank_prior_annual_column=variant != "old_version")
+    if variant == "blank":
+        focus = build_explicit_fiscal_focus(**kwargs)
+        assert (focus.fiscal_year_start, focus.prior_fiscal_year_start) == (date(2020, 1, 1), date(2019, 1, 1))
+        assert marked[0].locator["explicit_blank_prior_annual_column"]["column"] == 3
+    else:
+        reason = "missing_unproven_current_fiscal_year_start" if variant == "all_blank" else "unproven_prior_fiscal_cycle_anchor"
+        with pytest.raises(StatementAuthorityParseError, match=reason):
+            build_explicit_fiscal_focus(**kwargs)
+
+
+@pytest.mark.parametrize("variant,accepted", [
+    ("millions", True), ("old_version", False), ("no_share_scale", False),
+    ("thousands", True), ("amount_conflict", False), ("context_conflict", False),
+    ("dimension_conflict", False), ("per_share", False),
+    ("conflicting_scales", False),
+])
+def test_v211_explicit_share_millions_keeps_exact_candidate_identity(variant, accepted):
+    fragment = "us-gaap_WeightedAverageNumberOfDilutedSharesOutstanding"
+    content = _generated_statement_html(concept=fragment, label="Diluted (in shares)", displayed="184.7")
+    content = content.replace(b"shares in Thousands", b"shares in Millions")
+    value = "184700000"
+    if variant == "no_share_scale": content = content.replace(b"shares in Millions, ", b"")
+    if variant == "thousands":
+        content = content.replace(b"shares in Millions", b"shares in Thousands")
+        value = "184700"
+    if variant == "conflicting_scales":
+        content = content.replace(b"shares in Millions", b"shares in Millions, shares in Thousands")
+    if variant == "amount_conflict": value = "184800000"
+    candidates = [_generated_raw(concept=fragment.replace("_", ":", 1), raw_value=value,
+        unit_id="shares", unit_numerator=({"namespace_uri": "http://www.xbrl.org/2003/instance", "local_name": "shares"},))]
+    if variant == "context_conflict": candidates.append(replace(candidates[0], raw_fact_id=12, context_id="other"))
+    if variant == "dimension_conflict": candidates.append(replace(candidates[0], raw_fact_id=12, dimensions=(("axis", "member"),)))
+    if variant == "per_share": candidates[0] = replace(candidates[0], unit_denominator=({"local_name": "shares"},))
+    kwargs = dict(filename="R3.htm", statement_role="http://www.apple.com/role/Operations",
+        presentation_linkbase=_presentation_linkbase(concept=fragment),
+        label_linkbase=_label_linkbase(concept=fragment, label="Diluted (in shares)"), candidates=candidates,
+        presentation_artifact_id=21, presentation_sha256="1" * 64,
+        label_artifact_id=22, label_sha256="2" * 64,
+        allow_shares_in_millions=variant != "old_version")
+    if not accepted:
+        reason = "ambiguous_statement_share_scale" if variant == "conflicting_scales" else "(?:unresolved|ambiguous)_generated_statement_occurrence"
+        with pytest.raises(StatementAuthorityParseError, match=reason):
+            parse_generated_statement_occurrences(content, **kwargs)
+    else:
+        result = parse_generated_statement_occurrences(content, **kwargs)
+        assert len(result.occurrences) == 1
+        assert result.occurrences[0].raw_value == value
+        assert result.occurrences[0].locator["scale_multiplier"] == ("1000" if variant == "thousands" else "1000000")
 
 
 def test_generated_balance_sheet_resolves_exact_date_only_instant():
