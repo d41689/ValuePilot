@@ -9,6 +9,15 @@ long — escalate to the user. **medium / low** = ordinary follow-up.
 
 ## Open
 
+### Investment Memory / Lab — joint proposal responsibilities before implementation
+
+- **Found:** 2026-09-22, Investment Memory third-party adversarial review.
+- **Where:** the Investment Memory and Agentic Investment Lab product drafts.
+- **Problem:** no current normative conflict was found, but joint adoption must explicitly assign accepted user research/source-change history to Memory and experimental Decision Cards/paper outcomes to Lab, with explicit user acceptance before experimental content becomes formal research. Neither proposal's existence settles the combined implementation contract.
+- **Severity:** low — future proposal coordination, not a blocker for the bounded Memory draft corrections.
+- **Next step:** resolve the shared boundary when both proposals are considered for adoption; retain the existing approval gates for expanded sources/events and statistical calibration. No new subsystem or implementation is authorized by this entry.
+- **Context:** [review resolution](tasks/2026-09-22_investment-memory-review-resolution.md).
+
 ### Local environment — retained verification stacks still mount the source checkout
 
 - **Found:** 2026-09-22, read-only container-mount inventory before branch cleanup.

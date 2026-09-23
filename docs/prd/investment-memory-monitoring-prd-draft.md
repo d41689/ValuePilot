@@ -1,8 +1,10 @@
 # ValuePilot 投资记忆与论点监控 PRD（User Story 版）
 
 > 状态：只读产品提案草案，非规范性文件，不得作为实施权威，也不直接覆盖现有权威 PRD  
-> 版本：0.3 Draft（已吸收首轮评审及复审）  
-> 日期：2026-09-17  
+> 版本：0.4 Draft（补齐历史可见性、提案处置并发与有限复核合同）
+>
+> 日期：2026-09-22
+>
 > 产品负责人：Product / Research  
 > 权威边界：如与 `docs/prd/value-pilot-prd-v0.1.md`、
 > `docs/architecture/research-decision-support.md` 或
@@ -200,22 +202,34 @@ AI 候选解释不会因为置信度高、重复出现、用户未响应或经�
 | `event_at` | 现实事件发生时间；未知时保持未知 |
 | `published_at` | 原始来源发布或监管机构接受时间 |
 | `received_at` / `known_at` | ValuePilot 可信服务边界首次接收该来源或观察的时间，由服务端赋值且不可回填 |
-| `processed_at` | 某次解析、确定性计算或 AI proposal 实际完成并提交的时间 |
-| `recorded_at` | 对象在 ValuePilot 中成功提交的服务端时间 |
-| `accepted_at` | 用户明确保存、决定或复核一项研究修订的时间 |
+| `processed_at` | ValuePilot 受信处理路径完成该次解析、确定性计算、AI proposal 或外部结果校验的服务端时间；必须有可验证的不可变处理记录，调用方不得指定或回填 |
+| `recorded_at` | 该版本对象在 ValuePilot 首次成功持久提交的服务端时间；不是请求开始、排队或调用方声称的时间，失败或回滚不产生可回放对象 |
+| `accepted_at` | 用户明确保存、决定或复核一项研究修订并成功提交的服务端时间，不接受调用方回填 |
 | `effective_as_of` | 用户判断、估值或模型输出声称适用的时点 |
 
 `published_at`、`event_at` 和客户端提交的任何时间都不能证明 ValuePilot 当时已经拥有
 或处理了该内容。P0 使用以下历史可用性规则：
 
 - 原始来源只有在服务端 `received_at <= cutoff` 时才可作为当时已获取来源展示；
-- 解析事实或确定性差异只有在其 `processed_at <= cutoff`，且全部输入、身份、mapping、
+- 解析事实或确定性差异只有在其可信 `processed_at <= cutoff` 且 `recorded_at <= cutoff`，且全部输入、身份、mapping、
   policy 与 source version 在 cutoff 时均可用时，才可进入历史结果；
-- AI proposal 只有在自身 `processed_at <= cutoff` 且全部引用输入当时可用时才可展示；
+- AI proposal 只有在自身可信 `processed_at <= cutoff` 且 `recorded_at <= cutoff`，
+  且全部引用输入当时可用时才可展示；
 - 用户判断只有在 `accepted_at <= cutoff` 时才是当时已接受判断；
 - 后来的重解析、模型升级、身份纠正或来源更正保留原来源的首次接收时间，但产生具有
-  自身 `processed_at` 的新结果，绝不倒灌旧 cutoff；
+  自身 `processed_at` 和 `recorded_at` 的新结果，绝不倒灌旧 cutoff；
 - 未知或无法证明的时间保持未知，并使相应历史结果进入 `partial_reconstruction`。
+
+成功对象的相同请求重试保留其首次可信处理与持久记录时间；首次提交失败后补交的
+对象使用实际首次成功记录时间，不能沿用失败尝试的时间获得更早可见性。即使有可信
+记录证明 1 月 5 日处理完成，1 月 20 日才首次成功记录的结果也不能进入 1 月 10 日
+回放；在 1 月 20 日成功记录之后、且依赖均满足条件的回放中展示，并同时显示两种时间。
+
+普通客户端和仅持服务委托的外部监控调用方都不是可信时间签发方。外部声称的完成
+时间只能作为非权威来源声明，不能写入上述可信时间；ValuePilot 校验外部结果时记录
+自己的处理与持久提交时间。日志、队列时间或调用方声明不能替代可验证的持久处理
+记录。未来若授权独立处理服务签发可信处理时间，必须先在权限合同中明确该边界与
+不可变处理事件的验证方式；即便如此，ValuePilot 的 `recorded_at` 门槛仍不可豁免。
 
 每次回放必须生成 reconstruction manifest，声明 cutoff、支持的来源与对象类型、历史
 起点、输入 ID、身份/mapping/policy/model 版本及具体缺口。P0 只保证已声明支持范围内的
@@ -298,7 +312,7 @@ AI 候选解释不会因为置信度高、重复出现、用户未响应或经�
 验收标准：
 
 - run input manifest 为每条输入保存稳定 source/fact/price ID、股票身份、观察类型、单位、
-  期间、source version、`published_at`、服务端 `received_at/known_at`、`processed_at` 和
+  期间、source version、`published_at`、服务端 `received_at/known_at`、`processed_at`、`recorded_at` 和
   来源定位信息；不复制它成为第二条财务事实。
 - 来源 pipeline 可以记录来源声称的发布时间；monitoring 客户端不能覆盖它，也不能
   指定或回填可信接收时间。重试保持首次成功接收时间不变。
@@ -410,14 +424,35 @@ EPS、收入和分析师覆盖变化按观察时点持续追加，
   active case 或 research cycle 与 proposal 基线不一致，就返回类型化
   `proposal_baseline_stale` 409，并要求重新比较；客户端不能只刷新 expected head 后接受
   旧 proposal。
+- 对 proposal 的接受、编辑接受、拒绝和确认无变化，还必须携带预期的 proposal
+  disposition/version 与处置幂等键；该检查独立于 case head，不能因 reject 不推进
+  head 而省略。只有预期版本仍处于待处理时才可首次终态处置；两个窗口竞争时恰好
+  一个成功，另一个返回类型化 `proposal_disposition_conflict` 409，零业务写入。
+- 同一认证 owner、proposal 和处置幂等键、同一完整请求内容的成功重放，返回原
+  disposition/revision，不再次执行副作用，即使成功后 case head 已前移；同 key
+  不同内容返回类型化幂等冲突 409。更换 key 也不能再次处置已终态的 proposal。
+  授权仍在重放前验证，具体身份与重试规则见 §14.1。
+- 预期 proposal 版本与 case/baseline 校验、终态 disposition、必要的研究 revision、
+  canonical valuation 发布及相应事件必须在同一原子提交中成功或失败；拒绝不创建
+  revision。任何校验失败或回滚均不能留下已处置但未保存的提案，或无处置记录的
+  Accepted Revision。`apply to local draft` 不预占终态，稍后保存仍需这些校验。
 - 成功处理会把 proposal ID、输入 manifest/version、原 baseline、处理方式
   `accepted_as_is` / `accepted_with_edits` / `rejected` / `no_change` 和最终 revision ID
   （不产生 revision 的拒绝场景为 NULL）写入 append-only 处理事件。无 proposal 的内容
   明确标记为 `user_authored`。
 - 拒绝 AI 建议会保留建议、拒绝时间和可选理由，但不会污染当前用户论点。
+- 重新考虑已拒绝提案必须由用户明确发起，并引用原 proposal 与拒绝 disposition。
+  复用现有候选提案路径，以当前基线和仍获授权的证据重新比较，产生新的 proposal
+  身份；原拒绝保持终态且不可变，新决定独立处置。普通重试不能重开原提案，后台
+  重放不能将它自动恢复为待处理；不新增审批层级。
 - `confirm no change` 只适用于已处于 monitoring 的 `watch`/`own` case，仍生成一次
   `review` revision 和明确复核事件，并记录本次所审阅的证据范围；其他状态必须使用
   `save draft` 或 `decide`。
+- `confirm no change` 只记录用户在已审阅证据范围内维持论点的判断，不改变 run 的
+  `partial` 状态，也不完成、降低优先级或隐藏尚未解决的 coverage、correction、conflict
+  等独立义务。覆盖不完整时，界面与历史记录必须显示“在已审阅范围内维持，仍有缺口”
+  及具体未解决事项，不能显示无条件的“未发现变化”。符合既有条件的 review revision
+  仍可保存，但独立义务按 US-E1 与 §15.1 各自验收、计数。
 - `save draft` 若包含 publishable base intrinsic value，仍须按既有 §G.4 原子发布规则
   处理并在 UI 明确确认；“draft”不能被解释为估值一定不会发布。
 
@@ -512,6 +547,9 @@ EPS、收入和分析师覆盖变化按观察时点持续追加，
 - 同一输入和 policy version 必须产生同一确定性排序；missing、stale、conflicted、
   unknown 均不能被视为未触发。
 - 监控义务只能有限期 snooze；信息发现可 dismiss，且新 source version 可重新出现。
+- proposal 被接受、拒绝或确认无变化不等于独立义务已解决。coverage、correction、
+  conflict 等义务须按各自可验证的完成条件关闭；仅记录维持判断不能替代缺口补齐、
+  更正复核或冲突处理。有限期 snooze 也不算完成，未解决事项继续按上述规则展示。
 
 #### US-E2（P0）查看单一公司的投资记忆时间线
 
@@ -552,7 +590,10 @@ EPS、收入和分析师覆盖变化按观察时点持续追加，
 
 - point-in-time 查询逐类应用 §8.3 的可用性条件，而不是只比较一个客户端可提交的
   `known_at`；全部依赖必须在 cutoff 时已可用。
-- 后续更正不会消失，但只在更正自身的可信接收/处理时间之后出现；重解析和身份纠正
+- 解析结果、确定性 delta 与 AI proposal 必须同时通过可信 `processed_at` 和持久
+  `recorded_at` 的截止检查；1 月 5 日处理、1 月 20 日首次成功记录的结果在 1 月 10 日
+  不可见。成功记录后的合格回放显示处理时间与记录时间，不把迟交伪装成当时已知。
+- 后续更正不会消失，但只在更正自身满足可信接收、处理、持久记录与依赖条件之后出现；重解析和身份纠正
   同样不得倒灌。
 - 页面显著显示 cutoff、声明支持范围、历史起点、数据覆盖、身份/mapping/policy/model
   版本和缺失项，并提供 reconstruction manifest。
@@ -636,6 +677,10 @@ EPS、收入和分析师覆盖变化按观察时点持续追加，
 - payload 包含 schema version、run metadata、覆盖对象、稳定 source/fact/price 引用和
   逐对象结果；P0 拒绝内联 authoritative financial value 或 price，防止绕过 canonical
   ingestion/publication service。
+- 调用方试图写入或回填可信 `received_at/known_at`、`processed_at`、`recorded_at` 或
+  `accepted_at` 时，返回类型化字段校验错误且零业务写入。外部完成时间只能以明确
+  标记的来源声明提交，不能映射为可信时间。ValuePilot 自行记录结果校验完成与首次
+  成功持久提交时间，依 §8.3 决定历史可见性；服务委托不授予签发可信时间的权限。
 - API 先验证再写入；单对象失败有明确事务边界和结果，不产生半条记录。
 - 日志不得记录凭证、完整付费内容或私人研究正文。
 - 重放相同请求返回同一逻辑结果，不重复创建事件、事实或用户待办。
@@ -812,7 +857,7 @@ identity review。
 
 ### 14.1 一致性与幂等
 
-- 同一 source observation、run submission、logical event 和 notification 都有稳定幂等键；
+- 同一 source observation、run submission、proposal disposition、logical event 和 notification 都有稳定幂等键；
   所有用户级对象的幂等唯一性都包含认证得到的 owner namespace。
 - 所有金额使用 fixed precision decimal，API 使用 decimal string；禁止二进制浮点写入
   权威金额。
@@ -831,8 +876,8 @@ P0 使用以下恢复行为合同；确切字段和约束由后续 schema design
 | 同一 owner/key、不同 policy/scheduled time/coverage envelope | 返回类型化 409，零业务写入 |
 | 通过 run ID 访问另一 owner 的运行 | 返回不泄露存在性的 404，零业务写入 |
 | 写入成功但响应丢失后重试 | 返回原提交/attempt 结果，不创建第二 attempt 的业务副作用 |
-| 某 subject 已成功，同一 digest 再提交 | 幂等 no-op；保留首次可信接收和完成时间 |
-| 某 subject 失败或未收到，后续补交 | 在同一 logical run 下追加新的 submission attempt，只处理未完成 subject；既有成功对象不重建 |
+| 某 subject 已成功，同一 digest 再提交 | 幂等 no-op；保留首次可信接收、处理和成功持久记录时间 |
+| 某 subject 失败或未收到，后续补交 | 在同一 logical run 下追加新的 submission attempt，只处理未完成 subject；补交对象使用实际首次成功 recorded_at，不回填失败尝试时间；既有成功对象不重建 |
 | 已成功 subject 以同 run key 提交不同内容 | 返回类型化内容冲突；不得用“重试”改写历史 |
 | 来源真实发布更正或新版本 | 使用新的 source version 和幂等身份追加，并建立 supersession；不复用旧请求伪装重试 |
 | 仅报告渲染失败 | 追加 render attempt；重生报告不重新发布结构化事实或用户事项 |
@@ -840,6 +885,24 @@ P0 使用以下恢复行为合同；确切字段和约束由后续 schema design
 Logical run 是计划执行身份，submission attempt 是传输/恢复尝试，subject result 是逐对象
 当前投影加 append-only 状态事件，source version 是外部现实版本。聚合状态可由
 `partial` 前进到 `complete`，但每次转换都追加事件，原 partial 历史保持可见。
+只有覆盖实际补齐并满足运行合同才能推进该状态；用户处置 proposal 或确认无变化
+本身不构成状态推进条件。
+
+提案处置的幂等身份是 `(owner_id, proposal_id, disposition_key)`，与运行提交幂等键
+分开；owner 仅来自认证上下文。每个 key 绑定完整处置请求内容，包括动作、预期
+proposal 版本、case/baseline、编辑后的研究内容与原处置引用。不得只比较动作标签。
+先验证当前访问权，再查找已成功的同内容请求；命中时返回原结果，否则按当前
+proposal 终态/版本以及适用的 case/baseline 规则竞争首次原子提交。
+
+| 提案处置情况 | 必须行为 |
+| --- | --- |
+| 同一待处理版本并发 reject 与 accept，或 reject 与 no_change | 恰好一个终态提交成功；另一个返回 disposition 冲突 409，无 revision、valuation 或事件副作用 |
+| 处置成功但响应丢失，同 owner/proposal/key 和同内容重试 | 返回原 disposition 及原 revision（拒绝时为 NULL）；不因成功已推进 head 而重新保存或报陈旧基线 |
+| 同 owner/proposal/key 不同内容 | 幂等内容冲突 409，零业务写入 |
+| 已终态 proposal 换 key、相同或不同动作再次提交 | disposition 冲突 409；不能借新 key 覆盖、重复处置或重新打开 |
+| 处置事务失败、回滚后重试 | 没有已成功处置可重放；重新验证当前版本、基线及权限，再竞争一次原子提交 |
+| 用户明确重新考虑已拒绝 proposal | 原拒绝与提案保持不变；以当前基线重建带原拒绝引用的新候选提案，再显式处置；重试该重新考虑请求不得重复新建提案 |
+| 通过 proposal/key 访问另一 owner 的处置结果 | 不泄露存在性的 404，零业务写入，不返回他人的幂等结果 |
 
 ### 14.2 可解释性
 
@@ -879,8 +942,11 @@ Logical run 是计划执行身份，submission attempt 是传输/恢复尝试，
 合格复核的义务。合格复核必须包含：明确的人类 review action、审阅的证据范围、论点/
 估值是否变化、关键反证或未决问题，以及下次复核时间。
 
-同一 obligation key 的重复提交、重复确认无变化或重放不增加分子，也不改善完成率；
-“无变化”和“有修订”均可完成同一个义务。复核次数仅作为诊断计数单独展示，不作为
+同一 obligation key 的重复提交、重复确认无变化或重放不增加分子，也不改善完成率。
+“无变化”和“有修订”仅在满足该项义务自身的完成条件时，才可完成该项义务；一次
+review revision 不会批量完成同一 run/case 的所有义务。partial run 上的有限复核不把
+仍开放的 coverage、correction、conflict 等义务计入分子，也不从分母移除或通过 snooze
+美化完成率。复核次数仅作为诊断计数单独展示，不作为
 优化目标。
 
 ### 15.2 质量指标
@@ -911,16 +977,19 @@ Logical run 是计划执行身份，submission attempt 是传输/恢复尝试，
 
 退出条件：同一 gold set 能人工回答“当时知道什么、后来更正了什么”，且不存在
 重复事实真相或 AI 权限绕行；gold set 至少覆盖有变化、未触发规则、缺失/冲突、来源
-晚到、后续更正、部分恢复、陈旧 proposal 和并发 head 前移。
+晚到、处理后迟交、可信时间回填、后续更正、部分恢复、陈旧 proposal、并发 head
+前移、提案终态竞争与 partial run 上的有限复核。
 
 Phase 0 必须为以下场景锁定预期结果并进入后续验收用例：
 
 | 场景 | 必须结果 |
 | --- | --- |
 | 来源早已发布但系统晚到 | 只在服务端首次可信接收后进入回放，保留不同的发布时间 |
-| 客户端补交旧时间 | 客户端时间不能回填 `received_at/known_at` 或进入更早 cutoff |
+| 客户端或服务委托调用方回填可信时间 | API 拒绝其写入 received/known/processed/recorded/accepted 时间，零业务写入；不能进入更早 cutoff |
+| 1 月 5 日可信处理、1 月 20 日首次成功记录 | 1 月 10 日回放不可见；20 日成功记录之后且依赖合格才可见，并同时展示处理与记录时间 |
+| 外部声称早已处理，但提交失败且无可信持久处理记录 | 声称时间、日志或队列时间不能证明历史可见性；以 ValuePilot 后续可信校验/记录时间判断，不能证明的处理时间保持未知与 partial_reconstruction |
 | 来源更正或撤回 | 更正前视图保留旧值；更正后按 source contract 显示新值或不可用；旧 revision 不变 |
-| 旧文件被新解析器重跑 | 新结果使用自己的 `processed_at`，不倒灌旧 cutoff |
+| 旧文件被新解析器重跑 | 新结果使用自己的可信 `processed_at` 与 `recorded_at`，两者及依赖均合格才可见，不倒灌旧 cutoff |
 | ticker/身份后来纠正 | 原 revision 保留当时显示身份；晚确认不能跨公司串联旧记录 |
 | 价格币种未知或后来补录 | 旧 cutoff 仍为未知；不推测 USD、不隐式 FX |
 | 当前来源权限丢失 | 按当前授权隐藏内容并显示 `source_unavailable`，不泄露私有片段 |
@@ -929,6 +998,10 @@ Phase 0 必须为以下场景锁定预期结果并进入后续验收用例：
 | 写入成功但响应丢失 | 重试返回原结果，不重复任何业务副作用 |
 | A subject 成功、B subject 失败后补交 | A 不重建；B 可补齐；原 partial 和状态转换均可见 |
 | proposal 基于 revision 5、head 已到 revision 6 | 返回 `proposal_baseline_stale`，不得刷新 head 后直接接受 |
+| 两窗口对同一 proposal 并发拒绝/接受，或拒绝/确认无变化 | 恰好一个终态提交成功；另一个 409 且无 revision/valuation/event 副作用，即使拒绝未推进 case head |
+| 处置成功但响应丢失；同 key 改内容；已终态后换 key | 同内容重试返回原 disposition/revision；改内容或换 key 不得重复或覆盖终态；按 §14.1 返回类型化冲突 |
+| 用户明确重新考虑已拒绝提案 | 保留原拒绝，当前基线产生带原处置引用的新候选；重试只返回同一新候选；新接受独立记录，原提案不重开 |
+| 必需来源撤权导致 partial，用户确认无变化 | 合格 review 可保存；run 仍 partial，界面和历史显示“在已审阅范围内维持，仍有缺口”；独立义务仍开放，不计完成分子，也不移出分母 |
 | policy/criterion 在 cutoff 后修改 | 旧视图使用当时版本，新规则不改写旧排序或触发解释 |
 | 同期间多来源冲突 | 保留冲突，不按数据库顺序选赢家，不借用后来解决结果 |
 
@@ -1006,10 +1079,13 @@ P0 已选择用户级私人运行、统一版本化确定性规则、人工确�
 - [ ] AI proposal 永远不能自动成为用户论点、估值或决定。
 - [ ] 每个 proposal 能追溯 owner、case/cycle、baseline、输入 manifest、处理方式和最终 revision；陈旧基线不能直接接受。
 - [ ] 用户可以明确接受、编辑、拒绝或确认无变化。
+- [ ] proposal 终态版本独立于 case head 仲裁；处置、必要的 revision/valuation/event 原子提交，同内容重试不重复，不同内容或再次终态处置返回冲突。
+- [ ] 重新考虑拒绝需显式操作与当前基线的新提案，保留原拒绝链；普通重试不得重开。
 - [ ] 任一历史估值能说明方法、输入、版本、价格与研究版本。
 - [ ] 纯价格波动不会自动成为业务恶化或买卖建议。
 - [ ] 缺失、冲突、过期和权限失败不会被隐藏。
-- [ ] point-in-time 回放逐类验证可信接收、处理、依赖和接受时间，不使用 cutoff 之后的信息。
+- [ ] point-in-time 回放逐类验证可信接收、处理、持久记录、依赖和接受时间；派生结果同时满足 processed_at 与 recorded_at 门槛，调用方不可回填可信时间。
+- [ ] partial run 上确认无变化仅表达已审阅范围内维持；缺口、独立义务和真实完成率保留，不产生无条件的无变化结论。
 - [ ] Research Inbox 优先永久损失风险和论点证伪，而不是市场热度。
 - [ ] 结果复盘区分过程质量与结果好坏，不用简单平均收益宣称 alpha。
 - [ ] 新能力复用现有 canonical facts、valuation 和 research revision 边界。
@@ -1048,13 +1124,20 @@ P0 已选择用户级私人运行、统一版本化确定性规则、人工确�
 | --- | --- | --- |
 | F-01 服务身份与私人授权 | 复审后关闭 | P0 固定为用户级私人运行；私有资源要求 owner 匹配；获准共享资源按既有合同验证访问权、stock、version、lineage 和 publication 绑定；其他 NULL-owner 数据不自动共享 |
 | F-02 估计序列合同未批准 | 关闭 | US-B2 移至 P1 且合同门控；Phase 1 移除 Forward EPS；所有比较只读获批 canonical facts |
-| F-03 历史可用时间不完整 | 关闭 | 增加服务端可信 `received_at`、`processed_at`、`accepted_at`、依赖可用性和 reconstruction manifest |
+| F-03 历史可用时间不完整 | 经 IM-01 补充后关闭 | 服务端可信时间、依赖与 reconstruction manifest；派生结果同时受 processed_at 和 recorded_at 截止限制，不接受调用方回填 |
 | F-04 proposal 接受链不完整 | 关闭 | 绑定 owner/case/cycle/baseline/input manifest/disposition/final revision；陈旧基线返回 409 |
 | F-05 “无重大变化”由 AI 间接控制 | 关闭 | 改为 `complete_no_rule_trigger`；锁定 R1–R5 确定性规则；AI 使用独立候选通道 |
 | F-06 kill criteria 阶段与状态矛盾 | 关闭 | P0 只保存并人工复核；确认触发按既有转换回到 `researching`；自动评价后移 Phase 2 |
 | F-07 部分成功与恢复语义缺失 | 复审后关闭 | §14.1 增加恢复行为表，并将 logical run 唯一定义为 `(owner_id, logical_run_key)`；跨用户同 key 不冲突，跨用户 run ID 返回 404 |
 | F-08 复核数量指标可能诱导重复操作 | 关闭 | 改为唯一监控义务的合格完成率；重复复核不增加指标 |
 | F-09 校准与 alpha 准入不足 | 关闭并收缩 | P2 仅做描述性结果；统计校准、方法优劣和 alpha 需要独立获批协议 |
+| IM-01 派生结果迟交/回填导致历史泄漏 | 合同修订并经独立复核关闭 | §8.3、US-B1/F1/G2、§14.1、Phase 0 与总验收补齐可信处理/持久记录双门槛及不可回填规则 |
+| IM-02 提案终态缺少并发仲裁 | 合同修订并经独立复核关闭 | US-C3 与 §14.1 增加独立 proposal 版本、处置幂等内容校验、原子终态及明确重新考虑路径；保留既有 case/baseline 校验 |
+| IM-03 有限复核可能隐藏未解决义务 | 合同修订并经独立复核关闭 | US-C3/E1、§14.1/15.1、Phase 0 与总验收明确 partial、独立义务与指标不因确认无变化而自动完成 |
+
+本轮只修复 IM-01–IM-03。US-G2 延后属于可选交付取舍，未因本轮缺陷修复改变 P0
+阶段安排；外部提交的可信时间约束已补齐。Lab 联合职责、扩展来源/事件合同和统计
+校准仍按原有独立审批与分期处理，不能由本轮修订推定获批。
 
 评审报告列出的 `unsupported` 批评未转化为新需求，因为现有文本已经禁止 AI 自动晋升、
 第二估值真相、历史当前数据混入和普通流程修改不可变提取记录。此次修订不为这些已被
